@@ -17,9 +17,13 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
 - **Tools**, with live preview:
   - Tone: brightness / contrast, grayscale (with strength), invert, threshold (plug-in example)
   - Filters: sharpen (unsharp mask), Gaussian blur
-  - Geometry: rotate 90/180, rotate by any angle, flip, resize (percent or pixels, choice of interpolation)
+  - Geometry: rotate 90/180, rotate by any angle (with **Measure**: click two points of a line to level it), flip,
+    resize (percent or pixels, choice of interpolation)
+  - Clean (ported from SpectrumDigitizer): erase / keep colours (**Pick** colours on the image, with tolerance),
+    despeckle, flatten ink to one colour, eraser brush (drag on the image; one stroke = one undo step)
 
-Geometry tools change the whole image and ignore the selection; all other tools are limited to it.
+Geometry tools change the whole image and ignore the selection; all other tools, the eraser brush included, are limited to it.
+The selection takes the place of SpectrumDigitizer's working area (which could also be rotated and resized: not ported yet).
 
 ## Adding a tool
 
@@ -40,7 +44,8 @@ that should ship with the program.
 
 - Images are held as **8-bit RGB**: transparency is flattened onto white, 16-bit / grey / palette / CMYK are converted,
   and ICC profiles are not kept. EXIF orientation is applied on load; other metadata is dropped on save, except dpi.
-- Tested on synthetic images and a scripted session (selection drag, apply, crop, undo/redo, zoom, pan); the unit tests
+- Tested on synthetic images and a scripted session with real Tk mouse events (selection drag, colour pick, angle pick,
+  brush strokes, apply, crop, undo/redo, zoom, pan); the clean-up tools have not been tried on real scans yet; the unit tests
   cover the tools, history, file round-trips and plug-ins. Not tried on very large photos: the live preview recomputes
   the whole image, so heavy filters can lag on tens of megapixels (turn Preview off).
 - JPEG is saved at quality 95 without chroma subsampling; there is no quality dialog yet.

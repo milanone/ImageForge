@@ -141,6 +141,78 @@ class ToolTests(unittest.TestCase):
         self.assertNotEqual(int(img[5, 10, 0]), 1)               # an independent copy
 
 
+class CleanTests(unittest.TestCase):
+    @staticmethod
+    def sheet():
+        img = np.full((60, 80, 3), 255, np.uint8)
+        img[20:24, 5:75] = (200, 0, 0)               # a red line
+        img[40:44, 5:75] = (0, 0, 200)               # a blue line
+        img[5, 5] = (0, 0, 0)                        # a one-pixel speck
+        img[50:52, 60:62] = (0, 0, 0)                # a 4-pixel speck
+        return img
+
+    def test_parse_colors(self):
+        self.assertEqual(il.parse_colors("#ff0000 00ff00, #12345 zz #0000FF"), [(255, 0, 0), (0, 255, 0), (0, 0, 255)])
+        self.assertEqual(il.parse_colors(""), [])
+
+    def test_erase_colour_leaves_the_other_ink(self):
+        img = self.sheet()
+        out = il.apply_tool("Erase / keep colours", img, {'colors': '#c80000', 'tolerance': 30})
+        self.assertTrue((out[20:24, 5:75] == 255).all())
+        self.assertTrue(np.array_equal(out[40:44, 5:75], img[40:44, 5:75]))
+        self.assertIs(il.apply_tool("Erase / keep colours", img, {'colors': ''}), img)
+
+    def test_keep_only_colour(self):
+        img = self.sheet()
+        out = il.apply_tool("Erase / keep colours", img, {'colors': '#0000c8', 'mode': 'keep only', 'tolerance': 30})
+        self.assertTrue(np.array_equal(out[40:44, 5:75], img[40:44, 5:75]))
+        self.assertTrue((out[20:24, 5:75] == 255).all())
+        self.assertTrue((out[5, 5] == 255).all())
+
+    def test_despeckle_removes_specks_not_lines(self):
+        img = self.sheet()
+        out = il.apply_tool("Despeckle", img, {'min_size': 6})
+        self.assertTrue((out[5, 5] == 255).all())
+        self.assertTrue((out[50:52, 60:62] == 255).all())
+        self.assertTrue(np.array_equal(out[20:24, 5:75], img[20:24, 5:75]))
+        self.assertTrue(np.array_equal(il.apply_tool("Despeckle", img, {'min_size': 1}), img))
+
+    def test_flatten_makes_all_ink_black(self):
+        out = il.apply_tool("Flatten ink to one colour", self.sheet(), {})
+        self.assertTrue((out[20:24, 5:75] == 0).all())
+        self.assertTrue((out[40:44, 5:75] == 0).all())
+        self.assertTrue((out[0, 0] == 255).all())
+
+    def test_paint_segment_round_stroke_and_region(self):
+        img = np.full((40, 40, 3), 200, np.uint8)
+        il.paint_segment(img, (5, 20), (30, 20), 6, (0, 0, 0))
+        self.assertTrue((img[20, 5:31] == 0).all())
+        self.assertTrue((img[17:24, 15] == 0).all())
+        self.assertEqual(int(img[10, 15, 0]), 200)
+        img2 = np.full((40, 40, 3), 200, np.uint8)
+        il.paint_segment(img2, (5, 20), (30, 20), 6, (0, 0, 0), region=(10, 0, 20, 40))
+        self.assertTrue((img2[20, 10:20] == 0).all())
+        self.assertTrue((img2[20, :10] == 200).all() and (img2[20, 20:] == 200).all())
+        il.paint_segment(img2, (-50, -50), (-40, -40), 6, (0, 0, 0))                  # outside: no error
+
+    def test_straighten_angle_levels_a_tilted_line(self):
+        self.assertAlmostEqual(il.straighten_angle((0, 0), (100, 0)), 0.0)
+        for tilt, p1, p2 in ((7.0, (20, 120), (220, 120 - 200 * np.tan(np.radians(7.0)))),
+                             (-4.0, (20, 50), (220, 50 + 200 * np.tan(np.radians(4.0))))):
+            img = np.full((300, 300, 3), 255, np.uint8)
+            import cv2
+            cv2.line(img, (round(p1[0]), round(p1[1])), (round(p2[0]), round(p2[1])), (0, 0, 0), 1)
+            ang = il.straighten_angle(p1, p2)
+            self.assertAlmostEqual(ang, -tilt, places=3)
+            rot = il.apply_tool("Rotate (any angle)", img, {'angle': ang, 'expand': False})
+            ys = np.nonzero((rot < 100).all(axis=2))
+            xs_left, xs_right = ys[1] < 80, ys[1] > 160
+            self.assertAlmostEqual(ys[0][xs_left].mean(), ys[0][xs_right].mean(), delta=1.0)
+        v = il.straighten_angle((10, 10), (11, 110))                                  # closer to vertical
+        self.assertLess(abs(v), 2)
+        self.assertAlmostEqual(il.straighten_angle((0, 0), (100, 0)), il.straighten_angle((100, 0), (0, 0)))
+
+
 class HistoryTests(unittest.TestCase):
     def test_undo_redo_and_truncation(self):
         a, b, c = (np.full((2, 2, 3), v, np.uint8) for v in (1, 2, 3))

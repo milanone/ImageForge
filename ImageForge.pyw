@@ -42,12 +42,15 @@ TOOLS = {}                          # name -> Tool, in registration order (which
 
 
 class Param:
-    """One adjustable value of a tool. kind: 'int', 'float', 'bool' or 'choice' (then `choices` lists the
-    options and `default` is one of them). `slider` adds a slider next to the number box."""
+    """One adjustable value of a tool. kind: 'int', 'float', 'bool', 'choice' (then `choices` lists the
+    options and `default` is one of them) or 'colors' (text with hex colours such as '#ff0000 #00ff00').
+    `slider` adds a slider next to the number box. `pick` adds a button that fills the value by clicking on
+    the image: 'color' (appends the colour clicked) or 'angle' (two clicks on a line that should be level)."""
 
-    def __init__(self, key, label, kind, default, lo=None, hi=None, step=1, choices=(), slider=False):
+    def __init__(self, key, label, kind, default, lo=None, hi=None, step=1, choices=(), slider=False, pick=None):
         self.key, self.label, self.kind, self.default = key, label, kind, default
         self.lo, self.hi, self.step, self.choices, self.slider = lo, hi, step, tuple(choices), slider
+        self.pick = pick
 
     @property
     def decimals(self):
@@ -61,6 +64,8 @@ class Param:
                 return bool(value)
             if self.kind == 'choice':
                 return value if value in self.choices else self.default
+            if self.kind == 'colors':
+                return str(value)
             v = float(value)
             if not math.isfinite(v):
                 return self.default
@@ -75,19 +80,21 @@ class Param:
 
 class Tool:
     """`geometry` tools change the whole image (size, orientation) and ignore the selection; the others are
-    computed on the whole image and only the selected rectangle is taken from the result."""
+    computed on the whole image and only the selected rectangle is taken from the result. An `interactive` tool
+    ('brush') is not applied with the Apply button: the user paints on the image and the app does the work."""
 
-    def __init__(self, name, group, func, params, geometry, preview, doc):
+    def __init__(self, name, group, func, params, geometry, preview, doc, interactive=None):
         self.name, self.group, self.func, self.params = name, group, func, tuple(params)
-        self.geometry, self.preview, self.doc = geometry, preview, doc
+        self.geometry, self.preview, self.doc, self.interactive = geometry, preview, doc, interactive
 
 
-def tool(name, group, params=(), geometry=False, preview=True, doc=""):
+def tool(name, group, params=(), geometry=False, preview=True, doc="", interactive=None):
     """Register `func(img, **params) -> img` as a tool. `img` is an (H, W, 3) uint8 array that must not be
     modified in place (it belongs to the Undo history); return a new array, or `img` itself for 'no change'.
     The keys of `params` are the keyword arguments."""
     def deco(func):
-        TOOLS[name] = Tool(name, group, func, params, geometry, preview, doc or (func.__doc__ or "").strip())
+        TOOLS[name] = Tool(name, group, func, params, geometry, preview, doc or (func.__doc__ or "").strip(),
+                           interactive)
         return func
     return deco
 
@@ -204,7 +211,8 @@ def rotate_quarter(img, turn):
 
 
 @tool("Rotate (any angle)", "Geometry", [
-    Param('angle', "Angle (deg, counter-clockwise)", 'float', 0.0, -180.0, 180.0, step=0.1, slider=True),
+    Param('angle', "Angle (deg, counter-clockwise)", 'float', 0.0, -180.0, 180.0, step=0.1, slider=True,
+          pick='angle'),
     Param('expand', "Enlarge canvas to fit", 'bool', True),
     Param('fill', "Fill the corners with", 'choice', 'white', choices=('white', 'black', 'edge'))],
     geometry=True)
@@ -262,6 +270,128 @@ def resize(img, percent, width, height, method):
     else:
         flag = INTERPOLATIONS[method]
     return cv2.resize(img, (nw, nh), interpolation=flag)
+
+
+def straighten_angle(p1, p2):
+    """Rotation angle (degrees, counter-clockwise, as 'Rotate (any angle)' wants it) that makes the line through the
+    image points p1 and p2 level, or vertical when it is closer to vertical."""
+    a = math.degrees(math.atan2(p2[1] - p1[1], p2[0] - p1[0]))      # image y grows downward
+    if a > 90:
+        a -= 180
+    elif a <= -90:
+        a += 180
+    if abs(a) > 45:
+        a -= 90 if a > 0 else -90
+    return a
+
+
+# ---- clean-up tools (from the 'Clean image' tab of SpectrumDigitizer) -------------------------------------
+def parse_colors(text):
+    """[(r, g, b)] from a text holding '#rrggbb' codes separated by spaces or commas; anything else is ignored."""
+    out = []
+    for tok in str(text).replace(",", " ").split():
+        t = tok.lstrip("#")
+        if len(t) == 6:
+            try:
+                out.append(tuple(int(t[i:i + 2], 16) for i in (0, 2, 4)))
+            except ValueError:
+                pass
+    return out
+
+
+FILLS = {'white': (255, 255, 255), 'black': (0, 0, 0)}
+
+
+def _distance_from(img, color):
+    return np.sqrt(((img.astype(np.float32) - np.asarray(color, np.float32)) ** 2).sum(axis=2))
+
+
+@tool("Erase / keep colours", "Clean", [
+    Param('colors', "Colours (click Pick on the image)", 'colors', '', pick='color'),
+    Param('mode', "Mode", 'choice', 'erase', choices=('erase', 'keep only')),
+    Param('tolerance', "Tolerance (RGB distance)", 'int', 60, 1, 441, slider=True),
+    Param('fill', "Paint with", 'choice', 'white', choices=tuple(FILLS))])
+def erase_colors(img, colors, mode, tolerance, fill):
+    """Paint with the fill colour the pixels within the tolerance of any picked colour ('erase') or of none of them
+    ('keep only'). Shades of one ink need several picks, or a larger tolerance."""
+    cols = parse_colors(colors)
+    if not cols:
+        return img
+    near = np.zeros(img.shape[:2], bool)
+    for c in cols:
+        near |= _distance_from(img, c) < tolerance
+    hit = ~near if mode == 'keep only' else near
+    if not hit.any():
+        return img
+    out = img.copy()
+    out[hit] = FILLS[fill]
+    return out
+
+
+@tool("Despeckle", "Clean", [
+    Param('min_size', "Remove specks under (px)", 'int', 6, 1, 500, slider=True),
+    Param('tolerance', "Ink = further from background than", 'int', 60, 1, 441, slider=True),
+    Param('background', "Background", 'choice', 'white', choices=tuple(FILLS))])
+def despeckle(img, min_size, tolerance, background):
+    """Remove isolated specks of a scan: connected groups (8-neighbours) of ink pixels smaller than the given number
+    of pixels become background. A line is one big group and stays; raise the size to remove larger dust."""
+    bg = FILLS[background]
+    ink = (_distance_from(img, bg) > tolerance).astype(np.uint8)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    small = stats[:, cv2.CC_STAT_AREA] < min_size
+    small[0] = False
+    hit = small[labels]
+    if not hit.any():
+        return img
+    out = img.copy()
+    out[hit] = bg
+    return out
+
+
+@tool("Flatten ink to one colour", "Clean", [
+    Param('tolerance', "Ink = further from background than", 'int', 60, 1, 441, slider=True),
+    Param('background', "Background", 'choice', 'white', choices=tuple(FILLS))])
+def flatten_ink(img, tolerance, background):
+    """Turn every pixel that is not background into pure black (on white) or white (on black): a line drawn in
+    several shades becomes one colour. Paler pixels closer to the background than the tolerance are left alone."""
+    bg = FILLS[background]
+    ink_color = FILLS['black' if background == 'white' else 'white']
+    hit = _distance_from(img, bg) > tolerance
+    hit &= (img != np.asarray(ink_color, np.uint8)).any(axis=2)
+    if not hit.any():
+        return img
+    out = img.copy()
+    out[hit] = ink_color
+    return out
+
+
+@tool("Eraser brush", "Clean", [
+    Param('size', "Diameter (px)", 'int', 15, 1, 300, slider=True),
+    Param('fill', "Paint with", 'choice', 'white', choices=tuple(FILLS))],
+    preview=False, interactive='brush',
+    doc="Drag on the image to paint over it (limited to the selection if there is one: draw the selection with another tool first). One stroke is one Undo step.")
+def eraser_brush(img, size, fill):
+    return img
+
+
+def paint_segment(img, p0, p1, size, color, region=None):
+    """Paint, in place, a round-ended stroke of diameter `size` from p0 to p1 (image pixels) on `img`; with a
+    `region` (x0, y0, x1, y1) only the pixels inside it change. Works on the small box around the stroke."""
+    h, w = img.shape[:2]
+    r = int(size) // 2 + 2
+    x0, y0 = max(0, min(p0[0], p1[0]) - r), max(0, min(p0[1], p1[1]) - r)
+    x1, y1 = min(w, max(p0[0], p1[0]) + r + 1), min(h, max(p0[1], p1[1]) + r + 1)
+    if x1 <= x0 or y1 <= y0:
+        return
+    sub = img[y0:y1, x0:x1]
+    keep = sub.copy() if region is not None else None
+    cv2.line(sub, (p0[0] - x0, p0[1] - y0), (p1[0] - x0, p1[1] - y0), tuple(int(c) for c in color),
+             thickness=max(1, int(size)), lineType=cv2.LINE_8)
+    if region is not None:
+        rx0, ry0, rx1, ry1 = region
+        inside = np.zeros(sub.shape[:2], bool)
+        inside[max(0, ry0 - y0):max(0, ry1 - y0), max(0, rx0 - x0):max(0, rx1 - x0)] = True
+        sub[~inside] = keep[~inside]
 
 
 def crop(img, region):
@@ -382,6 +512,11 @@ class ImageForge:
         self._drag_sel = None
         self._pan = None
         self._params_ready = False
+        self.mode = None                 # None, 'color' or 'angle': what a click on the image means (Esc cancels)
+        self._pick_key = None            # the parameter a pick fills
+        self._pick_pts = []
+        self._stroke = None              # image being painted by the eraser brush, and the last brush point
+        self._last = None
         root.title(APP_NAME)
         root.geometry("1250x820")
         self._build_menu()
@@ -451,8 +586,13 @@ class ImageForge:
         self.b_crop.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
 
         tk.Label(panel, text="TOOLS", font=('Arial', 10, 'bold'), bg=bg, anchor='w').pack(fill=tk.X, padx=10, pady=(8, 0))
-        self.tree = ttk.Treeview(panel, show='tree', selectmode='browse', height=15)
-        self.tree.pack(fill=tk.X, padx=8, pady=2)
+        tf = tk.Frame(panel, bg=bg)
+        tf.pack(fill=tk.X, padx=8, pady=2)
+        self.tree = ttk.Treeview(tf, show='tree', selectmode='browse', height=12)
+        sb = ttk.Scrollbar(tf, orient='vertical', command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.tree.bind('<<TreeviewSelect>>', lambda e: self._on_tree_select())
 
         self.l_doc = tk.Label(panel, text="", bg=bg, fg='#555555', font=('Arial', 8), wraplength=300, justify='left',
@@ -481,7 +621,7 @@ class ImageForge:
             c.bind('<B%d-Motion>' % b, self._on_pan)
         c.bind('<MouseWheel>', self._on_wheel)
         c.bind('<Motion>', self._on_motion)
-        c.bind('<Leave>', lambda e: self._set_info(""))
+        c.bind('<Leave>', lambda e: (self._set_info(""), c.delete('brush')))
         if HAS_DND:
             for w in (self.canvas, panel):
                 w.drop_target_register(DND_FILES)
@@ -496,7 +636,7 @@ class ImageForge:
                         ("<Control-1>", self.actual_size), ("<Control-plus>", lambda: self._zoom_step(1.25)),
                         ("<Control-equal>", lambda: self._zoom_step(1.25)),
                         ("<Control-minus>", lambda: self._zoom_step(0.8)),
-                        ("<Control-Return>", self.apply), ("<Escape>", self.deselect)):
+                        ("<Control-Return>", self.apply), ("<Escape>", self.escape)):
             r.bind(seq, lambda e, fn=fn: self._key(fn, e))
 
     def _key(self, fn, event):
@@ -529,7 +669,9 @@ class ImageForge:
             self.select_tool(sel[0])
 
     def select_tool(self, name):
+        self.cancel_mode()
         self.tool = TOOLS[name]
+        self.canvas.delete('brush')
         self.l_doc.config(text=self.tool.doc)
         self._build_params()
         self.preview = None
@@ -549,6 +691,14 @@ class ImageForge:
                 var = tk.StringVar(value=p.default)
                 tk.Label(self.params_frame, text=p.label, bg=bg, anchor='w', font=('Arial', 9)).pack(fill=tk.X)
                 ttk.Combobox(self.params_frame, textvariable=var, values=p.choices, state='readonly').pack(fill=tk.X)
+            elif p.kind == 'colors':
+                var = tk.StringVar(value=p.default)
+                tk.Label(self.params_frame, text=p.label, bg=bg, anchor='w', font=('Arial', 9)).pack(fill=tk.X)
+                r = tk.Frame(self.params_frame, bg=bg)
+                r.pack(fill=tk.X)
+                ttk.Entry(r, textvariable=var).pack(side=tk.LEFT, expand=True, fill=tk.X)
+                tk.Button(r, text="Clear", command=lambda v=var: v.set("")).pack(side=tk.RIGHT, padx=(4, 0))
+                tk.Button(r, text="Pick", command=lambda k=p.key: self.start_pick('color', k)).pack(side=tk.RIGHT)
             else:
                 var = tk.DoubleVar(value=p.default)
                 tk.Label(self.params_frame, text=p.label, bg=bg, anchor='w', font=('Arial', 9)).pack(fill=tk.X)
@@ -562,6 +712,9 @@ class ImageForge:
                               ).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 6))
                 ttk.Spinbox(r, from_=lo, to=hi, increment=p.step, textvariable=var, width=8,
                             format='%.' + str(p.decimals) + 'f').pack(side=tk.RIGHT)
+                if p.pick == 'angle':
+                    tk.Button(self.params_frame, text="Measure: click two points of a line to level",
+                              command=lambda k=p.key: self.start_pick('angle', k)).pack(fill=tk.X, pady=(2, 0))
             var.trace_add('write', lambda *a: self._params_changed())
             self.pvars[p.key] = var
         self._params_ready = True
@@ -591,7 +744,7 @@ class ImageForge:
 
     def _update_preview(self):
         self._after = None
-        if self.hist is None or self.tool is None:
+        if self.hist is None or self.tool is None or self._stroke is not None:
             return
         if not (self.v_preview.get() and self.tool.preview):
             if self.preview is not None:
@@ -613,6 +766,9 @@ class ImageForge:
         if not self._need_image() or self.tool is None:
             if self.tool is None and self.hist is not None:
                 self._status("Pick a tool in the list first.")
+            return
+        if self.tool.interactive:
+            self._status("%s works by dragging on the image: there is nothing to apply." % self.tool.name)
             return
         params = self._read_params()
         if params is None:
@@ -742,6 +898,14 @@ class ImageForge:
             self.sel = (0, 0, w, h)
             self._after_selection()
 
+    def escape(self):
+        """Esc: end a pick in progress, else drop the selection."""
+        if self.mode:
+            self.cancel_mode()
+            self._status("Cancelled.")
+        else:
+            self.deselect()
+
     def deselect(self):
         if self.sel is not None:
             self.sel = None
@@ -838,10 +1002,102 @@ class ImageForge:
         x0, y0, x1, y1 = max(0, x0), max(0, y0), min(w, x1), min(h, y1)
         return (x0, y0, x1, y1) if x1 > x0 and y1 > y0 else None
 
+    # ---- picks (colour, angle) and the eraser brush ----------------------------------------------------
+    def start_pick(self, what, key):
+        if not self._need_image():
+            return
+        self.cancel_mode()
+        self.mode, self._pick_key, self._pick_pts = what, key, []
+        self.canvas.config(cursor='tcross')
+        self._status("Click a colour on the image (as many as needed), Esc to finish." if what == 'color'
+                     else "Click two points of a line that should be level (or vertical). Esc cancels.")
+
+    def cancel_mode(self):
+        self.mode, self._pick_pts = None, []
+        self.canvas.delete('pick')
+        self.canvas.config(cursor='crosshair')
+
+    def _pick_click(self, e):
+        x, y = self._img_xy(e.x, e.y)
+        img = self.hist.current
+        h, w = img.shape[:2]
+        ix, iy = int(math.floor(x)), int(math.floor(y))
+        if not (0 <= ix < w and 0 <= iy < h):
+            return
+        if self.mode == 'color':
+            patch = img[max(0, iy - 1):iy + 2, max(0, ix - 1):ix + 2].reshape(-1, 3)
+            r, g, b = (int(v) for v in np.median(patch, axis=0))             # median of 3x3: robust to a stray pixel
+            var = self.pvars[self._pick_key]
+            var.set((var.get().strip() + " #%02x%02x%02x" % (r, g, b)).strip())
+            self._status("Added #%02x%02x%02x. Click more colours, or Esc to finish." % (r, g, b), ok=True)
+        else:
+            self._pick_pts.append((x, y))
+            sx, sy = x * self.zoom + self.ox, y * self.zoom + self.oy
+            self.canvas.create_oval(sx - 4, sy - 4, sx + 4, sy + 4, outline='yellow', width=2, tags='pick')
+            if len(self._pick_pts) == 2:
+                (x1, y1), (x2, y2) = self._pick_pts
+                if math.hypot(x2 - x1, y2 - y1) < 3:
+                    self._pick_pts = self._pick_pts[:1]
+                    self._status("The two points are too close: click the second further away.")
+                    return
+                a = straighten_angle(self._pick_pts[0], self._pick_pts[1])
+                self.pvars[self._pick_key].set(round(a, 2))
+                self.cancel_mode()
+                self._status("Angle %.2f deg set; check the preview and press Apply." % a, ok=True)
+
+    def _is_brush(self):
+        return self.tool is not None and self.tool.interactive == 'brush'
+
+    def _brush_params(self):
+        p = self._read_params() or {}
+        return int(p.get('size', 15)), FILLS[p.get('fill', 'white')]
+
+    def _brush_start(self, e):
+        self._stroke = self.hist.current.copy()
+        self._last = None
+        self._brush_to(e)
+
+    def _brush_to(self, e):
+        size, color = self._brush_params()
+        x, y = self._img_xy(e.x, e.y)
+        pt = (int(math.floor(x)), int(math.floor(y)))
+        paint_segment(self._stroke, self._last or pt, pt, size, color, self.sel)
+        self._last = pt
+        self.preview = self._stroke
+        self._redraw()
+        self._draw_brush_circle(e)
+
+    def _brush_end(self):
+        stroke, self._stroke, self._last = self._stroke, None, None
+        self.preview = None
+        if not np.array_equal(stroke, self.hist.current):
+            self._commit(self.tool.name, stroke)
+        else:
+            self._redraw()
+
+    def _draw_brush_circle(self, e):
+        self.canvas.delete('brush')
+        if self._is_brush() and self.hist is not None:
+            r = self._brush_params()[0] / 2.0 * self.zoom
+            self.canvas.create_oval(e.x - r, e.y - r, e.x + r, e.y + r, outline='#ff3366', tags='brush')
+
     def _on_press(self, e):
-        self._press, self._drag_sel = ((e.x, e.y) if self.hist is not None else None), None
+        if self.hist is None:
+            self._press = None
+            return
+        if self.mode:
+            self._press = None
+            self._pick_click(e)
+        elif self._is_brush():
+            self._press = None
+            self._brush_start(e)
+        else:
+            self._press, self._drag_sel = (e.x, e.y), None
 
     def _on_drag(self, e):
+        if self._stroke is not None:
+            self._brush_to(e)
+            return
         if self._press is None or (self._drag_sel is None and math.hypot(e.x - self._press[0], e.y - self._press[1]) < 4):
             return
         self._drag_sel = self._rect_from(self._press, (e.x, e.y))
@@ -851,6 +1107,9 @@ class ImageForge:
             self._set_info("selection %d x %d  at (%d, %d)" % (x1 - x0, y1 - y0, x0, y0))
 
     def _on_release(self, e):
+        if self._stroke is not None:
+            self._brush_end()
+            return
         if self._press is None:
             return
         dragged = math.hypot(e.x - self._press[0], e.y - self._press[1]) >= 4
@@ -870,6 +1129,7 @@ class ImageForge:
         self._zoom_at(1.25 ** max(-4.0, min(4.0, e.delta / 120.0)), e.x, e.y)
 
     def _on_motion(self, e):
+        self._draw_brush_circle(e)
         if self.hist is None or self._press is not None:
             return
         x, y = self._img_xy(e.x, e.y)

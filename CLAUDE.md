@@ -40,6 +40,18 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
 - **Slider/number boxes** are built from `Param` (`_build_params`); a number box in the middle of typing is read as
   "no change" (`_read_params` returns None), not as an error.
 
+## Interactive pieces
+
+- **Pick modes** (`self.mode` = 'color' | 'angle', set by `start_pick()`, Esc ends it, selecting another tool cancels it): a
+  `Param(pick=...)` puts a button next to its widget. 'color' appends the median of the 3x3 pixels clicked as `#rrggbb` to a
+  `'colors'` text param and stays active; 'angle' takes two clicks and writes `straighten_angle()` into the float param
+  (level, or vertical if the line is closer to vertical; the sign was checked by rotating a tilted synthetic line).
+- **Eraser brush** (`Tool.interactive == 'brush'`): the tool function is a placeholder; the app copies the image on press, calls
+  `paint_segment()` per motion (works on the small box around the stroke, clipped to the selection) and pushes one history
+  step on release. While painting `self.preview` is the working copy and `_update_preview` is suppressed.
+- Clean tools (`erase_colors`, `despeckle`, `flatten_ink`) are ports of `apply_filter`, `despeckle`, `flatten_colors` of
+  SpectrumDigitizer; despeckle uses `cv2.connectedComponentsWithStats` (8-connectivity) instead of scipy.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a
@@ -49,10 +61,10 @@ new tree nodes automatically.
 ## Verified / not verified
 
 Unit tests on synthetic arrays and files; a scripted session with real Tk mouse events (drag selection, Apply, crop,
-undo, redo, wheel, pan, click-to-deselect) and a screenshot from the real window. Not verified: large photos, HiDPI
+undo, redo, wheel, pan, click-to-deselect, colour pick, angle pick, brush stroke) and a screenshot from the real window. Not verified: large photos, HiDPI
 scaling other than the screenshot script's, drag-and-drop (tkinterdnd2 path), the Save dialogs by hand.
 
 ## Ideas not done yet (from SpectrumDigitizer's cleaning tab)
 
-Colour erase/keep with tolerance, eraser brush, despeckle, flatten colours, straighten by two clicked points,
-rotatable working area with handles, move/resize of the selection, auto-crop of white borders.
+Rotatable working area with handles, move/resize of the selection, auto-crop of white borders, join dashed lines,
+manual link of a broken line, magnifier next to the cursor, arrow keys to nudge by one pixel.
