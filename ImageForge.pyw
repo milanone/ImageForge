@@ -422,7 +422,7 @@ def erase_rect_layer(rgba, rect, fill='transparent', radius=3, color=None):
     preview=False, interactive='rect-erase',
     doc="Drag a rectangle: what is inside is erased as soon as you let go (one Undo step). Pick a colour from the picture "
         "(Pick) or choose one (...) and the rectangle is painted with it. On an image layer 'transparent' makes it "
-        "see-through; on the Background it paints white. The current selection is not used.")
+        "see-through; on the Background it paints white. Only the part inside the working area, if one is set.")
 def erase_rectangle(img, fill, color, radius):
     return img
 
@@ -995,6 +995,11 @@ def autocrop(img, background, tolerance, margin):
     return crop(img, region)
 
 
+def intersect_rect(a, b):
+    """The overlap of two (x0, y0, x1, y1) rectangles; empty (x1 <= x0 or y1 <= y0) when they do not touch."""
+    return max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])
+
+
 def crop(img, region):
     """The (x0, y0, x1, y1) rectangle of `img` as a new array."""
     x0, y0, x1, y1 = region
@@ -1215,6 +1220,9 @@ class ImageForge:
         self._mv = None                  # (press point, selection, copy?, original image) while moving the content
         self._placing = False            # a click/drag is setting the x, y of a 'place' tool
         self._grab = None                # (handle, press point in image pixels, selection at press) while dragging it
+        self._area_start = None          # press point of a 'Define working area' drag, and the rectangle so far
+        self._area_cur = None
+        self._area_sync = False          # True while the X/Y/W/H boxes are filled from the area (no change events)
         self._rect_start = None          # press point of an 'Erase rectangle' drag, and the rectangle so far
         self._rect_cur = None
         self._stroke_layer = None        # the layer a brush stroke paints on (None: the Background)
@@ -1225,7 +1233,7 @@ class ImageForge:
         self._stroke = None              # image being painted by the eraser brush, and the last brush point
         self._last = None
         root.title(APP_NAME)
-        root.geometry("1250x820")
+        root.geometry("1250x900")
         self._build_menu()
         self._build_ui()
         self._bind_keys()
@@ -1344,16 +1352,37 @@ class ImageForge:
         self.b_crop = tk.Button(row, text="Crop to selection", command=self.crop_to_selection)
         self.b_crop.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
 
+        # The working area: set it first, before choosing any tool; every tool then acts only inside it.
+        wa = tk.LabelFrame(panel, text="Working area: every tool acts only inside it", bg=bg, font=('Arial', 8))
+        wa.pack(fill=tk.X, padx=8, pady=(6, 0))
+        row = tk.Frame(wa, bg=bg)
+        row.pack(fill=tk.X)
+        tk.Button(row, text="Define working area", command=self.start_area, bg='#ffe28a',
+                  font=('Arial', 9, 'bold')).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(4, 2), pady=3)
+        tk.Button(row, text="Whole image", command=self.clear_area).pack(side=tk.LEFT, padx=(2, 4), pady=3)
+        row = tk.Frame(wa, bg=bg)
+        row.pack(fill=tk.X, padx=4)
+        self.area_vars = {k: tk.StringVar() for k in 'XYWH'}
+        for k in 'XYWH':
+            tk.Label(row, text=k, bg=bg, font=('Arial', 8)).pack(side=tk.LEFT, padx=(4, 1))
+            sp = ttk.Spinbox(row, from_=0, to=100000, increment=1, textvariable=self.area_vars[k], width=6, format='%.0f',
+                             command=self._apply_area_box)
+            sp.pack(side=tk.LEFT)
+            sp.bind('<Return>', lambda ev: self._apply_area_box())
+            sp.bind('<FocusOut>', lambda ev: self._apply_area_box())
+        self.l_area = tk.Label(wa, text="Whole image", bg=bg, fg='#555555', font=('Arial', 8), anchor='w')
+        self.l_area.pack(fill=tk.X, padx=6, pady=(0, 2))
+
         row = tk.Frame(panel, bg=bg)
         row.pack(fill=tk.X, padx=8, pady=(4, 0))
         self.v_content = tk.BooleanVar(value=False)
-        tk.Checkbutton(row, text="Drag moves the content", variable=self.v_content, bg=bg).pack(side=tk.LEFT)
+        tk.Checkbutton(row, text="Drag moves the content", variable=self.v_content, bg=bg, font=('Arial', 9)).pack(side=tk.LEFT)
         tk.Label(row, text="leaves", bg=bg, font=('Arial', 8)).pack(side=tk.LEFT, padx=(6, 2))
         self.v_fill = tk.StringVar(value='white')
         ttk.Combobox(row, textvariable=self.v_fill, values=('white', 'black', 'background', 'transparent'), state='readonly',
                      width=10).pack(side=tk.LEFT)
-        tk.Label(panel, text="Inside the selection: Ctrl does the opposite of the box, Shift copies.", bg=bg,
-                 fg='#555555', font=('Arial', 8), anchor='w', justify='left', wraplength=300).pack(fill=tk.X, padx=10)
+        tk.Label(panel, text="Ctrl does the opposite of the box, Shift copies.", bg=bg, fg='#555555', font=('Arial', 8),
+                 anchor='w').pack(fill=tk.X, padx=10)
 
         self.nbk = ttk.Notebook(panel)
         self.nbk.pack(fill=tk.BOTH, expand=True, padx=4, pady=(6, 0))
@@ -2344,8 +2373,63 @@ class ImageForge:
         if hexv:
             var.set(hexv)
 
+    def start_area(self):
+        """'Define working area': the next drag on the picture draws the rectangle every tool is limited to, whatever tool is
+        selected; afterwards everything is as before. Esc cancels."""
+        if not self._need_image():
+            return
+        self.cancel_mode()
+        self.mode = 'area'
+        self.canvas.config(cursor='tcross')
+        self._status("Drag a rectangle on the picture: it becomes the working area, and every tool acts only inside it. "
+                     "Esc cancels.")
+
+    def clear_area(self):
+        """Back to the whole image."""
+        if self.mode == 'area':
+            self.cancel_mode()
+        if self.sel is not None:
+            self.sel = None
+            self._after_selection()
+            self._status("Working area cleared: the tools act on the whole image.", ok=True)
+
+    def _sync_area_box(self):
+        """Show the working area in the X / Y / W / H boxes and the label (and the clear / crop buttons' state)."""
+        self._area_sync = True
+        try:
+            if self.sel is None:
+                for v in self.area_vars.values():
+                    v.set("")
+                self.l_area.config(text="Whole image: nothing limits the tools", fg='#555555')
+            else:
+                x0, y0, x1, y1 = self.sel
+                for k, val in zip('XYWH', (x0, y0, x1 - x0, y1 - y0)):
+                    self.area_vars[k].set(str(val))
+                self.l_area.config(text="%d x %d px at (%d, %d)" % (x1 - x0, y1 - y0, x0, y0), fg='#8a5a00')
+        finally:
+            self._area_sync = False
+
+    def _apply_area_box(self):
+        """The numbers typed in X / Y / W / H become the working area (clipped to the picture)."""
+        if self._area_sync or self.hist is None:
+            return
+        try:
+            x, y, w, h = (int(round(float(self.area_vars[k].get()))) for k in 'XYWH')
+        except ValueError:
+            return
+        H, W = self.hist.current.shape[:2]
+        rect = (max(0, x), max(0, y), min(W, x + w), min(H, y + h))
+        if rect[2] <= rect[0] or rect[3] <= rect[1] or rect == self.sel:
+            self._sync_area_box()
+            return
+        self.sel = rect
+        self._after_selection()
+
     def cancel_mode(self):
         self.mode, self._pick_pts = None, []
+        if self._area_start is not None:
+            self._area_start = self._area_cur = None
+            self._draw_selection()
         self.canvas.delete('pick')
         self.canvas.config(cursor='crosshair')
 
@@ -2407,7 +2491,7 @@ class ImageForge:
         if L is not None:
             parts.append("painting on layer '%s'" % L.name)
         if self.sel is not None:
-            parts.append("only inside the selection")
+            parts.append("only inside the working area")
         return ("%s: " % self.tool.name + ", ".join(parts)) if parts else ""
 
     def _brush_start(self, e):
@@ -2441,7 +2525,7 @@ class ImageForge:
         self._last = None
         where = self._brush_scope(L)
         if where:                                      # the two silent traps: a forgotten selection, a selected layer
-            self._status("%s (Esc drops the selection; click Background in the Layers tab to paint the picture)." % where)
+            self._status("%s (press 'Whole image' to remove the area; click Background in the Layers tab to paint the picture)." % where)
         self._brush_to(e)
 
     def _brush_to(self, e):
@@ -2502,7 +2586,7 @@ class ImageForge:
             self._redraw()
             why = []
             if self.sel is not None:
-                why.append("the stroke was outside the selection (Esc drops it)")
+                why.append("the stroke was outside the working area (press 'Whole image' to remove it)")
             if L is not None:
                 why.append("layer '%s' is not under the stroke or already looks like that (select Background to paint the "
                            "picture)" % L.name)
@@ -2553,6 +2637,9 @@ class ImageForge:
     def _on_press(self, e):
         if self.hist is None:
             self._press = None
+            return
+        if self.mode == 'area':                        # 'Define working area': this drag draws it, with any tool selected
+            self._press, self._area_start, self._area_cur = None, (e.x, e.y), None
             return
         if self._hand_active():                        # the left button moves the picture, whatever the tool
             self._press, self._pan_left = None, True
@@ -2652,6 +2739,11 @@ class ImageForge:
 
     # ---- 'Erase rectangle' ------------------------------------------------------------------------------
     def _rect_erase_apply(self, rect):
+        if self.sel is not None:                       # the working area limits this tool like every other
+            rect = intersect_rect(rect, self.sel)
+            if rect[2] <= rect[0] or rect[3] <= rect[1]:
+                self._status("That rectangle is outside the working area: nothing erased ('Whole image' removes the area).")
+                return
         p = self._read_params() or {}
         fill, radius, color = p.get('fill', 'white'), int(p.get('radius', 3)), p.get('color', '#ffffff')
         kind, L = self._tool_target()
@@ -2719,6 +2811,15 @@ class ImageForge:
         if self._pan_left:
             self._on_pan(e)
             return
+        if self._area_start is not None:
+            if self._area_cur is None and math.hypot(e.x - self._area_start[0], e.y - self._area_start[1]) < 4:
+                return
+            self._area_cur = self._rect_from(self._area_start, (e.x, e.y))
+            self._draw_selection(self._area_cur)
+            if self._area_cur:
+                x0, y0, x1, y1 = self._area_cur
+                self._set_info("working area %d x %d  at (%d, %d)" % (x1 - x0, y1 - y0, x0, y0))
+            return
         if self._rect_start is not None:
             if self._rect_cur is None and math.hypot(e.x - self._rect_start[0], e.y - self._rect_start[1]) < 4:
                 return
@@ -2754,6 +2855,17 @@ class ImageForge:
     def _on_release(self, e):
         if self._pan_left:
             self._pan_left = False
+            return
+        if self._area_start is not None:
+            rect, self._area_start, self._area_cur = self._area_cur, None, None
+            if rect:                                   # a click without a drag keeps waiting for a real rectangle
+                self.sel = rect
+                self.cancel_mode()
+                self._after_selection()
+                self._status("Working area set: %d x %d px at (%d, %d). Every tool now acts only inside it; "
+                             "'Whole image' removes it." % (rect[2] - rect[0], rect[3] - rect[1], rect[0], rect[1]), ok=True)
+            else:
+                self._draw_selection()
             return
         if self._rect_start is not None:
             rect, self._rect_start, self._rect_cur = self._rect_cur, None, None
@@ -2836,6 +2948,7 @@ class ImageForge:
         self.b_undo.config(state=tk.NORMAL if h and h.can_undo() else tk.DISABLED)
         self.b_redo.config(state=tk.NORMAL if h and h.can_redo() else tk.DISABLED)
         self.b_crop.config(state=tk.NORMAL if h and self.sel else tk.DISABLED)
+        self._sync_area_box()
         self.m_edit.entryconfig(0, label="Undo" + (" " + h.undo_label() if h and h.can_undo() else ""),
                                 state=tk.NORMAL if h and h.can_undo() else tk.DISABLED)
         self.m_edit.entryconfig(1, label="Redo" + (" " + h.redo_label() if h and h.can_redo() else ""),

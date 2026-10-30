@@ -187,6 +187,18 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   switches 'Paint with' by itself. `_picked_rgb` gives the first colour of the text (white if none). On a layer the brush paints it
   opaque, and Erase / keep colours keeps the alpha (generic path of `apply_tool_to_layer`). Tests: `PickedColourFillTests`.
 
+- **Working area** (`start_area`, `clear_area`, `_sync_area_box`, `_apply_area_box`, mode `'area'`): the bar at the top of the panel is a
+  front door to `self.sel`, i.e. the working area IS the selection (one rectangle, no second concept: Move area, Crop, handles and
+  nudge keep using it). Why: before, the rectangle could only be drawn with a non-interactive tool; with a brush / clone / layer /
+  rectangle tool selected the drag belonged to the tool and the area could not be set ("I cannot use it"). `mode == 'area'` is
+  checked FIRST in `_on_press` (before Hand and the pick modes) so the next drag only draws the area and then the mode ends; the
+  tool stays as it was. `_update_state` calls `_sync_area_box` (every area change goes through `_after_selection`), the boxes
+  commit on Return / FocusOut / arrow click and are ignored while `_area_sync`. Every tool already took `self.sel` as its region;
+  Erase rectangle now intersects its rectangle with it (`intersect_rect`) instead of ignoring it. Status messages say 'working
+  area'. Check: `examples/working_area_session.py`.
+- Panel space is tight: the checkbox row and hint were shortened and the default window is 1250 x 900 so that the tool list
+  (divider at 400 px) and the parameters both show.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a

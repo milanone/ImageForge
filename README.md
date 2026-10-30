@@ -23,6 +23,11 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
 - **Add text** (group Draw): type the text (`\n` = new line), pick font, size, colour (type, **Pick** from the image or
   the colour dialog), rotation and opacity; click or drag on the image to place it, then *Add as layer*. The text stays
   editable: select its layer, change the boxes, press *Update layer* (select *Background* to add a second text).
+- **Working area** (the box at the top of the right panel): press **Define working area** *before* choosing any tool, drag a
+  rectangle on the picture, and every tool, brush and rectangle tool acts only inside it (a coloured label shows its size and
+  place; X / Y / W / H can be typed; **Whole image** removes it, Esc cancels a definition in progress). It works with any tool
+  already selected, which the plain drag does not (a brush or a layer tool uses the drag for itself). It is the same rectangle
+  as the selection below: you can still move or resize it with the handles, and Move area / Crop use it.
 - **Selection**: drag a rectangle; tools then act only inside it (a click outside it clears it). Drag inside it to move it,
   drag a handle (corners, edge midpoints) to resize it, arrow keys nudge it by 1 px (Shift: 10) once the image has been
   clicked. *Crop to selection*.

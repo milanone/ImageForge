@@ -889,6 +889,14 @@ class PickedColourFillTests(unittest.TestCase):
         self.assertTrue(np.array_equal(out[..., 3], a[..., 3]))
 
 
+class IntersectTests(unittest.TestCase):
+    def test_intersect_rect(self):
+        self.assertEqual(il.intersect_rect((0, 0, 10, 10), (5, 5, 20, 20)), (5, 5, 10, 10))
+        self.assertEqual(il.intersect_rect((0, 0, 10, 10), (2, 3, 4, 5)), (2, 3, 4, 5))
+        r = il.intersect_rect((0, 0, 10, 10), (20, 20, 30, 30))
+        self.assertTrue(r[2] <= r[0] or r[3] <= r[1])                                  # no overlap: empty
+
+
 class HistoryTests(unittest.TestCase):
     def test_undo_redo_and_truncation(self):
         a, b, c = (np.full((2, 2, 3), v, np.uint8) for v in (1, 2, 3))
