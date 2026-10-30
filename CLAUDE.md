@@ -132,6 +132,53 @@ Unit tests on synthetic arrays and files; a scripted session with real Tk mouse 
 undo, redo, wheel, pan, click-to-deselect, colour pick, angle pick, brush stroke, content move/copy, text placement, layers: add/edit/move/opacity/merge/flatten/undo/save, tools and brush on a layer) and a screenshot from the real window. Not verified: large photos, HiDPI
 scaling other than the screenshot script's, drag-and-drop (tkinterdnd2 path), the Save dialogs by hand.
 
-## Ideas not done yet (from SpectrumDigitizer's cleaning tab)
+## Ideas not done yet
 
-Geometry tools on a single layer (scale/rotate it), blend modes, rotation of the selection (SpectrumDigitizer's working area could rotate), manual link of a broken line, magnifier next to the cursor.
+Nothing here is promised; Francesco adds tools as he needs them. Ordered roughly by how likely they are to be wanted.
+
+**Layers**
+- *Rotate / flip / resize a single image layer* (started, then dropped before commit; the working tree was reverted). Design that
+  was tried: add `layer_geometry=True` on the four tools (Rotate 90/180, Rotate any angle, Flip, Resize) and a
+  `transform_layer(name, layer, params)` that runs the tool on **premultiplied** colour (`rgb * alpha / 255`, float32) and on the
+  alpha plane (replicated to 3 channels) with `fill` forced to black, then un-premultiplies; the layer's centre stays fixed
+  (`x += (w - nw) // 2`). The reason for premultiplying: invisible pixels often carry white, and resampling straight RGB gives a
+  light halo at the edges and at the new corners. When it was stopped, two of its four tests failed (quarter turn x4 not equal
+  to the original and flip not equal to `rgba[:, ::-1]`, both exact comparisons: float round trip through
+  premultiply/un-premultiply loses 1 level on semi-transparent pixels; use a tolerance, or skip the float step for the pure
+  index-shuffling tools). Also needed: preview via `lprev`, the text-layer refusal for these tools, and a GUI session.
+- Layer blend modes (multiply, screen, ...), layer masks, layer groups, lock/link layers.
+- *Drag moves the content* and Cut/Copy to layer working from a layer (they use the Background); Pick colours from the
+  selected layer instead of the composite.
+- Undo history panel (list of steps to jump to), recent files, remember window/panel settings.
+
+**Selection**
+- Rotation of the selection (SpectrumDigitizer's working area rotated); free-form (lasso/polygon) selection, magic wand
+  (select by colour, with tolerance), invert selection, feather, selection from a layer's alpha, zoom to selection.
+- Aspect-ratio-locked selection and numeric entry of its position and size.
+
+**Tools**
+- From SpectrumDigitizer: manual link of a broken line (`draw_link`), magnifier next to the cursor, strip ticks inside a frame
+  (`strip_inner_ticks`), frame finder (`find_frame`), erase along a polyline (`erase_mask_along`).
+- Levels / curves, hue-saturation, colour balance, auto-contrast, white balance, histogram view; noise reduction (median,
+  bilateral, non-local means), morphological operations (open/close, dilate/erode), edge detection.
+- Perspective correction (four clicked corners), automatic deskew (Hough / projection profile), lens distortion.
+- Crop with a fixed aspect ratio or to a size in cm at a dpi; canvas size (add borders); rulers, grid, guides, snapping;
+  measuring tools and a scale bar drawn from a calibration (useful for microscopy / lab figures).
+- Text: alignment, outline, shadow, background box, bold/italic as flags, several fonts per text; shapes (line, arrow,
+  rectangle, ellipse) as editable layers, like the text layer.
+- Clone / heal brush, smudge, fill bucket with tolerance, gradient fill.
+
+**Files and use**
+- Paste an image from the clipboard (as a layer) and copy the picture to the clipboard; export dialog with JPEG quality, PNG
+  compression, dpi; save as layered TIFF/ORA/PSD-compatible if ever needed (the `.ifl` project is the native format).
+- Batch mode: apply a chain of tools to a folder of images (record the history steps as a recipe, replay on other files);
+  command-line `--apply "Tool:param=value"` for scripts.
+- 16-bit and alpha on the Background, ICC profiles, EXIF kept on save, animated GIF / multi-page TIFF.
+- Plug-in niceties: a `plugins/` template generator, per-plug-in help text in the tool list, parameter presets.
+
+**Quality / performance**
+- The live preview recomputes the whole image on the Tk thread: compute on a downscaled copy while a slider moves, or in a
+  worker thread with cancel, for photos of tens of megapixels. `composite()` copies the whole base on every change: cache
+  per-layer partial composites or composite only the visible window.
+- HiDPI scaling check, Linux/macOS check (fonts, cursors such as `size_nw_se`, `bind_all` mouse wheel), keyboard-shortcut help
+  window, GUI tests in CI (the scripted sessions in `examples/` are the closest thing now).
