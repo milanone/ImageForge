@@ -26,8 +26,10 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
 - **Selection**: drag a rectangle; tools then act only inside it (a click outside it clears it). Drag inside it to move it,
   drag a handle (corners, edge midpoints) to resize it, arrow keys nudge it by 1 px (Shift: 10) once the image has been
   clicked. *Crop to selection*.
-- **View**: wheel = zoom at the cursor, right/middle drag = pan, Ctrl+0 fit, Ctrl+1 100 %. The status line shows the
-  pixel under the cursor.
+- **View**: the bar above the picture has **Center** (middle of the window, same zoom), **Fit** (fill the window and
+  centre) and **100%**, plus a **Hand** button: while it is pressed, or while you hold **Space**, dragging with the left
+  button moves the picture instead of selecting (right/middle drag always moves it). Wheel = zoom at the cursor.
+  The status line shows the pixel under the cursor. The tool list is tall (21 rows) and scrolls.
 - **Tools**, with live preview:
   - Tone: brightness / contrast, grayscale (with strength), invert, threshold (plug-in example)
   - Filters: sharpen (unsharp mask), Gaussian blur

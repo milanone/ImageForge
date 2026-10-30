@@ -34,7 +34,10 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   replaces the displayed array. After Apply the preview is cleared and only recomputed on the next parameter change
   (otherwise the already-applied effect would show twice). `preview=False` for tools where it makes no sense (Resize).
 - **Canvas**: image point -> screen is `x*zoom + ox`; only the visible part is cropped and resized per redraw
-  (NEAREST above 100 %, BILINEAR below). Left drag = selection (a click clears it), right/middle drag = pan.
+  (NEAREST above 100 %, BILINEAR below). Left drag = selection (a click clears it), right/middle drag = pan; the view bar (`center_view`, `fit_view`, `actual_size`,
+  Hand toggle `v_hand`) sits above the canvas inside the left pane frame. Left-button pan (`_pan_left`: Hand on, or `_space`
+  held) takes priority over every tool in `_on_press`; Space is ignored while the focus is in an entry / spinbox / combobox /
+  tree, so typing a space in a text box never pans. Check: `examples/view_session.py`.
   The wheel factor is clamped: `event_generate` delivers an inflated delta in scripted tests.
 - **Save never overwrites the source**: `save_path` stays None until a Save As.
 - **Slider/number boxes** are built from `Param` (`_build_params`); a number box in the middle of typing is read as

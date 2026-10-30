@@ -1053,6 +1053,8 @@ class ImageForge:
         self._press = None
         self._drag_sel = None
         self._pan = None
+        self._pan_left = False           # the left button is panning (Hand mode, or Space held)
+        self._space = False
         self._params_ready = False
         self.mode = None                 # None, 'color' or 'angle': what a click on the image means (Esc cancels)
         self._pick_key = None            # the parameter a pick fills
@@ -1121,13 +1123,25 @@ class ImageForge:
         v.add_command(label="Zoom in", accelerator="Ctrl++", command=lambda: self._zoom_step(1.25))
         v.add_command(label="Zoom out", accelerator="Ctrl+-", command=lambda: self._zoom_step(0.8))
         v.add_command(label="Fit to window", accelerator="Ctrl+0", command=self.fit_view)
+        v.add_command(label="Center", command=self.center_view)
         v.add_command(label="Actual size (100%)", accelerator="Ctrl+1", command=self.actual_size)
 
     def _build_ui(self):
         paned = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, sashwidth=5, bg='#bbbbbb')
         paned.pack(fill=tk.BOTH, expand=True)
-        self.canvas = tk.Canvas(paned, bg='#3a3a3a', highlightthickness=0, cursor='crosshair')
-        paned.add(self.canvas, stretch='always')
+        left = tk.Frame(paned)
+        paned.add(left, stretch='always')
+        bar = tk.Frame(left, bg='#e8e8e8')
+        bar.pack(fill=tk.X)
+        for text, cmd in (("Center", self.center_view), ("Fit", self.fit_view), ("100%", self.actual_size)):
+            tk.Button(bar, text=text, command=cmd, width=7).pack(side=tk.LEFT, padx=(4, 0), pady=2)
+        self.v_hand = tk.BooleanVar(value=False)
+        tk.Checkbutton(bar, text="Hand: drag moves the picture", variable=self.v_hand, indicatoron=False, padx=8,
+                       command=self._hand_changed).pack(side=tk.LEFT, padx=(10, 0), pady=2)
+        tk.Label(bar, text="(or hold Space, or drag with the right button)", bg='#e8e8e8', fg='#666666',
+                 font=('Arial', 8)).pack(side=tk.LEFT, padx=6)
+        self.canvas = tk.Canvas(left, bg='#3a3a3a', highlightthickness=0, cursor='crosshair')
+        self.canvas.pack(fill=tk.BOTH, expand=True)
         panel = tk.Frame(paned, bg='#f0f4f7', width=330)
         panel.pack_propagate(False)
         paned.add(panel, stretch='never')
@@ -1179,7 +1193,7 @@ class ImageForge:
         self._build_layers_tab(tab_layers, bg)
         tf = tk.Frame(tab, bg=bg)
         tf.pack(fill=tk.X, padx=8, pady=2)
-        self.tree = ttk.Treeview(tf, show='tree', selectmode='browse', height=7)
+        self.tree = ttk.Treeview(tf, show='tree', selectmode='browse', height=21)
         sb = ttk.Scrollbar(tf, orient='vertical', command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
@@ -1213,6 +1227,8 @@ class ImageForge:
 
     def _bind_keys(self):
         r = self.root
+        r.bind('<KeyPress-space>', self._space_down)
+        r.bind('<KeyRelease-space>', self._space_up)
         for seq, fn in (("<Control-o>", self.open_dialog), ("<Control-s>", self.save),
                         ("<Control-S>", self.save_as), ("<Control-z>", self.undo), ("<Control-y>", self.redo),
                         ("<Control-a>", self.select_all), ("<Control-d>", self.deselect),
@@ -1223,6 +1239,19 @@ class ImageForge:
                         ("<Control-minus>", lambda: self._zoom_step(0.8)),
                         ("<Control-Return>", self.apply), ("<Escape>", self.escape)):
             r.bind(seq, lambda e, fn=fn: self._key(fn, e))
+
+    def _space_down(self, event):
+        if isinstance(event.widget, (tk.Entry, ttk.Entry, ttk.Spinbox, ttk.Combobox, ttk.Treeview)):
+            return None                                 # a space typed in a box (or a tree) is not a pan
+        if not self._space:
+            self._space = True
+            self.canvas.config(cursor='hand2')
+        return "break"
+
+    def _space_up(self, event):
+        if self._space:
+            self._space = False
+            self.canvas.config(cursor='hand2' if self.v_hand.get() else 'crosshair')
 
     def _key(self, fn, event):
         """Keyboard shortcuts must not steal Ctrl+A / Ctrl+Z from a number box being edited."""
@@ -2012,6 +2041,21 @@ class ImageForge:
         """The committed picture with the layers merged (what Save writes), not counting any preview."""
         return self._composite_cached(self.hist.current, self.hist.layers)
 
+    def center_view(self):
+        """Put the picture in the middle of the window at the current zoom."""
+        if self.hist is None:
+            return
+        cw, ch = max(self.canvas.winfo_width(), 50), max(self.canvas.winfo_height(), 50)
+        h, w = self._shown().shape[:2]
+        self.ox, self.oy = (cw - w * self.zoom) / 2.0, (ch - h * self.zoom) / 2.0
+        self._redraw()
+
+    def _hand_changed(self):
+        self.canvas.config(cursor='hand2' if self.v_hand.get() else 'crosshair')
+
+    def _hand_active(self):
+        return self.v_hand.get() or self._space
+
     def fit_view(self):
         if self.hist is None:
             return
@@ -2214,6 +2258,10 @@ class ImageForge:
         if self.hist is None:
             self._press = None
             return
+        if self._hand_active():                        # the left button moves the picture, whatever the tool
+            self._press, self._pan_left = None, True
+            self._on_pan_start(e)
+            return
         if self.mode:
             self._press = None
             self._pick_click(e)
@@ -2294,6 +2342,9 @@ class ImageForge:
             self._after_selection()
 
     def _update_cursor(self, e):
+        if self._hand_active():
+            self.canvas.config(cursor='hand2')
+            return
         if self.mode or self._is_brush():
             return
         if self.tool is not None and self.tool.interactive == 'layer':
@@ -2309,6 +2360,9 @@ class ImageForge:
         self.canvas.config(cursor=cursor)
 
     def _on_drag(self, e):
+        if self._pan_left:
+            self._on_pan(e)
+            return
         if self._stroke is not None:
             self._brush_to(e)
             return
@@ -2333,6 +2387,9 @@ class ImageForge:
             self._set_info("selection %d x %d  at (%d, %d)" % (x1 - x0, y1 - y0, x0, y0))
 
     def _on_release(self, e):
+        if self._pan_left:
+            self._pan_left = False
+            return
         if self._stroke is not None:
             self._brush_end()
             return
