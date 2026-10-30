@@ -4,3 +4,4 @@ __pycache__/
 *.lnk
 example data/
 examples/test_picture.png
+ImageForge_errors.log

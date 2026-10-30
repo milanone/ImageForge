@@ -794,6 +794,66 @@ class RectangleTests(unittest.TestCase):
         self.assertTrue((cp[10:20, 10:20, 3] == 255).all() and (cp[10:20, 25:35, 3] == 255).all())
 
 
+class RetouchTests(unittest.TestCase):
+    @staticmethod
+    def two_halves():
+        img = np.zeros((60, 100, 3), np.uint8)
+        img[:, :50] = (200, 30, 30)                           # left half red
+        img[:, 50:] = (30, 30, 200)                           # right half blue
+        return img
+
+    def test_stamp_copies_the_source_patch_with_a_hard_edge(self):
+        src = self.two_halves()
+        dst = src.copy()
+        ok = il.stamp_clone(dst, src, 75, 30, -50, 0, 20, hardness=100)               # copy from 50 px to the left
+        self.assertTrue(ok)
+        self.assertTrue((dst[30, 66:85] == (200, 30, 30)).all())                       # red in the middle of the disc
+        self.assertTrue((dst[30, :50] == (200, 30, 30)).all() and (dst[30, 90:] == (30, 30, 200)).all())
+        self.assertTrue((dst[5, 75] == (30, 30, 200)).all())                           # outside the disc: untouched
+        self.assertTrue(np.array_equal(src, self.two_halves()))                        # the source array is not changed
+
+    def test_soft_edge_and_opacity_blend(self):
+        src = self.two_halves()
+        hard = src.copy(); soft = src.copy(); half = src.copy()
+        il.stamp_clone(hard, src, 75, 30, -50, 0, 30, hardness=100)
+        il.stamp_clone(soft, src, 75, 30, -50, 0, 30, hardness=0)
+        il.stamp_clone(half, src, 75, 30, -50, 0, 30, hardness=100, opacity=50)
+        self.assertEqual(tuple(hard[30, 62]), (200, 30, 30))                           # inside the hard disc, near its edge
+        self.assertNotEqual(tuple(soft[30, 62]), (200, 30, 30))                        # soft: already fading there
+        self.assertEqual(tuple(soft[30, 75]), (200, 30, 30))                           # but full strength at the centre
+        self.assertEqual(tuple(half[30, 75]), (115, 30, 115))                          # half red, half blue
+
+    def test_stamp_is_clipped_to_the_image_the_source_and_the_region(self):
+        src = self.two_halves()
+        dst = src.copy()
+        self.assertFalse(il.stamp_clone(dst, src, 75, 30, 500, 0, 20))                 # the source is far outside
+        self.assertTrue(np.array_equal(dst, src))
+        edge = src.copy()
+        self.assertTrue(il.stamp_clone(edge, src, 2, 2, 50, 0, 20))                    # half the disc is off the image: no error
+        part = src.copy()
+        il.stamp_clone(part, src, 75, 30, -50, 0, 30, region=(70, 0, 100, 60))
+        self.assertTrue((part[30, 62:70] == (30, 30, 200)).all() and (part[30, 70:85] == (200, 30, 30)).all())
+
+    def test_stamp_on_four_channels_copies_alpha_too(self):
+        src = np.zeros((20, 40, 4), np.uint8)
+        src[:, :20] = (10, 20, 30, 255)
+        dst = src.copy()
+        il.stamp_clone(dst, src, 30, 10, -20, 0, 10)
+        self.assertEqual(tuple(dst[10, 30]), (10, 20, 30, 255))
+        self.assertEqual(int(dst[0, 39, 3]), 0)
+
+    def test_the_clean_brush_idea_rebuilds_a_painted_mask(self):
+        img = np.zeros((40, 80, 3), np.uint8)
+        img[:] = np.linspace(40, 220, 80).astype(np.uint8)[None, :, None]
+        clean = img.copy()
+        img[15:25, 30:36] = (255, 60, 60)                                              # what the red trace would cover
+        mask = np.zeros(img.shape[:2], np.uint8)
+        il.paint_segment(mask, (33, 16), (33, 24), 8, (255,))
+        out = il.inpaint_mask(img, mask > 0, 3)
+        self.assertLess(float(np.abs(out[15:25, 30:36].astype(int) - clean[15:25, 30:36].astype(int)).mean()), 5.0)
+        self.assertTrue(((mask > 0).sum()) > 30)
+
+
 class HistoryTests(unittest.TestCase):
     def test_undo_redo_and_truncation(self):
         a, b, c = (np.full((2, 2, 3), v, np.uint8) for v in (1, 2, 3))

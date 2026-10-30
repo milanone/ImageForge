@@ -17,6 +17,7 @@ import json
 import math
 import os
 import sys
+import time
 import traceback
 import zipfile
 
@@ -36,6 +37,7 @@ except ImportError:
 APP_NAME = "ImageForge"
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN_DIR = os.path.join(HERE, "plugins")
+ERROR_LOG = os.path.join(HERE, "ImageForge_errors.log")
 HISTORY_BYTES = 1 << 30            # oldest undo steps are dropped beyond this (at least 2 states are always kept)
 IMAGE_TYPES = [("Images", "*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.webp *.gif"), ("All files", "*.*")]
 OPEN_TYPES = [("Images and projects", "*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.webp *.gif *.ifl"), ("All files", "*.*")]
@@ -421,6 +423,54 @@ def erase_rectangle(img, fill, radius):
           "leaves is filled as the 'leaves' box says. Drag a handle to resize the rectangle first; drag outside to draw "
           "another. On an image layer it moves pixels inside that layer.")
 def move_area(img, copy):
+    return img
+
+
+def stamp_clone(dst, src, cx, cy, ox, oy, size, hardness=100, opacity=100, region=None):
+    """Copy a round patch of `src`, centred at (cx + ox, cy + oy), into `dst` centred at (cx, cy); `dst` is modified IN
+    PLACE and has the same shape as `src` (RGB or RGBA). `hardness` 100 = a hard disc, lower = a soft edge that fades out over
+    that part of the radius; `opacity` 0..100. Only pixels inside `region` (x0, y0, x1, y1) change, and nothing is copied
+    from outside `src`. Returns False when nothing was inside."""
+    h, w = dst.shape[:2]
+    r = max(0.5, size / 2.0)
+    x0, y0 = max(0, int(math.floor(cx - r)), -ox), max(0, int(math.floor(cy - r)), -oy)
+    x1, y1 = min(w, int(math.ceil(cx + r)) + 1, w - ox), min(h, int(math.ceil(cy + r)) + 1, h - oy)
+    if region is not None:
+        x0, y0, x1, y1 = max(x0, region[0]), max(y0, region[1]), min(x1, region[2]), min(y1, region[3])
+    if x1 <= x0 or y1 <= y0:
+        return False
+    ys, xs = np.mgrid[y0:y1, x0:x1]
+    soft = max(r * (1.0 - hardness / 100.0), 1e-6)
+    wgt = np.clip((r - np.hypot(xs - cx, ys - cy)) / soft, 0.0, 1.0).astype(np.float32) * (opacity / 100.0)
+    if not wgt.any():
+        return False
+    patch = src[y0 + oy:y1 + oy, x0 + ox:x1 + ox].astype(np.float32)
+    cur = dst[y0:y1, x0:x1].astype(np.float32)
+    dst[y0:y1, x0:x1] = _to_u8(cur + (patch - cur) * wgt[..., None])
+    return True
+
+
+@tool("Clone stamp", "Retouch", [
+    Param('size', "Diameter (px)", 'int', 30, 1, 400, slider=True),
+    Param('hardness', "Hardness (%)", 'int', 60, 0, 100, slider=True),
+    Param('opacity', "Opacity (%)", 'int', 100, 1, 100, slider=True),
+    Param('aligned', "Aligned (keep the offset between strokes)", 'bool', True)],
+    preview=False, interactive='clone',
+    doc="Ctrl+click where you want to copy FROM, then paint where the copy should go: the pixels under the cursor are "
+        "copied from the source, which moves along with it (a cross shows it). Limited to the selection if there is one; "
+        "on an image layer it copies inside that layer. One stroke is one Undo step.")
+def clone_stamp(img, size, hardness, opacity, aligned):
+    return img
+
+
+@tool("Clean brush", "Retouch", [
+    Param('size', "Diameter (px)", 'int', 15, 1, 300, slider=True),
+    Param('radius', "Inpaint radius (px)", 'int', 3, 1, 30, slider=True)],
+    preview=False, interactive='clean',
+    doc="Paint over a spot, a scratch or a stray mark (it shows red): when you let go it is rebuilt from what is around it. "
+        "Several short strokes work better than one wide one. Limited to the selection if there is one; on an image layer "
+        "only that layer's visible pixels are used. One stroke is one Undo step.")
+def clean_brush(img, size, radius):
     return img
 
 
@@ -1153,6 +1203,10 @@ class ImageForge:
         self._rect_start = None          # press point of an 'Erase rectangle' drag, and the rectangle so far
         self._rect_cur = None
         self._stroke_layer = None        # the layer a brush stroke paints on (None: the Background)
+        self._stroke_orig = None         # the target as it was when the stroke began (never modified)
+        self._stroke_mask = None         # Clean brush: the painted pixels
+        self._clone_src = None           # Clone stamp: the source point (image pixels) and the offset kept between strokes
+        self._clone_off = None
         self._stroke = None              # image being painted by the eraser brush, and the last brush point
         self._last = None
         root.title(APP_NAME)
@@ -1168,7 +1222,24 @@ class ImageForge:
             self._status("Plug-in %s did not load (see the console)." % bad[0][0])
             for f, e in bad:
                 print("Plug-in %s:\n%s" % (f, e), file=sys.stderr)
+        root.report_callback_exception = self._on_tk_error
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def _on_tk_error(self, exc, val, tb):
+        """An error inside a button or mouse handler: pythonw has no console, so without this it would vanish and the
+        program would just seem to do nothing. It goes to ImageForge_errors.log and to the status line."""
+        text = "".join(traceback.format_exception(exc, val, tb))
+        try:
+            with open(ERROR_LOG, "a", encoding="utf-8") as f:
+                f.write("%s\n%s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), text))
+        except OSError:
+            pass
+        if sys.stderr:
+            print(text, file=sys.stderr)
+        self._status("Internal error: %s  (details in %s)" % (val, ERROR_LOG))
+        self._stroke = self._stroke_layer = self._stroke_orig = self._stroke_mask = None    # never stay half-way in a drag
+        self._mv = self._lmove = self._grab = self._rect_start = None
+        self._pan_left = self._placing = False
 
     # ---- construction ----------------------------------------------------------------------------------
     def _build_menu(self):
@@ -2277,24 +2348,12 @@ class ImageForge:
                 self._status("Angle %.2f deg set; check the preview and press Apply." % a, ok=True)
 
     def _is_brush(self):
-        return self.tool is not None and self.tool.interactive == 'brush'
+        """Eraser brush, Clone stamp and Clean brush: tools that paint with strokes."""
+        return self.tool is not None and self.tool.interactive in ('brush', 'clone', 'clean')
 
     def _brush_params(self):
         p = self._read_params() or {}
         return int(p.get('size', 15)), p.get('fill', 'white')
-
-    def _brush_start(self, e):
-        kind, L = self._tool_target()
-        if kind == 'text':
-            self._status(self._TEXT_LAYER_MSG)
-            return
-        self._stroke_layer = L if kind == 'layer' else None
-        self._stroke = (L.rgba if L is not None else self.hist.current).copy()
-        self._last = None
-        where = self._brush_scope(L)
-        if where:                                      # the two silent traps: a forgotten selection, a selected layer
-            self._status("%s (Esc drops the selection; click Background in the Layers tab to paint the picture)." % where)
-        self._brush_to(e)
 
     def _brush_scope(self, L):
         """What limits the brush right now, in words ('' when nothing does: it paints the whole Background)."""
@@ -2303,21 +2362,66 @@ class ImageForge:
             parts.append("painting on layer '%s'" % L.name)
         if self.sel is not None:
             parts.append("only inside the selection")
-        return ("Eraser: " + ", ".join(parts)) if parts else ""
+        return ("%s: " % self.tool.name + ", ".join(parts)) if parts else ""
+
+    def _brush_start(self, e):
+        mode = self.tool.interactive
+        x, y = self._img_xy(e.x, e.y)
+        pt = (int(math.floor(x)), int(math.floor(y)))
+        if mode == 'clone' and (e.state & 0x4):                 # Ctrl+click: choose where to copy from
+            self._clone_src, self._clone_off = pt, None
+            self._status("Clone source set at (%d, %d). Now paint where the copy should go." % pt, ok=True)
+            self._draw_brush_circle(e)
+            return
+        kind, L = self._tool_target()
+        if kind == 'text':
+            self._status(self._TEXT_LAYER_MSG)
+            return
+        if mode == 'clone':
+            if self._clone_src is None:
+                self._status("Ctrl+click on the picture first, to choose what to copy from.")
+                return
+            if self._clone_off is None or not (self._read_params() or {}).get('aligned', True):
+                self._clone_off = (self._clone_src[0] - pt[0], self._clone_src[1] - pt[1])
+        self._stroke_layer = L if kind == 'layer' else None
+        self._stroke_orig = L.rgba if L is not None else self.hist.current
+        self._stroke = self._stroke_orig.copy()
+        self._stroke_mask = np.zeros(self._stroke.shape[:2], np.uint8) if mode == 'clean' else None
+        self._last = None
+        where = self._brush_scope(L)
+        if where:                                      # the two silent traps: a forgotten selection, a selected layer
+            self._status("%s (Esc drops the selection; click Background in the Layers tab to paint the picture)." % where)
+        self._brush_to(e)
 
     def _brush_to(self, e):
         if self._stroke is None:
             return
+        mode = self.tool.interactive
+        p = self._read_params() or {}
         size, fill = self._brush_params()
         L = self._stroke_layer
         x, y = self._img_xy(e.x, e.y)
         pt = (int(math.floor(x)), int(math.floor(y)))
-        if L is None:
-            paint_segment(self._stroke, self._last or pt, pt, size, FILLS.get(fill, FILLS['white']), self.sel)
-        else:                                                  # layer coordinates; four channels: colour and alpha
-            lp, ll = (pt[0] - L.x, pt[1] - L.y), self._last and (self._last[0] - L.x, self._last[1] - L.y)
-            color = (0, 0, 0, 0) if fill == 'transparent' else FILLS[fill] + (255,)
-            paint_segment(self._stroke, ll or lp, lp, size, color, layer_region(self.sel, L))
+        ox, oy = (L.x, L.y) if L is not None else (0, 0)
+        tp = (pt[0] - ox, pt[1] - oy)                          # in the coordinates of the array being painted
+        lp = (self._last[0] - ox, self._last[1] - oy) if self._last else tp
+        region = layer_region(self.sel, L) if L is not None else self.sel
+        if mode == 'brush':
+            if L is None:
+                color = FILLS.get(fill, FILLS['white'])
+            else:
+                color = (0, 0, 0, 0) if fill == 'transparent' else FILLS[fill] + (255,)
+            paint_segment(self._stroke, lp, tp, size, color, region)
+        elif mode == 'clone':
+            ofx, ofy = self._clone_off
+            n = max(1, int(math.ceil(math.hypot(tp[0] - lp[0], tp[1] - lp[1]) / max(1.0, size * 0.2))))
+            for i in range(1, n + 1):                          # stamps spaced along the segment, so a stroke is continuous
+                cx, cy = lp[0] + (tp[0] - lp[0]) * i / n, lp[1] + (tp[1] - lp[1]) * i / n
+                stamp_clone(self._stroke, self._stroke_orig, cx, cy, ofx, ofy, size, int(p.get('hardness', 60)),
+                            int(p.get('opacity', 100)), region)
+        else:                                                  # 'clean': the mask, and a red trace to see it
+            paint_segment(self._stroke_mask, lp, tp, size, (255,), region)
+            paint_segment(self._stroke, lp, tp, size, (255, 60, 60) + ((255,) if L is not None else ()), region)
         self._last = pt
         if L is None:
             self.preview = self._stroke
@@ -2329,36 +2433,51 @@ class ImageForge:
         self._draw_brush_circle(e)
 
     def _brush_end(self):
-        stroke, L = self._stroke, self._stroke_layer
-        self._stroke = self._stroke_layer = self._last = None
+        mode = self.tool.interactive
+        stroke, orig, L, mask = self._stroke, self._stroke_orig, self._stroke_layer, self._stroke_mask
+        self._stroke = self._stroke_layer = self._stroke_orig = self._stroke_mask = self._last = None
         self.preview = self.lprev = None
-        if L is None:
-            changed = not np.array_equal(stroke, self.hist.current)
-        else:
-            changed = not np.array_equal(stroke, L.rgba)
+        if mode == 'clean':                                    # now rebuild what was painted over
+            radius = int((self._read_params() or {}).get('radius', 3))
+            hole = mask > 0
+            if L is None:
+                stroke = inpaint_mask(orig, hole, radius)
+            else:
+                stroke = orig.copy()
+                stroke[..., :3] = inpaint_mask(np.ascontiguousarray(orig[..., :3]), hole, radius, orig[..., 3] > 0)
+        changed = not np.array_equal(stroke, orig)
         if not changed:
             self._redraw()
             why = []
             if self.sel is not None:
                 why.append("the stroke was outside the selection (Esc drops it)")
             if L is not None:
-                why.append("layer '%s' is not under the stroke or already has that colour (select Background to paint the "
+                why.append("layer '%s' is not under the stroke or already looks like that (select Background to paint the "
                            "picture)" % L.name)
-            self._status("The eraser changed nothing: " + ("; ".join(why) if why else "those pixels already have that colour."))
+            self._status("%s changed nothing: " % self.tool.name + ("; ".join(why) if why else "nothing to change there."))
         elif L is None:
             self._commit(self.tool.name, stroke)
-            self._status("Eraser stroke done%s." % (" (inside the selection)" if self.sel is not None else ""), ok=True)
+            self._status("%s stroke done%s." % (self.tool.name, " (inside the selection)" if self.sel is not None else ""), ok=True)
         else:
             layers = list(self.hist.layers)
             layers[self.active] = L.replace(rgba=stroke)
             self._commit_layers("%s (layer)" % self.tool.name, layers)
-            self._status("Eraser stroke done on layer '%s'." % L.name, ok=True)
+            self._status("%s stroke done on layer '%s'." % (self.tool.name, L.name), ok=True)
 
     def _draw_brush_circle(self, e):
         self.canvas.delete('brush')
         if self._is_brush() and self.hist is not None:
             r = self._brush_params()[0] / 2.0 * self.zoom
             self.canvas.create_oval(e.x - r, e.y - r, e.x + r, e.y + r, outline='#ff3366', tags='brush')
+            if self.tool.interactive == 'clone' and self._clone_src is not None:
+                if self._clone_off is not None:                # the source follows the pointer by the kept offset
+                    ix, iy = self._img_xy(e.x, e.y)
+                    sx, sy = (math.floor(ix) + self._clone_off[0] + 0.5) * self.zoom + self.ox, \
+                        (math.floor(iy) + self._clone_off[1] + 0.5) * self.zoom + self.oy
+                else:
+                    sx, sy = (self._clone_src[0] + 0.5) * self.zoom + self.ox, (self._clone_src[1] + 0.5) * self.zoom + self.oy
+                for dx, dy in ((10, 0), (-10, 0), (0, 10), (0, -10)):
+                    self.canvas.create_line(sx, sy, sx + dx, sy + dy, fill='#00e5ff', width=2, tags='brush')
 
     def _on_press(self, e):
         if self.hist is None:

@@ -153,6 +153,24 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   changed nothing; a good stroke reports itself. Rule of thumb for 'a tool does nothing': check the selection (Esc) and the
   selected item in the Layers tab first.
 
+- **Brush family** (`_is_brush` = interactive in brush / clone / clean; `_brush_start/_to/_end` dispatch on the tool): all strokes
+  work on a copy of the target (`_stroke`, the Background or the active layer's RGBA) and keep the untouched original in
+  `_stroke_orig`; coordinates are converted to the target's own (`- (L.x, L.y)`), the clip is the selection (`layer_region` on a
+  layer). *Eraser*: `paint_segment`. *Clone stamp* (`stamp_clone`): stamps spaced `size * 0.2` along the segment, sampling the
+  ORIGINAL at the stroke start (no feedback smearing when source and destination are close), soft edge = distance falloff over
+  `(1 - hardness) * r`, opacity; the source is set with Ctrl+click (`e.state & 0x4`; Alt would be grabbed by the Windows menu),
+  `_clone_off` = source - first press, kept across strokes when 'Aligned'; the cross follows the cursor by that offset. *Clean
+  brush*: the stroke fills a mask (`paint_segment` on a 2-D array) and a red trace for feedback; on release `inpaint_mask` rebuilds
+  it (on a layer with `valid=alpha>0`). Tests: `RetouchTests`.
+- **Errors in pythonw**: `root.report_callback_exception = _on_tk_error` appends the traceback to `ImageForge_errors.log`, shows it in
+  the status line and resets every half-done drag state (`_stroke`, `_mv`, `_grab`, ...), because without a console a handler error
+  made a tool look dead. The log is gitignored.
+- **Real-mouse check** (`examples/real_mouse_brush.py`): SetCursorPos / mouse_event / keybd_event through the OS, not
+  `event_generate`. Needs the window in the FOREGROUND (it refuses otherwise): the first version ran with the window behind
+  another one, the clicks went elsewhere, and it looked like three broken tools while they were fine. The three painting tools
+  pass with it. A report 'eraser brush does nothing' that does not reproduce here is therefore a state problem (selection / layer /
+  Hand / Space) or an error in the log, not the painting code.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a

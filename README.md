@@ -35,6 +35,9 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
   - Filters: sharpen (unsharp mask), Gaussian blur
   - Geometry: auto-crop borders (uniform white / black / frame colour, tolerance, margin), rotate 90/180, rotate by any angle (with **Measure**: click two points of a line to level it), flip,
     resize (percent or pixels, choice of interpolation)
+  - Retouch: **Clone stamp** (Ctrl+click the spot to copy from, then paint: the copy follows the cursor, soft edge, opacity,
+    *Aligned* keeps the offset between strokes) and **Clean brush** (paint over a spot, scratch or stray mark, it shows red; when
+    you let go it is rebuilt from its surroundings). Both are limited to the selection and work on the selected layer's pixels.
   - Areas: **Erase rectangle** (drag a rectangle, what is inside is erased on release: white, black, transparent on a
     layer, or inpainted) and **Move area** (drag a rectangle round something, then drag inside it to move it; Shift or its
     *Copy* box copies; the old place is filled as the *leaves* box says; on an image layer it works inside that layer)
@@ -88,6 +91,14 @@ that should ship with the program.
   cover the tools, history, file round-trips and plug-ins. Not tried on very large photos: the live preview recomputes
   the whole image, so heavy filters can lag on tens of megapixels (turn Preview off).
 - JPEG is saved at quality 95 without chroma subsampling; there is no quality dialog yet.
+
+## If something does nothing
+
+Painting tools (eraser, clone, clean) and the rectangle tools only touch the **selection**, if there is one, and the
+**selected layer**: press **Esc** to drop a selection left by another tool, and click **Background** in the Layers tab to work on
+the picture itself. The status line at the bottom says what is limiting a stroke and why it changed nothing. If the program
+raises an internal error (there is no console with `pythonw`), the message appears there too and the details are appended to
+`ImageForge_errors.log` next to the program: send me that file.
 
 ## Requirements and tests
 
