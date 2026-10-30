@@ -394,6 +394,50 @@ def paint_segment(img, p0, p1, size, color, region=None):
         sub[~inside] = keep[~inside]
 
 
+HANDLE_CURSORS = {'nw': 'size_nw_se', 'se': 'size_nw_se', 'ne': 'size_ne_sw', 'sw': 'size_ne_sw',
+                  'n': 'size_ns', 's': 'size_ns', 'e': 'size_we', 'w': 'size_we', 'move': 'fleur'}
+
+
+def handle_points(rect):
+    """The eight handles of a selection rectangle, as {name: (x, y)} in the rectangle's own coordinates."""
+    x0, y0, x1, y1 = rect
+    xm, ym = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    return {'nw': (x0, y0), 'ne': (x1, y0), 'se': (x1, y1), 'sw': (x0, y1),
+            'n': (xm, y0), 's': (xm, y1), 'e': (x1, ym), 'w': (x0, ym)}
+
+
+def hit_handle(rect, zoom, ox, oy, sx, sy, tol=7):
+    """What a click at screen point (sx, sy) grabs on the selection `rect` (image pixels, drawn at x*zoom + ox):
+    a handle name (corners before edge midpoints), 'move' inside the rectangle, or None."""
+    for name, (hx, hy) in handle_points(rect).items():
+        if abs(hx * zoom + ox - sx) <= tol and abs(hy * zoom + oy - sy) <= tol:
+            return name
+    x0, y0, x1, y1 = rect
+    if x0 * zoom + ox <= sx <= x1 * zoom + ox and y0 * zoom + oy <= sy <= y1 * zoom + oy:
+        return 'move'
+    return None
+
+
+def drag_rect(rect, handle, dx, dy, bounds):
+    """The selection after dragging `handle` by (dx, dy) image pixels. 'move' keeps the size and stops at the
+    image border; an edge never crosses the opposite one (the rectangle stays at least 1 px) nor leaves the
+    image. `bounds` = (width, height) of the image."""
+    x0, y0, x1, y1 = rect
+    w, h = bounds
+    if handle == 'move':
+        dx, dy = max(-x0, min(w - x1, dx)), max(-y0, min(h - y1, dy))
+        return (x0 + dx, y0 + dy, x1 + dx, y1 + dy)
+    if 'w' in handle:
+        x0 = max(0, min(x0 + dx, x1 - 1))
+    if 'e' in handle:
+        x1 = min(w, max(x1 + dx, x0 + 1))
+    if 'n' in handle:
+        y0 = max(0, min(y0 + dy, y1 - 1))
+    if 's' in handle:
+        y1 = min(h, max(y1 + dy, y0 + 1))
+    return (x0, y0, x1, y1)
+
+
 def crop(img, region):
     """The (x0, y0, x1, y1) rectangle of `img` as a new array."""
     x0, y0, x1, y1 = region
@@ -515,6 +559,7 @@ class ImageForge:
         self.mode = None                 # None, 'color' or 'angle': what a click on the image means (Esc cancels)
         self._pick_key = None            # the parameter a pick fills
         self._pick_pts = []
+        self._grab = None                # (handle, press point in image pixels, selection at press) while dragging it
         self._stroke = None              # image being painted by the eraser brush, and the last brush point
         self._last = None
         root.title(APP_NAME)
@@ -620,6 +665,10 @@ class ImageForge:
             c.bind('<ButtonPress-%d>' % b, self._on_pan_start)
             c.bind('<B%d-Motion>' % b, self._on_pan)
         c.bind('<MouseWheel>', self._on_wheel)
+        c.bind('<ButtonPress-1>', lambda e: c.focus_set(), add='+')      # arrows nudge the selection once the canvas has focus
+        for key, (dx, dy) in {'Left': (-1, 0), 'Right': (1, 0), 'Up': (0, -1), 'Down': (0, 1)}.items():
+            c.bind('<%s>' % key, lambda e, dx=dx, dy=dy: self.nudge(dx, dy))
+            c.bind('<Shift-%s>' % key, lambda e, dx=dx, dy=dy: self.nudge(dx * 10, dy * 10))
         c.bind('<Motion>', self._on_motion)
         c.bind('<Leave>', lambda e: (self._set_info(""), c.delete('brush')))
         if HAS_DND:
@@ -989,6 +1038,10 @@ class ImageForge:
         pts = (x0 * z + self.ox, y0 * z + self.oy, x1 * z + self.ox, y1 * z + self.oy)
         c.create_rectangle(*pts, outline='white', tags='sel')
         c.create_rectangle(*pts, outline='black', dash=(4, 4), tags='sel')
+        if rect is self.sel:                      # handles only on a settled selection, not on a new drag
+            for hx, hy in handle_points(rect).values():
+                sx, sy = hx * z + self.ox, hy * z + self.oy
+                c.create_rectangle(sx - 4, sy - 4, sx + 4, sy + 4, fill='white', outline='black', tags='sel')
 
     def _img_xy(self, sx, sy):
         return (sx - self.ox) / self.zoom, (sy - self.oy) / self.zoom
@@ -1092,11 +1145,41 @@ class ImageForge:
             self._press = None
             self._brush_start(e)
         else:
-            self._press, self._drag_sel = (e.x, e.y), None
+            grab = hit_handle(self.sel, self.zoom, self.ox, self.oy, e.x, e.y) if self.sel else None
+            if grab:
+                self._press = None
+                self._grab = (grab, self._img_xy(e.x, e.y), self.sel)
+            else:
+                self._press, self._drag_sel = (e.x, e.y), None
+
+    def _grab_to(self, e):
+        """Move or resize the selection by the distance dragged since the press."""
+        handle, (x, y), start = self._grab
+        nx, ny = self._img_xy(e.x, e.y)
+        h, w = self.hist.current.shape[:2]
+        self.sel = drag_rect(start, handle, int(round(nx - x)), int(round(ny - y)), (w, h))
+        self._draw_selection()
+        x0, y0, x1, y1 = self.sel
+        self._set_info("selection %d x %d  at (%d, %d)" % (x1 - x0, y1 - y0, x0, y0))
+
+    def nudge(self, dx, dy):
+        if self.sel and self.hist is not None and not self.mode and not self._is_brush():
+            h, w = self.hist.current.shape[:2]
+            self.sel = drag_rect(self.sel, 'move', dx, dy, (w, h))
+            self._after_selection()
+
+    def _update_cursor(self, e):
+        if self.mode or self._is_brush():
+            return
+        grab = hit_handle(self.sel, self.zoom, self.ox, self.oy, e.x, e.y) if self.sel else None
+        self.canvas.config(cursor=HANDLE_CURSORS[grab] if grab else 'crosshair')
 
     def _on_drag(self, e):
         if self._stroke is not None:
             self._brush_to(e)
+            return
+        if self._grab is not None:
+            self._grab_to(e)
             return
         if self._press is None or (self._drag_sel is None and math.hypot(e.x - self._press[0], e.y - self._press[1]) < 4):
             return
@@ -1109,6 +1192,10 @@ class ImageForge:
     def _on_release(self, e):
         if self._stroke is not None:
             self._brush_end()
+            return
+        if self._grab is not None:
+            self._grab = None
+            self._after_selection()
             return
         if self._press is None:
             return
@@ -1132,6 +1219,7 @@ class ImageForge:
         self._draw_brush_circle(e)
         if self.hist is None or self._press is not None:
             return
+        self._update_cursor(e)
         x, y = self._img_xy(e.x, e.y)
         ix, iy = int(math.floor(x)), int(math.floor(y))
         h, w = self.hist.current.shape[:2]

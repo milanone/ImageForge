@@ -11,7 +11,9 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
 - **Open / Save**: PNG, JPEG, TIFF, BMP, WebP, GIF (drag a file onto the window, or `pythonw ImageForge.pyw image.png`).
   *Save* never overwrites the original: the first save asks for a new name (`<name>_edited.png`).
 - **Undo / Redo** of every step (Ctrl+Z / Ctrl+Y), limited to about 1 GB of history.
-- **Selection**: drag a rectangle; tools then act only inside it (a click clears it). *Crop to selection*.
+- **Selection**: drag a rectangle; tools then act only inside it (a click outside it clears it). Drag inside it to move it,
+  drag a handle (corners, edge midpoints) to resize it, arrow keys nudge it by 1 px (Shift: 10) once the image has been
+  clicked. *Crop to selection*.
 - **View**: wheel = zoom at the cursor, right/middle drag = pan, Ctrl+0 fit, Ctrl+1 100 %. The status line shows the
   pixel under the cursor.
 - **Tools**, with live preview:
@@ -23,7 +25,7 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
     despeckle, flatten ink to one colour, eraser brush (drag on the image; one stroke = one undo step)
 
 Geometry tools change the whole image and ignore the selection; all other tools, the eraser brush included, are limited to it.
-The selection takes the place of SpectrumDigitizer's working area (which could also be rotated and resized: not ported yet).
+The selection takes the place of SpectrumDigitizer's working area (which could also be rotated: not ported).
 
 ## Adding a tool
 

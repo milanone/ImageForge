@@ -52,6 +52,12 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
 - Clean tools (`erase_colors`, `despeckle`, `flatten_ink`) are ports of `apply_filter`, `despeckle`, `flatten_colors` of
   SpectrumDigitizer; despeckle uses `cv2.connectedComponentsWithStats` (8-connectivity) instead of scipy.
 
+- **Selection handles**: pure helpers `handle_points`, `hit_handle` (screen px, corners before edge midpoints, then 'move' inside),
+  `drag_rect` (works from the rectangle at press time, so a drag is a pure function of the distance moved; edges never cross
+  or leave the image). `_grab` holds (handle, press point, start rect); `self.sel` is updated live while dragging but the preview
+  is recomputed only on release (`_after_selection`). Cursor follows the hit (`_update_cursor`); picks and the brush take priority.
+  Arrow keys are bound on the canvas (it takes focus on click) so they do not fight with the tool tree. Tests: `SelectionTests`.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a
@@ -60,11 +66,11 @@ new tree nodes automatically.
 
 ## Verified / not verified
 
-Unit tests on synthetic arrays and files; a scripted session with real Tk mouse events (drag selection, Apply, crop,
+Unit tests on synthetic arrays and files; a scripted session with real Tk mouse events (drag selection, move/resize by handles, arrow nudge, Apply, crop,
 undo, redo, wheel, pan, click-to-deselect, colour pick, angle pick, brush stroke) and a screenshot from the real window. Not verified: large photos, HiDPI
 scaling other than the screenshot script's, drag-and-drop (tkinterdnd2 path), the Save dialogs by hand.
 
 ## Ideas not done yet (from SpectrumDigitizer's cleaning tab)
 
-Rotatable working area with handles, move/resize of the selection, auto-crop of white borders, join dashed lines,
+Rotation of the selection (SpectrumDigitizer's working area could rotate), auto-crop of white borders, join dashed lines,
 manual link of a broken line, magnifier next to the cursor, arrow keys to nudge by one pixel.

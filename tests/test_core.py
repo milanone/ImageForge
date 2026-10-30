@@ -213,6 +213,40 @@ class CleanTests(unittest.TestCase):
         self.assertAlmostEqual(il.straighten_angle((0, 0), (100, 0)), il.straighten_angle((100, 0), (0, 0)))
 
 
+class SelectionTests(unittest.TestCase):
+    B = (100, 80)
+
+    def test_move_keeps_size_and_stops_at_the_border(self):
+        self.assertEqual(il.drag_rect((10, 10, 30, 20), 'move', 5, -3, self.B), (15, 7, 35, 17))
+        self.assertEqual(il.drag_rect((10, 10, 30, 20), 'move', -50, -50, self.B), (0, 0, 20, 10))
+        self.assertEqual(il.drag_rect((10, 10, 30, 20), 'move', 500, 500, self.B), (80, 70, 100, 80))
+
+    def test_resize_edges_and_corners(self):
+        r = (10, 10, 30, 20)
+        self.assertEqual(il.drag_rect(r, 'e', 5, 99, self.B), (10, 10, 35, 20))
+        self.assertEqual(il.drag_rect(r, 'n', 99, -4, self.B), (10, 6, 30, 20))
+        self.assertEqual(il.drag_rect(r, 'se', 4, 4, self.B), (10, 10, 34, 24))
+        self.assertEqual(il.drag_rect(r, 'nw', -4, -4, self.B), (6, 6, 30, 20))
+
+    def test_resize_cannot_flip_or_leave_the_image(self):
+        r = (10, 10, 30, 20)
+        self.assertEqual(il.drag_rect(r, 'w', 500, 0, self.B), (29, 10, 30, 20))
+        self.assertEqual(il.drag_rect(r, 's', 0, -500, self.B), (10, 10, 30, 11))
+        self.assertEqual(il.drag_rect(r, 'se', 500, 500, self.B), (10, 10, 100, 80))
+        self.assertEqual(il.drag_rect(r, 'nw', -500, -500, self.B), (0, 0, 30, 20))
+
+    def test_hit_handle_priority_and_zoom(self):
+        r = (10, 10, 30, 20)
+        z, ox, oy = 2.0, 5.0, 7.0
+        sx = lambda x: x * z + ox
+        sy = lambda y: y * z + oy
+        self.assertEqual(il.hit_handle(r, z, ox, oy, sx(10), sy(10)), 'nw')
+        self.assertEqual(il.hit_handle(r, z, ox, oy, sx(30) + 3, sy(20) - 2), 'se')
+        self.assertEqual(il.hit_handle(r, z, ox, oy, sx(20), sy(10)), 'n')
+        self.assertEqual(il.hit_handle(r, z, ox, oy, sx(20), sy(15)), 'move')
+        self.assertIsNone(il.hit_handle(r, z, ox, oy, sx(50), sy(50)))
+
+
 class HistoryTests(unittest.TestCase):
     def test_undo_redo_and_truncation(self):
         a, b, c = (np.full((2, 2, 3), v, np.uint8) for v in (1, 2, 3))
