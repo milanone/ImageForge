@@ -681,48 +681,117 @@ class TransformLayerTests(unittest.TestCase):
         self.assertTrue(all(il.TOOLS[n].geometry for n in modes))
 
 
-class NearestColourTests(unittest.TestCase):
+class InpaintTests(unittest.TestCase):
     @staticmethod
-    def gradient_with_line():
-        img = np.zeros((20, 60, 3), np.uint8)
-        img[:] = np.linspace(40, 220, 60).astype(np.uint8)[None, :, None]          # a grey ramp left to right
-        img[8:12, :] = (200, 0, 0)                                                   # a red line across it
-        return img
+    def ramp_with_line():
+        img = np.zeros((40, 80, 3), np.uint8)
+        img[:] = np.linspace(40, 220, 80).astype(np.uint8)[None, :, None]            # a grey ramp left to right
+        clean = img.copy()
+        img[18:22, :] = (200, 0, 0)                                                   # a red line across it
+        return img, clean
 
-    def test_erased_pixels_take_the_colour_of_the_closest_pixel_that_was_kept(self):
-        img = self.gradient_with_line()
-        out = il.apply_tool("Erase / keep colours", img, {'colors': '#c80000', 'tolerance': 30, 'fill': 'nearest colour'})
-        self.assertFalse((out[8:12] == (200, 0, 0)).all(axis=2).any())               # the red is gone
-        self.assertTrue(np.array_equal(out[:8], img[:8]) and np.array_equal(out[12:], img[12:]))
-        self.assertTrue((out[8, :, 0] == img[7, :, 0]).all())                        # the row next to the top edge: copy of row 7
-        self.assertTrue((out[11, :, 0] == img[12, :, 0]).all())                      # the row next to the bottom edge: row 12
-        self.assertTrue((out[8:12, :, 0] == out[8:12, :, 1]).all())                  # grey, not red: the ramp continues
+    def test_a_line_over_a_gradient_fades_into_it(self):
+        img, clean = self.ramp_with_line()
+        out = il.apply_tool("Erase / keep colours", img,
+                            {'colors': '#c80000', 'tolerance': 30, 'fill': 'inpaint', 'radius': 3})
+        self.assertFalse((out == (200, 0, 0)).all(axis=2).any())
+        err = np.abs(out[18:22].astype(int) - clean[18:22].astype(int))
+        self.assertLess(float(err.mean()), 3.0)                                       # back to (almost) the original ramp
+        self.assertTrue(np.array_equal(out[:18], img[:18]) and np.array_equal(out[22:], img[22:]))
         flat = il.apply_tool("Erase / keep colours", img, {'colors': '#c80000', 'tolerance': 30, 'fill': 'white'})
-        self.assertTrue((flat[8:12] == 255).all())                                   # (the flat fills stay as they were)
+        self.assertTrue((flat[18:22] == 255).all())                                   # the flat fills are as they were
 
-    def test_fill_nearest_edge_cases_and_the_input_is_not_modified(self):
-        img = self.gradient_with_line()
+    def test_grow_widens_the_erased_area_and_catches_the_pale_edge(self):
+        img, clean = self.ramp_with_line()
+        img[17] = (120, 40, 60)                                                       # a pale anti-aliased fringe, not matching
+        img[22] = (120, 40, 60)
+        plain = il.apply_tool("Erase / keep colours", img, {'colors': '#c80000', 'tolerance': 30, 'fill': 'inpaint'})
+        wide = il.apply_tool("Erase / keep colours", img,
+                             {'colors': '#c80000', 'tolerance': 30, 'fill': 'inpaint', 'grow': 1})
+        self.assertTrue((plain[17] != clean[17]).any())                               # the fringe is still there
+        self.assertLess(int(np.abs(wide[17].astype(int) - clean[17].astype(int)).mean()), 4)
+        self.assertLess(int(np.abs(wide[22].astype(int) - clean[22].astype(int)).mean()), 4)
+        white = il.apply_tool("Erase / keep colours", img, {'colors': '#c80000', 'tolerance': 30, 'grow': 2})
+        self.assertTrue((white[16:24] == 255).all())                                  # grow works with the flat fills too
+
+    def test_inpaint_mask_edge_cases_and_the_input_is_not_modified(self):
+        img, _ = self.ramp_with_line()
         ref = img.copy()
         none = np.zeros(img.shape[:2], bool)
-        self.assertIs(il.fill_nearest(img, none), img)
-        everything = np.ones(img.shape[:2], bool)
-        self.assertIs(il.fill_nearest(img, everything), img)                         # nothing to copy from
+        self.assertIs(il.inpaint_mask(img, none, 3), img)
+        self.assertIs(il.inpaint_mask(img, np.ones(img.shape[:2], bool), 3), img)    # nothing to learn from
         hole = np.zeros(img.shape[:2], bool)
-        hole[8:12, 20:30] = True
-        out = il.fill_nearest(img, hole)
+        hole[10:14, 20:30] = True
+        out = il.inpaint_mask(img, hole, 3)
         self.assertTrue(np.array_equal(img, ref))
         self.assertTrue(np.array_equal(out[~hole], img[~hole]))
 
-    def test_on_a_layer_only_visible_pixels_are_copied(self):
-        a = np.zeros((20, 40, 4), np.uint8)
-        a[..., :3] = (255, 255, 255)                                                 # invisible pixels carry white
-        a[5:15, 5:35, :3] = (30, 60, 90)
-        a[5:15, 5:35, 3] = 255
-        a[8:12, 10:30, :3] = (200, 0, 0)                                             # a red bar inside the visible patch
+    def test_on_a_layer_the_invisible_pixels_do_not_leak_into_the_fill(self):
+        a = np.zeros((30, 50, 4), np.uint8)
+        a[..., :3] = (255, 255, 255)                                                  # invisible pixels carry white
+        a[8:22, 8:42, :3] = (30, 60, 90)
+        a[8:22, 8:42, 3] = 255
+        a[10:14, 10:40, :3] = (200, 0, 0)                                             # a red bar touching nothing invisible
+        a[14:16, 8:12, :3] = (200, 0, 0)
         out = il.apply_tool_to_layer("Erase / keep colours", a,
-                                     {'colors': '#c80000', 'tolerance': 30, 'fill': 'nearest colour'})
-        self.assertTrue((out[8:12, 10:30, :3] == (30, 60, 90)).all())                # filled from the patch, not from white
-        self.assertTrue(np.array_equal(out[..., 3], a[..., 3]))                      # alpha untouched
+                                     {'colors': '#c80000', 'tolerance': 30, 'fill': 'inpaint', 'radius': 3})
+        patch = out[8:22, 8:42, :3].astype(int)
+        self.assertLess(int(np.abs(patch - np.array([30, 60, 90])).max()), 12)        # no white or red crept in
+        self.assertTrue(np.array_equal(out[..., 3], a[..., 3]))                       # alpha untouched
+
+
+class RectangleTests(unittest.TestCase):
+    @staticmethod
+    def pic():
+        img = np.zeros((40, 80, 3), np.uint8)
+        img[:] = np.linspace(40, 220, 80).astype(np.uint8)[None, :, None]
+        return img
+
+    def test_erase_rect_paints_only_the_rectangle_and_clips_to_the_image(self):
+        img = self.pic()
+        out = il.erase_rect(img, (10, 5, 30, 15), 'white')
+        self.assertTrue((out[5:15, 10:30] == 255).all())
+        self.assertTrue(np.array_equal(out[:5], img[:5]) and np.array_equal(out[:, 30:], img[:, 30:]))
+        self.assertTrue(np.array_equal(img, self.pic()))                              # input untouched
+        edge = il.erase_rect(img, (-10, -10, 5, 5), 'black')
+        self.assertTrue((edge[:5, :5] == 0).all() and np.array_equal(edge[5:], img[5:]))
+        self.assertIs(il.erase_rect(img, (200, 200, 300, 300), 'white'), img)
+        self.assertIs(il.erase_rect(out, (10, 5, 30, 15), 'white'), out)              # already white: no change
+        self.assertTrue((il.erase_rect(img, (0, 0, 4, 4), 'transparent')[:4, :4] == 255).all())   # no alpha: white
+
+    def test_erase_rect_inpaint_rebuilds_from_the_surroundings(self):
+        img = self.pic()
+        out = il.erase_rect(img, (30, 10, 40, 20), 'inpaint', 3)
+        err = np.abs(out[10:20, 30:40].astype(int) - img[10:20, 30:40].astype(int))
+        self.assertLess(float(err.mean()), 4.0)                                        # a smooth ramp comes back
+        self.assertTrue(np.array_equal(out[:10], img[:10]))
+
+    def test_erase_rect_layer_transparent_opaque_and_inpaint(self):
+        a = np.zeros((30, 50, 4), np.uint8)
+        a[..., :3] = 255
+        a[5:25, 5:45, :3] = (30, 60, 90)
+        a[5:25, 5:45, 3] = 255
+        t = il.erase_rect_layer(a, (10, 10, 20, 20), 'transparent')
+        self.assertTrue((t[10:20, 10:20, 3] == 0).all() and (t[5:10, 5:45, 3] == 255).all())
+        w = il.erase_rect_layer(a, (10, 10, 20, 20), 'white')
+        self.assertTrue((w[10:20, 10:20] == 255).all())
+        i = il.erase_rect_layer(a, (10, 10, 20, 20), 'inpaint', 3)
+        self.assertTrue((i[10:20, 10:20, :3] == (30, 60, 90)).all() or int(np.abs(i[10:20, 10:20, :3].astype(int) - (30, 60, 90)).max()) < 12)
+        self.assertTrue(np.array_equal(i[..., 3], a[..., 3]))
+        self.assertIs(il.erase_rect_layer(a, (100, 100, 110, 110), 'transparent'), a)
+        self.assertTrue(np.array_equal(a[10:20, 10:20, :3], np.full((10, 10, 3), (30, 60, 90))))   # input untouched
+
+    def test_move_region_on_a_layer_leaves_transparency_and_stays_in_the_layer(self):
+        a = np.zeros((30, 50, 4), np.uint8)
+        a[10:20, 10:20] = (200, 0, 0, 255)
+        out, rect = il.move_region(a, (10, 10, 20, 20), 15, 0, (0, 0, 0, 0))
+        self.assertEqual(rect, (25, 10, 35, 20))
+        self.assertTrue((out[10:20, 25:35] == (200, 0, 0, 255)).all())
+        self.assertTrue((out[10:20, 10:20, 3] == 0).all())                            # the hole sees through
+        far, rect = il.move_region(a, (10, 10, 20, 20), 500, 0, (0, 0, 0, 0))
+        self.assertEqual(rect, (40, 10, 50, 20))                                       # stops at the layer border
+        cp, _ = il.move_region(a, (10, 10, 20, 20), 15, 0, (0, 0, 0, 0), copy=True)
+        self.assertTrue((cp[10:20, 10:20, 3] == 255).all() and (cp[10:20, 25:35, 3] == 255).all())
 
 
 class HistoryTests(unittest.TestCase):

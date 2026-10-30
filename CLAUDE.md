@@ -130,14 +130,22 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   clear `dirty`; `save()` with layers and a non-project `save_path` asks again. Tests: `ProjectTests`; real-window check
   `examples/project_session.py` (dialogs mocked: save, close, reopen, edit the text, save back).
 
-- **Nearest-colour fill** (`fill_nearest`, `Erase / keep colours` with `fill='nearest colour'`): `cv2.distanceTransformWithLabels` on
-  the kept pixels (labels = which source pixel is closest; a label -> source LUT is built from the labels at the source pixels
-  themselves, so no assumption about the label numbering), erased pixels copy the colour of their closest kept pixel. DIST_MASK_5
-  is an approximation of the Euclidean distance (ties and diagonal cases may pick another equally near pixel). On a layer
-  (`apply_tool_to_layer`) the erased pixels are found by the white/black comparison trick and only visible pixels (alpha > 0) are
-  used as sources. Only this tool has it; the eraser brush paints with a flat colour. A smoother alternative not done:
-  `cv2.inpaint` (Telea / Navier-Stokes), better for wide holes; nearest-colour leaves streaks across holes wider than the
-  texture it copies. Tests: `NearestColourTests`.
+- **Inpaint instead of 'nearest colour'** (`inpaint_mask`, `Erase / keep colours` with `fill='inpaint'`, params `grow`, `radius`):
+  `cv2.inpaint` (Telea) on the erased mask. A nearest-colour fill (copy of the closest kept pixel via
+  `distanceTransformWithLabels`) was written, tested and then removed on Francesco's request because it made visible mess too
+  easily (streaks, hard edges); do not bring it back. `grow` dilates the mask (ellipse) so the pale anti-aliased fringe of a line
+  goes too, for every fill. On a layer the erased pixels are found by the white/black comparison trick and `inpaint_mask(valid=alpha>0)`
+  also treats invisible pixels next to the hole as holes, so their (often white) colour is never a source. Wide holes get smeared:
+  the tool doc says so. Not done: Navier-Stokes variant, a texture-synthesis fill. Tests: `InpaintTests`.
+- **Erase rectangle / Move area** (group Areas, `interactive='rect-erase'` / `'rect-move'`): *Erase rectangle* drags a rectangle with
+  the selection-drawing code (`_rect_from`, `_draw_selection(rect)`, not stored in `self.sel`) and applies on release through
+  `erase_rect` (RGB) or `erase_rect_layer` (RGBA, rectangle converted with `layer_region`): flat white/black, `transparent` (white on
+  the Background), `inpaint`. *Move area* is the ordinary selection, but `_moves_content` is always true for it, so the drag inside
+  the rectangle moves the pixels (the `Copy` param or Shift copies); `_start_content_move` / `_mv_to` / `_mv_end` now handle both
+  targets: `_mv` = (press point, rect in target coordinates, copy, array, layer or None); on a layer the rectangle is in layer
+  coordinates, `move_region` works on the 4-channel array with fill `(0,0,0,0)` (the 'leaves' box now has `transparent`), the
+  object stops at the layer's own border and `self.sel` is shown in canvas coordinates. The checkbox "Drag moves the content" got
+  the same layer support. Tests: `RectangleTests`; real window: `examples/rectangle_session.py`.
 
 ## Adding a tool
 

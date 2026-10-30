@@ -322,33 +322,35 @@ def _distance_from(img, color):
     return np.sqrt(((img.astype(np.float32) - np.asarray(color, np.float32)) ** 2).sum(axis=2))
 
 
-def fill_nearest(img, hole, valid=None):
-    """Paint the `hole` pixels (bool mask) with the colour of the nearest pixel that is not in the hole (and, when given,
-    is in `valid`): erasing a coloured line or text leaves the surrounding colour or gradient instead of a flat patch.
-    Returns `img` itself when there is nothing to fill or nothing to copy from."""
-    src = ~hole if valid is None else (valid & ~hole)
-    if not hole.any() or not src.any():
+def inpaint_mask(img, hole, radius, valid=None):
+    """Rebuild the `hole` pixels (bool mask) from their surroundings with Telea inpainting (cv2.inpaint): the colours
+    flow in from the edge of the hole, so a line over a gradient or a photo disappears into it. With `valid` (bool mask)
+    only those pixels are used as the source: the others are treated as holes too, but only next to the real one, so a
+    transparent frame does not slow it down. Returns `img` itself when there is nothing to fill or nothing to copy from."""
+    if not hole.any() or hole.all():
         return img
-    _, labels = cv2.distanceTransformWithLabels(np.where(src, 0, 255).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_5,
-                                                labelType=cv2.DIST_LABEL_PIXEL)
-    sy, sx = np.nonzero(src)
-    lut_y, lut_x = np.zeros(labels.max() + 1, np.intp), np.zeros(labels.max() + 1, np.intp)
-    lut_y[labels[sy, sx]], lut_x[labels[sy, sx]] = sy, sx           # label -> the source pixel that owns it
-    hy, hx = np.nonzero(hole)
-    out = img.copy()
-    out[hy, hx] = img[lut_y[labels[hy, hx]], lut_x[labels[hy, hx]]]
-    return out
+    mask = hole.copy()
+    if valid is not None:
+        reach = cv2.dilate(hole.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (4 * radius + 1,) * 2))
+        mask |= (~valid) & (reach > 0)
+        if (mask | ~valid).all():                       # no visible pixel left to learn from
+            return img
+    out = cv2.inpaint(np.ascontiguousarray(img), mask.astype(np.uint8) * 255, radius, cv2.INPAINT_TELEA)
+    return img if np.array_equal(out, img) else out
 
 
 @tool("Erase / keep colours", "Clean", [
     Param('colors', "Colours (click Pick on the image)", 'colors', '', pick='color'),
     Param('mode', "Mode", 'choice', 'erase', choices=('erase', 'keep only')),
     Param('tolerance', "Tolerance (RGB distance)", 'int', 60, 1, 441, slider=True),
-    Param('fill', "Paint with", 'choice', 'white', choices=tuple(FILLS) + ('transparent', 'nearest colour'))])
-def erase_colors(img, colors, mode, tolerance, fill):
+    Param('grow', "Widen the area by (px)", 'int', 0, 0, 20),
+    Param('fill', "Paint with", 'choice', 'white', choices=tuple(FILLS) + ('transparent', 'inpaint')),
+    Param('radius', "Inpaint radius (px)", 'int', 3, 1, 30, slider=True)])
+def erase_colors(img, colors, mode, tolerance, grow, fill, radius):
     """Paint with the fill colour the pixels within the tolerance of any picked colour ('erase') or of none of them
-    ('keep only'). 'nearest colour' copies, for each such pixel, the colour of the closest pixel that was not picked
-    (a line over a gradient disappears into the gradient). Shades of one ink need several picks, or a larger tolerance."""
+    ('keep only'). 'inpaint' rebuilds them from their surroundings instead (a line over a gradient or a photo fades into
+    it): widen the area by a pixel or two so that the pale edge of the line goes too, and keep the area narrow, since
+    inpainting a wide hole invents smeared texture. Shades of one ink need several picks, or a larger tolerance."""
     cols = parse_colors(colors)
     if not cols:
         return img
@@ -358,11 +360,68 @@ def erase_colors(img, colors, mode, tolerance, fill):
     hit = ~near if mode == 'keep only' else near
     if not hit.any():
         return img
-    if fill == 'nearest colour':
-        return fill_nearest(img, hit)
+    if grow > 0:
+        hit = cv2.dilate(hit.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * grow + 1,) * 2)) > 0
+    if fill == 'inpaint':
+        return inpaint_mask(img, hit, radius)
     out = img.copy()
     out[hit] = FILLS[fill]
     return out
+
+
+def erase_rect(img, rect, fill='white', radius=3):
+    """Paint the rectangle (x0, y0, x1, y1) of an RGB image: a flat 'white' / 'black' ('transparent' is white here, there
+    is no alpha) or 'inpaint' (rebuilt from the surroundings). Returns `img` itself when nothing changes."""
+    h, w = img.shape[:2]
+    x0, y0, x1, y1 = max(0, rect[0]), max(0, rect[1]), min(w, rect[2]), min(h, rect[3])
+    if x1 <= x0 or y1 <= y0:
+        return img
+    if fill == 'inpaint':
+        hole = np.zeros((h, w), bool)
+        hole[y0:y1, x0:x1] = True
+        return inpaint_mask(img, hole, radius)
+    out = img.copy()
+    out[y0:y1, x0:x1] = FILLS.get(fill, FILLS['white'])
+    return out if not np.array_equal(out, img) else img
+
+
+def erase_rect_layer(rgba, rect, fill='transparent', radius=3):
+    """The same on an RGBA layer, `rect` in the layer's own coordinates: 'transparent' makes the rectangle see-through,
+    'white' / 'black' paint it opaque, 'inpaint' rebuilds the colours from the visible pixels around it (alpha kept)."""
+    h, w = rgba.shape[:2]
+    x0, y0, x1, y1 = max(0, rect[0]), max(0, rect[1]), min(w, rect[2]), min(h, rect[3])
+    if x1 <= x0 or y1 <= y0:
+        return rgba
+    out = rgba.copy()
+    if fill == 'inpaint':
+        hole = np.zeros((h, w), bool)
+        hole[y0:y1, x0:x1] = True
+        out[..., :3] = inpaint_mask(np.ascontiguousarray(rgba[..., :3]), hole, radius, rgba[..., 3] > 0)
+    elif fill == 'transparent':
+        out[y0:y1, x0:x1, 3] = 0
+    else:
+        out[y0:y1, x0:x1, :3] = FILLS[fill]
+        out[y0:y1, x0:x1, 3] = 255
+    return out if not np.array_equal(out, rgba) else rgba
+
+
+@tool("Erase rectangle", "Areas", [
+    Param('fill', "Paint with", 'choice', 'white', choices=tuple(FILLS) + ('transparent', 'inpaint')),
+    Param('radius', "Inpaint radius (px)", 'int', 3, 1, 30, slider=True)],
+    preview=False, interactive='rect-erase',
+    doc="Drag a rectangle: what is inside is erased as soon as you let go (one Undo step). On an image layer 'transparent' "
+        "makes it see-through; on the Background it paints white. The current selection is not used.")
+def erase_rectangle(img, fill, radius):
+    return img
+
+
+@tool("Move area", "Areas", [Param('copy', "Copy instead of moving", 'bool', False)],
+      preview=False, interactive='rect-move',
+      doc="Drag a rectangle round what you want to move, then drag inside it to move it (Shift also copies). The place it "
+          "leaves is filled as the 'leaves' box says. Drag a handle to resize the rectangle first; drag outside to draw "
+          "another. On an image layer it moves pixels inside that layer.")
+def move_area(img, copy):
+    return img
 
 
 @tool("Despeckle", "Clean", [
@@ -736,7 +795,7 @@ def apply_tool_to_layer(name, rgba, params=None, region=None):
         return rgba
     rgb, alpha = np.ascontiguousarray(rgba[..., :3]), rgba[..., 3]
     params = dict(params or {})
-    if params.get('fill') in ('transparent', 'nearest colour'):
+    if params.get('fill') in ('transparent', 'inpaint'):
         a = apply_tool(name, rgb, dict(params, fill='white'), region)
         b = apply_tool(name, rgb, dict(params, fill='black'), region)
         painted = (a != b).any(axis=2)
@@ -744,8 +803,8 @@ def apply_tool_to_layer(name, rgba, params=None, region=None):
             return rgba
         if params['fill'] == 'transparent':
             out_rgb, alpha = a, np.where(painted, 0, alpha).astype(np.uint8)
-        else:                                          # copy from visible pixels only: transparent ones carry no colour
-            out_rgb = fill_nearest(rgb, painted, alpha > 0)
+        else:                                          # rebuild from visible pixels only: transparent ones carry no colour
+            out_rgb = inpaint_mask(rgb, painted, int(params.get('radius', 3)), alpha > 0)
     else:
         out_rgb = apply_tool(name, rgb, params, region)
         if out_rgb is rgb:
@@ -1091,6 +1150,8 @@ class ImageForge:
         self._mv = None                  # (press point, selection, copy?, original image) while moving the content
         self._placing = False            # a click/drag is setting the x, y of a 'place' tool
         self._grab = None                # (handle, press point in image pixels, selection at press) while dragging it
+        self._rect_start = None          # press point of an 'Erase rectangle' drag, and the rectangle so far
+        self._rect_cur = None
         self._stroke_layer = None        # the layer a brush stroke paints on (None: the Background)
         self._stroke = None              # image being painted by the eraser brush, and the last brush point
         self._last = None
@@ -1203,7 +1264,7 @@ class ImageForge:
         tk.Checkbutton(row, text="Drag moves the content", variable=self.v_content, bg=bg).pack(side=tk.LEFT)
         tk.Label(row, text="leaves", bg=bg, font=('Arial', 8)).pack(side=tk.LEFT, padx=(6, 2))
         self.v_fill = tk.StringVar(value='white')
-        ttk.Combobox(row, textvariable=self.v_fill, values=('white', 'black', 'background'), state='readonly',
+        ttk.Combobox(row, textvariable=self.v_fill, values=('white', 'black', 'background', 'transparent'), state='readonly',
                      width=10).pack(side=tk.LEFT)
         tk.Label(panel, text="Inside the selection: Ctrl does the opposite of the box, Shift copies.", bg=bg,
                  fg='#555555', font=('Arial', 8), anchor='w', justify='left', wraplength=300).pack(fill=tk.X, padx=10)
@@ -2292,6 +2353,8 @@ class ImageForge:
         elif self._is_brush():
             self._press = None
             self._brush_start(e)
+        elif self.tool is not None and self.tool.interactive == 'rect-erase':
+            self._press, self._rect_start, self._rect_cur = None, (e.x, e.y), None
         elif self.tool is not None and self.tool.interactive == 'layer':
             self._press = None
             self._lmove_start(e)
@@ -2302,7 +2365,7 @@ class ImageForge:
             grab = hit_handle(self.sel, self.zoom, self.ox, self.oy, e.x, e.y) if self.sel else None
             if grab == 'move' and self._moves_content(e):
                 self._press = None
-                self._mv = (self._img_xy(e.x, e.y), self.sel, bool(e.state & 0x1), self.hist.current)
+                self._start_content_move(e)
             elif grab:
                 self._press = None
                 self._grab = (grab, self._img_xy(e.x, e.y), self.sel)
@@ -2316,31 +2379,89 @@ class ImageForge:
         self.pvars['y'].set(int(math.floor(y)))
 
     def _moves_content(self, e):
+        if self.tool is not None and self.tool.interactive == 'rect-move':
+            return True                                               # the 'Move area' tool: the drag always moves the content
         return self.v_content.get() != bool(e.state & 0x4)            # the box, flipped by Ctrl
 
-    def _fill_color(self, img):
+    def _fill_color(self, img, layer=False):
+        """What a move leaves behind. On the Background 'transparent' is white; on a layer (RGBA) it is see-through."""
         f = self.v_fill.get()
-        return border_color(img) if f == 'background' else FILLS[f]
+        if not layer:
+            return border_color(img) if f == 'background' else FILLS.get(f, FILLS['white'])
+        if f == 'transparent':
+            return (0, 0, 0, 0)
+        return tuple(border_color(np.ascontiguousarray(img[..., :3])) if f == 'background' else FILLS[f]) + (255,)
+
+    def _start_content_move(self, e):
+        copy = bool(e.state & 0x1) or bool(self.tool is not None and self.tool.interactive == 'rect-move'
+                                           and self.pvars.get('copy') is not None and self.pvars['copy'].get())
+        kind, L = self._tool_target()
+        if kind == 'text':
+            self._status(self._TEXT_LAYER_MSG)
+            return
+        pt = self._img_xy(e.x, e.y)
+        if kind == 'layer':
+            rect = layer_region(self.sel, L)
+            if rect[2] <= rect[0] or rect[3] <= rect[1]:
+                self._status("The rectangle does not touch layer '%s'." % L.name)
+                return
+            self._mv = (pt, rect, copy, L.rgba, L)
+        else:
+            self._mv = (pt, self.sel, copy, self.hist.current, None)
 
     def _mv_to(self, e):
         """Show the selected pixels moved by the distance dragged so far (one history step is made on release)."""
-        (x, y), rect, copy, orig = self._mv
+        (x, y), rect, copy, orig, L = self._mv
         nx, ny = self._img_xy(e.x, e.y)
-        out, new = move_region(orig, rect, int(round(nx - x)), int(round(ny - y)), self._fill_color(orig), copy)
-        self.preview = None if out is orig else out
-        self.sel = new
+        out, new = move_region(orig, rect, int(round(nx - x)), int(round(ny - y)), self._fill_color(orig, L is not None), copy)
+        if L is None:
+            self.preview = None if out is orig else out
+            self.sel = new
+        else:                                                         # inside the layer: its box is the limit
+            layers = list(self.hist.layers)
+            layers[self.active] = L.replace(rgba=out)
+            self.lprev = None if out is orig else tuple(layers)
+            self.sel = (new[0] + L.x, new[1] + L.y, new[2] + L.x, new[3] + L.y)
         self._redraw()
-        x0, y0, x1, y1 = new
+        x0, y0, x1, y1 = self.sel
         self._set_info("%s %d x %d  at (%d, %d)" % ("copy" if copy else "move", x1 - x0, y1 - y0, x0, y0))
 
     def _mv_end(self):
-        _, rect, copy, orig = self._mv
+        _, rect, copy, orig, L = self._mv
         self._mv = None
         out, self.preview = self.preview, None
-        if out is not None:
-            self._commit("Copy content" if copy else "Move content", out)
+        layers, self.lprev = self.lprev, None
+        label = "Copy content" if copy else "Move content"
+        if L is None and out is not None:
+            self._commit(label, out)
+        elif L is not None and layers is not None:
+            self._commit_layers(label + " (layer)", layers)
         self._after_selection()
         self._redraw()
+
+    # ---- 'Erase rectangle' ------------------------------------------------------------------------------
+    def _rect_erase_apply(self, rect):
+        p = self._read_params() or {}
+        fill, radius = p.get('fill', 'white'), int(p.get('radius', 3))
+        kind, L = self._tool_target()
+        if kind == 'text':
+            self._status(self._TEXT_LAYER_MSG)
+            return
+        if kind == 'layer':
+            out = erase_rect_layer(L.rgba, layer_region(rect, L), fill, radius)
+            if out is L.rgba:
+                self._status("Nothing to erase there on layer '%s'." % L.name)
+                return
+            layers = list(self.hist.layers)
+            layers[self.active] = L.replace(rgba=out)
+            self._commit_layers("Erase rectangle (layer)", layers)
+        else:
+            out = erase_rect(self.hist.current, rect, fill, radius)
+            if out is self.hist.current:
+                self._status("Nothing changed (the rectangle is already that colour).")
+                return
+            self._commit("Erase rectangle", out)
+        self._status("Erased %d x %d px." % (rect[2] - rect[0], rect[3] - rect[1]), ok=True)
 
     def _grab_to(self, e):
         """Move or resize the selection by the distance dragged since the press."""
@@ -2387,6 +2508,15 @@ class ImageForge:
         if self._pan_left:
             self._on_pan(e)
             return
+        if self._rect_start is not None:
+            if self._rect_cur is None and math.hypot(e.x - self._rect_start[0], e.y - self._rect_start[1]) < 4:
+                return
+            self._rect_cur = self._rect_from(self._rect_start, (e.x, e.y))
+            self._draw_selection(self._rect_cur)
+            if self._rect_cur:
+                x0, y0, x1, y1 = self._rect_cur
+                self._set_info("erase %d x %d  at (%d, %d)" % (x1 - x0, y1 - y0, x0, y0))
+            return
         if self._stroke is not None:
             self._brush_to(e)
             return
@@ -2413,6 +2543,12 @@ class ImageForge:
     def _on_release(self, e):
         if self._pan_left:
             self._pan_left = False
+            return
+        if self._rect_start is not None:
+            rect, self._rect_start, self._rect_cur = self._rect_cur, None, None
+            self._draw_selection()
+            if rect:
+                self._rect_erase_apply(rect)
             return
         if self._stroke is not None:
             self._brush_end()
