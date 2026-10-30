@@ -99,8 +99,7 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   no per-tool code); `apply_tool` turns `'transparent'` into white where there is no alpha (Background). The brush paints a
   4-channel working copy `(0,0,0,0)` / `(r,g,b,255)` through `paint_segment`. Text layers refuse pixel tools
   (`_TEXT_LAYER_MSG`). Geometry tools on the Background flatten first after a confirmation (except those below); Crop shifts the layers (`shift_layers`).
-  Save writes `_flat()`. Not done: geometry tools on a single layer (scale/rotate a layer; alpha of the new corners is the
-  problem), layer blend modes, masks, *Drag moves the content* and Cut/Copy to layer from a layer (they use the Background).
+  Save writes `_flat()`. Not done: layer blend modes, masks, *Drag moves the content* and Cut/Copy to layer from a layer (they use the Background).
   Colours picked with Pick come from the composite, so on a layer under another or with opacity < 100 they may not match its own.
 - **Geometry tools on one layer** (`Tool.layer_geometry`: 'exact' for Rotate 90/180 and Flip, 'resample' for Rotate any angle and
   Resize; `transform_layer`): exact tools run on the RGBA array as it is (pure index shuffling, so four quarter turns give back the
