@@ -619,6 +619,68 @@ class LayerToolTests(unittest.TestCase):
         self.assertTrue((b[15, 8:20, 3] == 0).all() and (b[15, 20:31, 3] == 255).all())
 
 
+class TransformLayerTests(unittest.TestCase):
+    @staticmethod
+    def layer(h=30, w=50, x=100, y=60):
+        a = np.zeros((h, w, 4), np.uint8)
+        a[..., :3] = 255                                   # invisible pixels are WHITE: a naive resample would halo
+        a[5:h - 5, 5:w - 5, :3] = (255, 0, 0)
+        a[5:h - 5, 5:w - 5, 3] = 255
+        return il.Layer('image', 'sprite', x, y, rgba=a)
+
+    def test_quarter_turn_swaps_the_size_keeps_the_centre_and_four_turns_come_back_exactly(self):
+        L = self.layer()
+        t = il.transform_layer("Rotate 90 / 180", L, {'turn': '90 clockwise'})
+        self.assertEqual(t.rgba.shape[:2], (50, 30))
+        self.assertEqual((t.x + 15, t.y + 25), (L.x + 25, L.y + 15))               # same centre
+        back = t
+        for _ in range(3):
+            back = il.transform_layer("Rotate 90 / 180", back, {'turn': '90 clockwise'})
+        self.assertTrue(np.array_equal(back.rgba, L.rgba))
+        self.assertEqual((back.x, back.y), (L.x, L.y))
+        self.assertTrue(np.array_equal(il.transform_layer("Rotate 90 / 180", L, {'turn': '180'}).rgba, L.rgba[::-1, ::-1]))
+
+    def test_free_rotation_has_transparent_corners_and_no_light_halo(self):
+        L = self.layer()
+        t = il.transform_layer("Rotate (any angle)", L, {'angle': 30.0, 'expand': True, 'fill': 'white'})
+        h, w = t.rgba.shape[:2]
+        self.assertGreater(h, 30)
+        self.assertEqual(int(t.rgba[0, 0, 3]), 0)                                  # corners see through, 'white' ignored
+        seen = t.rgba[..., 3] > 0
+        self.assertLess(int(t.rgba[seen][:, 1].max()), 40)                          # green stays ~0 on every visible pixel
+        self.assertGreater(int(t.rgba[seen][:, 0].min()), 215)                      # and red stays red, edges included
+        self.assertAlmostEqual(t.x + w / 2.0, L.x + 25, delta=1)
+        self.assertAlmostEqual(t.y + h / 2.0, L.y + 15, delta=1)
+        self.assertIs(il.transform_layer("Rotate (any angle)", L, {'angle': 0.0}), L)
+
+    def test_resize_and_flip_keep_alpha_and_the_centre(self):
+        L = self.layer()
+        half = il.transform_layer("Resize", L, {'percent': 50.0})
+        self.assertEqual(half.rgba.shape[:2], (15, 25))
+        self.assertEqual(int(half.rgba[7, 12, 3]), 255)
+        self.assertEqual(tuple(half.rgba[7, 12, :3]), (255, 0, 0))
+        self.assertEqual((half.x, half.y), (L.x + 12, L.y + 7))
+        by_width = il.transform_layer("Resize", L, {'width': 100})
+        self.assertEqual(by_width.rgba.shape[:2], (60, 100))
+        self.assertIs(il.transform_layer("Resize", L, {}), L)
+        f = il.transform_layer("Flip", L, {'axis': 'horizontal'})
+        self.assertTrue(np.array_equal(f.rgba, L.rgba[:, ::-1]))
+        self.assertTrue(np.array_equal(L.rgba, self.layer().rgba))                  # the input layer is untouched
+
+    def test_enlarging_keeps_the_edge_soft_and_the_colour_pure(self):
+        L = self.layer()
+        big = il.transform_layer("Resize", L, {'percent': 300.0, 'method': 'cubic'})
+        seen = big.rgba[..., 3] > 0
+        self.assertLess(int(big.rgba[seen][:, 1].max()), 40)
+        self.assertEqual(big.rgba.shape[:2], (90, 150))
+
+    def test_only_the_four_geometry_tools_are_layer_capable(self):
+        modes = {n: t.layer_geometry for n, t in il.TOOLS.items() if t.layer_geometry}
+        self.assertEqual(modes, {"Rotate 90 / 180": 'exact', "Flip": 'exact',
+                                 "Rotate (any angle)": 'resample', "Resize": 'resample'})
+        self.assertTrue(all(il.TOOLS[n].geometry for n in modes))
+
+
 class HistoryTests(unittest.TestCase):
     def test_undo_redo_and_truncation(self):
         a, b, c = (np.full((2, 2, 3), v, np.uint8) for v in (1, 2, 3))

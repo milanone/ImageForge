@@ -93,20 +93,22 @@ class Tool:
     `place` tool has int parameters 'x' and 'y' that a click or drag on the image sets (where the thing goes). A tool
     with `layer` ('text') makes (or, if one is selected, edits) a Layer of that kind instead of changing the pixels."""
 
-    def __init__(self, name, group, func, params, geometry, preview, doc, interactive=None, place=False, layer=None):
+    def __init__(self, name, group, func, params, geometry, preview, doc, interactive=None, place=False, layer=None,
+                 layer_geometry=None):
         self.name, self.group, self.func, self.params = name, group, func, tuple(params)
         self.geometry, self.preview, self.doc, self.interactive, self.place = geometry, preview, doc, interactive, place
         self.layer = layer
+        self.layer_geometry = layer_geometry          # None, or how it may transform one layer: 'exact' / 'resample'
 
 
 def tool(name, group, params=(), geometry=False, preview=True, doc="", interactive=None, place=False,
-         layer=None):
+         layer=None, layer_geometry=None):
     """Register `func(img, **params) -> img` as a tool. `img` is an (H, W, 3) uint8 array that must not be
     modified in place (it belongs to the Undo history); return a new array, or `img` itself for 'no change'.
     The keys of `params` are the keyword arguments."""
     def deco(func):
         TOOLS[name] = Tool(name, group, func, params, geometry, preview, doc or (func.__doc__ or "").strip(),
-                           interactive, place, layer)
+                           interactive, place, layer, layer_geometry)
         return func
     return deco
 
@@ -217,7 +219,7 @@ def blur(img, radius):
 
 @tool("Rotate 90 / 180", "Geometry", [
     Param('turn', "Turn", 'choice', '90 clockwise', choices=('90 clockwise', '90 counter-clockwise', '180'))],
-    geometry=True)
+    geometry=True, layer_geometry='exact')
 def rotate_quarter(img, turn):
     """Exact quarter turns: no resampling, no loss."""
     k = {'90 clockwise': -1, '90 counter-clockwise': 1, '180': 2}[turn]
@@ -229,7 +231,7 @@ def rotate_quarter(img, turn):
           pick='angle'),
     Param('expand', "Enlarge canvas to fit", 'bool', True),
     Param('fill', "Fill the corners with", 'choice', 'white', choices=('white', 'black', 'edge'))],
-    geometry=True)
+    geometry=True, layer_geometry='resample')
 def rotate_free(img, angle, expand, fill):
     """Rotate about the centre (bicubic). With 'Enlarge canvas' nothing is cut off; the new corners are filled."""
     if angle == 0:
@@ -249,7 +251,7 @@ def rotate_free(img, angle, expand, fill):
 
 
 @tool("Flip", "Geometry", [Param('axis', "Axis", 'choice', 'horizontal', choices=('horizontal', 'vertical'))],
-      geometry=True)
+      geometry=True, layer_geometry='exact')
 def flip(img, axis):
     """Mirror the image left-right (horizontal) or top-bottom (vertical)."""
     return np.ascontiguousarray(img[:, ::-1] if axis == 'horizontal' else img[::-1])
@@ -264,7 +266,7 @@ INTERPOLATIONS = {'nearest': cv2.INTER_NEAREST, 'linear': cv2.INTER_LINEAR, 'cub
     Param('width', "Width (px, 0 = use scale)", 'int', 0, 0, 100000),
     Param('height', "Height (px, 0 = use scale)", 'int', 0, 0, 100000),
     Param('method', "Interpolation", 'choice', 'auto', choices=('auto',) + tuple(INTERPOLATIONS))],
-    geometry=True, preview=False)
+    geometry=True, preview=False, layer_geometry='resample')
 def resize(img, percent, width, height, method):
     """Scale by a percentage, or set the width and/or height in pixels (a 0 keeps the aspect ratio). 'auto' uses
     area averaging to shrink and bicubic to enlarge."""
@@ -728,6 +730,38 @@ def apply_tool_to_layer(name, rgba, params=None, region=None):
     out[..., :3] = out_rgb
     out[..., 3] = alpha
     return out if not np.array_equal(out, rgba) else rgba
+
+
+def transform_layer(name, layer, params=None):
+    """Run a geometry tool (rotate, flip, resize: those with `layer_geometry`) on an image layer; the layer's centre stays
+    where it was. 'exact' tools only move pixels, so they run on the RGBA array as it is. 'resample' tools (free rotation,
+    resize) run on premultiplied colour (rgb * alpha) and on the alpha plane, then un-premultiply: invisible pixels often
+    carry white, and resampling straight RGB would leave a light halo at the edges. The corners of a free rotation are
+    transparent whatever its 'fill' says. Returns the new Layer, or `layer` itself when nothing changed."""
+    rgba = layer.rgba
+    if TOOLS[name].layer_geometry == 'exact':
+        out = apply_tool(name, rgba, params)
+        if out is rgba:
+            return layer
+    else:
+        f = rgba.astype(np.float32)
+        alpha = f[..., 3:4]
+        pm = f[..., :3] * (alpha / 255.0)
+        params = dict(params or {})
+        if any(p.key == 'fill' for p in TOOLS[name].params):
+            params['fill'] = 'black'
+        pm_out = apply_tool(name, pm, params)
+        if pm_out is pm:
+            return layer
+        a_out = np.clip(apply_tool(name, np.repeat(alpha, 3, axis=2), params)[..., :1], 0, 255)
+        pm_out = np.clip(pm_out, 0, a_out)              # premultiplied colour never exceeds the alpha
+        rgb = np.where(a_out > 0, pm_out * 255.0 / np.maximum(a_out, 1e-6), 0)
+        out = np.empty(pm_out.shape[:2] + (4,), np.uint8)
+        out[..., :3] = np.clip(np.rint(rgb), 0, 255)
+        out[..., 3] = np.clip(np.rint(a_out[..., 0]), 0, 255)
+    h, w = rgba.shape[:2]
+    nh, nw = out.shape[:2]
+    return layer.replace(rgba=out, x=layer.x + (w - nw) // 2, y=layer.y + (h - nh) // 2)
 
 
 def merge_layers(lower, upper, name=None):
@@ -1331,6 +1365,20 @@ class ImageForge:
         if params is None:
             return
         kind, L = self._tool_target()
+        if self.tool.geometry and self.tool.layer_geometry and kind != 'base':
+            self.preview = self.lprev = None
+            if kind == 'layer':
+                try:
+                    new = transform_layer(self.tool.name, L, params)
+                except Exception as ex:
+                    self._status("%s: %s" % (self.tool.name, ex))
+                    return
+                if new is not L:
+                    layers = list(self.hist.layers)
+                    layers[self.active] = new
+                    self.lprev = tuple(layers)
+            self._redraw()
+            return
         if not self.tool.geometry and kind != 'base':
             self.preview = self.lprev = None
             if kind == 'layer':                               # the tool works on the pixels of the selected layer
@@ -1369,8 +1417,22 @@ class ImageForge:
             self._apply_layer_tool(params)
             return
         kind, L = self._tool_target()
-        if not self.tool.geometry and kind == 'text':
+        if kind == 'text' and (not self.tool.geometry or self.tool.layer_geometry):
             self._status(self._TEXT_LAYER_MSG)
+            return
+        if self.tool.geometry and self.tool.layer_geometry and kind == 'layer':
+            try:
+                new = transform_layer(self.tool.name, L, params)
+            except Exception as ex:
+                self._status("%s failed: %s" % (self.tool.name, ex))
+                return
+            if new is L:
+                self._status("%s: no change with these parameters." % self.tool.name)
+                return
+            layers = list(self.hist.layers)
+            layers[self.active] = new
+            self._commit_layers("%s (layer)" % self.tool.name, layers)
+            self._status("%s applied on layer '%s' (its centre stays put)." % (self.tool.name, L.name), ok=True)
             return
         if not self.tool.geometry and kind == 'layer':
             region = layer_region(self.sel, L)

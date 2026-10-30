@@ -44,8 +44,13 @@ Background; with an *image layer* selected they change that layer's own pixels (
 preview and the selection work as usual, the selection being cut to the layer). The eraser brush and *Erase / keep
 colours* have a **transparent** option for the paint: on a layer it erases to see through, on the Background it paints
 white. A *text layer* is not made of pixels: pixel tools refuse it (edit it with Add text, or merge it down first).
-*Drag moves the content*, *Add text* positioning and *Cut/Copy to layer* work from the Background. Rotate, flip, resize
-and auto-crop change the whole picture, so they ask to merge the layers first; *Crop to selection* keeps them.
+*Drag moves the content* and *Cut/Copy to layer* work from the Background.
+
+**Rotate, flip and resize a single layer**: select an image layer and use *Rotate 90 / 180*, *Rotate (any angle)* (with
+live preview and the **Measure** button), *Flip* or *Resize* (percent or pixels): the layer is transformed around its own
+centre, its transparency is kept, and the new corners of a rotation are transparent (no light fringe at the edges). With the
+Background selected these tools change the whole picture and, if there are layers, ask to merge them first (so does
+*Auto-crop borders*); *Crop to selection* keeps the layers.
 
 **Projects**: *Save* with layers writes an `.ifl` project (a zip: `manifest.json`, `background.png`, one PNG per image
 layer; text layers keep their text, font and colour), which reopens with all layers and editable text. Saving as PNG/JPEG

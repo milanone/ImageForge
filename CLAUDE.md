@@ -98,10 +98,18 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   Eraser brush) makes what it would paint transparent: found by running it with white and with black and comparing (generic,
   no per-tool code); `apply_tool` turns `'transparent'` into white where there is no alpha (Background). The brush paints a
   4-channel working copy `(0,0,0,0)` / `(r,g,b,255)` through `paint_segment`. Text layers refuse pixel tools
-  (`_TEXT_LAYER_MSG`). Geometry tools still flatten first after a confirmation; Crop shifts the layers (`shift_layers`).
+  (`_TEXT_LAYER_MSG`). Geometry tools on the Background flatten first after a confirmation (except those below); Crop shifts the layers (`shift_layers`).
   Save writes `_flat()`. Not done: geometry tools on a single layer (scale/rotate a layer; alpha of the new corners is the
   problem), layer blend modes, masks, *Drag moves the content* and Cut/Copy to layer from a layer (they use the Background).
   Colours picked with Pick come from the composite, so on a layer under another or with opacity < 100 they may not match its own.
+- **Geometry tools on one layer** (`Tool.layer_geometry`: 'exact' for Rotate 90/180 and Flip, 'resample' for Rotate any angle and
+  Resize; `transform_layer`): exact tools run on the RGBA array as it is (pure index shuffling, so four quarter turns give back the
+  same bytes); resampling tools run on premultiplied float colour and on the alpha plane (replicated to 3 channels) with `fill`
+  forced to black, then un-premultiply, because invisible pixels often carry white and straight-RGB resampling gives a light halo
+  (checked: edge pixels of a rotated grey panel keep exactly grey). The centre stays fixed (`x += (w - nw) // 2`). Bicubic
+  enlargement can overshoot a bright value on opaque pixels (ringing): expected, not a halo. Auto-crop is not layer-capable (it
+  flattens). A first attempt compared float round trips exactly and failed two tests: hence the 'exact' path. Tests:
+  `TransformLayerTests`; real window: `examples/layer_geometry_session.py`.
 - **Tool-made layers** (`Tool.layer == 'text'`, only Add text): `_apply_layer_tool` adds a layer, or updates the selected one when
   its kind matches (`_edit_index`); selecting such a layer while the tool is open loads its parameters into the boxes
   (`_load_layer_into_tool`); double-click in the Layers tab opens the matching tool. The button reads Add as layer / Update layer.
@@ -129,7 +137,7 @@ new tree nodes automatically.
 ## Verified / not verified
 
 Unit tests on synthetic arrays and files; a scripted session with real Tk mouse events (drag selection, move/resize by handles, arrow nudge, Apply, crop,
-undo, redo, wheel, pan, click-to-deselect, colour pick, angle pick, brush stroke, content move/copy, text placement, layers: add/edit/move/opacity/merge/flatten/undo/save, tools and brush on a layer) and a screenshot from the real window. Not verified: large photos, HiDPI
+undo, redo, wheel, pan, click-to-deselect, colour pick, angle pick, brush stroke, content move/copy, text placement, layers: add/edit/move/opacity/merge/flatten/undo/save, tools, brush and geometry on a layer) and a screenshot from the real window. Not verified: large photos, HiDPI
 scaling other than the screenshot script's, drag-and-drop (tkinterdnd2 path), the Save dialogs by hand.
 
 ## Ideas not done yet
@@ -137,15 +145,6 @@ scaling other than the screenshot script's, drag-and-drop (tkinterdnd2 path), th
 Nothing here is promised; Francesco adds tools as he needs them. Ordered roughly by how likely they are to be wanted.
 
 **Layers**
-- *Rotate / flip / resize a single image layer* (started, then dropped before commit; the working tree was reverted). Design that
-  was tried: add `layer_geometry=True` on the four tools (Rotate 90/180, Rotate any angle, Flip, Resize) and a
-  `transform_layer(name, layer, params)` that runs the tool on **premultiplied** colour (`rgb * alpha / 255`, float32) and on the
-  alpha plane (replicated to 3 channels) with `fill` forced to black, then un-premultiplies; the layer's centre stays fixed
-  (`x += (w - nw) // 2`). The reason for premultiplying: invisible pixels often carry white, and resampling straight RGB gives a
-  light halo at the edges and at the new corners. When it was stopped, two of its four tests failed (quarter turn x4 not equal
-  to the original and flip not equal to `rgba[:, ::-1]`, both exact comparisons: float round trip through
-  premultiply/un-premultiply loses 1 level on semi-transparent pixels; use a tolerance, or skip the float step for the pure
-  index-shuffling tools). Also needed: preview via `lprev`, the text-layer refusal for these tools, and a GUI session.
 - Layer blend modes (multiply, screen, ...), layer masks, layer groups, lock/link layers.
 - *Drag moves the content* and Cut/Copy to layer working from a layer (they use the Background); Pick colours from the
   selected layer instead of the composite.
