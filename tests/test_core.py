@@ -394,6 +394,105 @@ class TextAndMoveTests(unittest.TestCase):
         self.assertIs(same, img)
 
 
+class LayerTests(unittest.TestCase):
+    @staticmethod
+    def canvas(h=40, w=60, v=255):
+        return np.full((h, w, 3), v, np.uint8)
+
+    @staticmethod
+    def patch(h, w, rgb, alpha=255):
+        a = np.empty((h, w, 4), np.uint8)
+        a[..., :3] = rgb
+        a[..., 3] = alpha
+        return a
+
+    def test_composite_without_visible_layers_returns_the_base_itself(self):
+        base = self.canvas()
+        self.assertIs(il.composite(base, ()), base)
+        hidden = il.Layer('image', 'h', 0, 0, visible=False, rgba=self.patch(5, 5, (0, 0, 0)))
+        zero = il.Layer('image', 'z', 0, 0, opacity=0, rgba=self.patch(5, 5, (0, 0, 0)))
+        self.assertIs(il.composite(base, (hidden, zero)), base)
+
+    def test_composite_places_blends_clips_and_leaves_the_base_alone(self):
+        base = self.canvas()
+        red = il.Layer('image', 'r', 10, 5, rgba=self.patch(8, 8, (255, 0, 0)))
+        out = il.composite(base, (red,))
+        self.assertTrue((out[5:13, 10:18] == (255, 0, 0)).all())
+        self.assertTrue((base == 255).all())
+        half = il.Layer('image', 'h', 0, 0, opacity=50, rgba=self.patch(4, 4, (0, 0, 0)))
+        self.assertAlmostEqual(int(il.composite(base, (half,))[0, 0, 0]), 128, delta=1)
+        soft = il.Layer('image', 's', 0, 0, rgba=self.patch(4, 4, (0, 0, 0), alpha=128))
+        self.assertAlmostEqual(int(il.composite(base, (soft,))[0, 0, 0]), 127, delta=1)
+        edge = il.Layer('image', 'e', -4, -4, rgba=self.patch(8, 8, (0, 0, 255)))
+        out = il.composite(base, (edge,))
+        self.assertTrue((out[:4, :4] == (0, 0, 255)).all() and (out[4:, :] == 255).all())
+        far = il.Layer('image', 'f', 500, 500, rgba=self.patch(8, 8, (0, 0, 0)))
+        self.assertTrue((il.composite(base, (far,)) == 255).all())
+
+    def test_layer_order_is_bottom_to_top(self):
+        base = self.canvas()
+        a = il.Layer('image', 'a', 0, 0, rgba=self.patch(6, 6, (255, 0, 0)))
+        b = il.Layer('image', 'b', 3, 3, rgba=self.patch(6, 6, (0, 255, 0)))
+        self.assertEqual(tuple(il.composite(base, (a, b))[4, 4]), (0, 255, 0))
+        self.assertEqual(tuple(il.composite(base, (b, a))[4, 4]), (255, 0, 0))
+
+    def test_text_layer_stays_editable_and_rasterises_like_the_tool(self):
+        params = dict(text="Hi", size=30, font='Arial', color='#ff0000', angle=0.0, opacity=100)
+        L = il.Layer('text', 'Text: Hi', 20, 10, params=params)
+        base = self.canvas(100, 200)
+        out = il.composite(base, (L,))
+        self.assertTrue(np.array_equal(out, il.apply_tool("Add text", base, dict(params, x=20, y=10))))
+        bigger = L.replace(params=dict(params, size=60))
+        self.assertGreater(int((il.composite(base, (bigger,)) != base).any(axis=2).sum()), int((out != base).any(axis=2).sum()))
+        self.assertIsNone(il.Layer('text', 'e', 0, 0, params=dict(params, text="  ")).raster())
+        self.assertIs(il.composite(base, (il.Layer('text', 'e', 0, 0, params=dict(params, text="")),)), base)
+        with self.assertRaises(Exception):
+            L.x = 5                                               # frozen: a change is a new object in the history
+
+    def test_merge_layers_matches_compositing_both(self):
+        base = self.canvas(40, 60, 200)
+        a = il.Layer('image', 'a', 5, 5, rgba=self.patch(10, 10, (255, 0, 0)))
+        b = il.Layer('image', 'b', 10, 8, opacity=60, rgba=self.patch(10, 10, (0, 0, 255), alpha=200))
+        merged = il.merge_layers(a, b)
+        self.assertEqual((merged.x, merged.y, merged.rgba.shape[:2]), (5, 5, (13, 15)))
+        diff = np.abs(il.composite(base, (merged,)).astype(int) - il.composite(base, (a, b)).astype(int))
+        self.assertLessEqual(int(diff.max()), 2)
+        txt = il.Layer('text', 't', 0, 0, params=dict(text="A", size=20, font='Arial', color='#000000', angle=0.0, opacity=100))
+        self.assertEqual(il.merge_layers(a, txt).kind, 'image')
+
+    def test_shift_layers(self):
+        a = il.Layer('image', 'a', 5, 6, rgba=self.patch(2, 2, (0, 0, 0)))
+        (b,) = il.shift_layers((a,), -5, -6)
+        self.assertEqual((b.x, b.y, a.x, a.y), (0, 0, 5, 6))
+
+    def test_history_keeps_layers_per_state_and_counts_shared_arrays_once(self):
+        base = self.canvas(100, 100)
+        h = il.History(base)
+        L = il.Layer('image', 'a', 0, 0, rgba=self.patch(10, 10, (0, 0, 0)))
+        h.push("Add layer", base, (L,))
+        self.assertEqual(h.layers, (L,))
+        h.push("Other", self.canvas(100, 100, 7))                # layers None: kept
+        self.assertEqual(h.layers, (L,))
+        h.undo()
+        h.undo()
+        self.assertEqual(h.layers, ())
+        h.redo()
+        self.assertEqual(h.layers, (L,))
+        small = il.History(base, limit_bytes=base.nbytes + 500)
+        for i in range(6):
+            small.push("l%d" % i, base, (L,))                    # same base and same layer pixels in every state
+        self.assertEqual(len(small.states), 7)                    # shared arrays are counted once: nothing dropped
+
+    def test_load_rgba_keeps_transparency(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = self.patch(4, 4, (10, 20, 30))
+            a[:2, :, 3] = 0
+            Image.fromarray(a, 'RGBA').save(os.path.join(d, "t.png"))
+            out = il.load_rgba(os.path.join(d, "t.png"))
+        self.assertEqual(out.shape, (4, 4, 4))
+        self.assertEqual((int(out[0, 0, 3]), int(out[3, 0, 3])), (0, 255))
+
+
 class HistoryTests(unittest.TestCase):
     def test_undo_redo_and_truncation(self):
         a, b, c = (np.full((2, 2, 3), v, np.uint8) for v in (1, 2, 3))

@@ -84,6 +84,26 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   Not done: editing text that is already applied (it is pixels after Apply), alignment, outline/shadow, tool-wide font bold flag.
 - The Apply/Preview/Reset row is packed at the bottom of the panel *first*, so it stays visible however many parameters a tool has.
 
+- **Layers** (document = background array + `Layer` tuple): `Layer` is a frozen dataclass (`eq=False`, identity semantics):
+  kind 'image' (`rgba`, straight alpha, immutable) or 'text' (`params` = kwargs of `render_text`, rasterised on demand,
+  `lru_cache`d, so the text stays editable), `x`, `y` (may be off-canvas), `visible`, `opacity`. `History` states are
+  `(label, base, layers)`; `push(label, img, layers=None)` keeps the layers when None; a layer-only step shares the base array and
+  `_bytes()` counts shared arrays once. `composite(base, layers)` returns `base` itself when nothing shows (cheap identity for
+  the cache); `_shown()` composites `preview or base` with `lprev or layers`, cached by identity in `_comp`, so pan/zoom do not
+  recompute. `self.active` = index of the selected layer or None (Background). `lprev` is the layers preview (slider drag, layer
+  drag, text being edited); `_commit_layers` is the way to push a layer change.
+  *Tools act on the Background only* (decision to keep every tool a pure `(H, W, 3) -> (H, W, 3)` function): the status line says
+  so; geometry tools flatten first after a confirmation; Crop shifts the layers (`shift_layers`). Save writes `_flat()`.
+  Not done: tools acting on a layer's own pixels, a layered file format (ORA / own zip), layer blend modes, masks, scaling or
+  rotating a layer (rotation exists only inside a text layer), lifting from a layer other than the Background.
+- **Tool-made layers** (`Tool.layer == 'text'`, only Add text): `_apply_layer_tool` adds a layer, or updates the selected one when
+  its kind matches (`_edit_index`); selecting such a layer while the tool is open loads its parameters into the boxes
+  (`_load_layer_into_tool`); double-click in the Layers tab opens the matching tool. The button reads Add as layer / Update layer.
+- **Layer panel traps**: `ttk.Treeview.selection_set` queues `<<TreeviewSelect>>`, which arrives after the `_lsync` guard is
+  down: `_on_layer_select` therefore ignores a selection equal to `active` (otherwise it refreshed forever and froze the UI -
+  found by a scripted session). Property boxes commit on Return / FocusOut / slider release, one history step each.
+  `examples/layers_session.py` is that scripted session (real Tk events, prints what it checked; it grabs the screen).
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a
@@ -93,9 +113,9 @@ new tree nodes automatically.
 ## Verified / not verified
 
 Unit tests on synthetic arrays and files; a scripted session with real Tk mouse events (drag selection, move/resize by handles, arrow nudge, Apply, crop,
-undo, redo, wheel, pan, click-to-deselect, colour pick, angle pick, brush stroke, content move/copy, text placement) and a screenshot from the real window. Not verified: large photos, HiDPI
+undo, redo, wheel, pan, click-to-deselect, colour pick, angle pick, brush stroke, content move/copy, text placement, layers: add/edit/move/opacity/merge/flatten/undo/save) and a screenshot from the real window. Not verified: large photos, HiDPI
 scaling other than the screenshot script's, drag-and-drop (tkinterdnd2 path), the Save dialogs by hand.
 
 ## Ideas not done yet (from SpectrumDigitizer's cleaning tab)
 
-Layers / non-destructive objects (move or edit a pasted object or its text later), rotation of the selection (SpectrumDigitizer's working area could rotate), manual link of a broken line, magnifier next to the cursor.
+Tools on a layer's own pixels, layered file format, scaling/rotating a layer, rotation of the selection (SpectrumDigitizer's working area could rotate), manual link of a broken line, magnifier next to the cursor.

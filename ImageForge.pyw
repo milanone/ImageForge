@@ -9,6 +9,8 @@ The built-in ones are below; more can be dropped as .py files into the `plugins`
 
 The core (registry, tools, history, load/save) does not need a display, so the tests can import it.
 """
+import dataclasses
+import functools
 import importlib.util
 import math
 import os
@@ -83,20 +85,23 @@ class Tool:
     """`geometry` tools change the whole image (size, orientation) and ignore the selection; the others are
     computed on the whole image and only the selected rectangle is taken from the result. An `interactive` tool
     ('brush') is not applied with the Apply button: the user paints on the image and the app does the work. A
-    `place` tool has int parameters 'x' and 'y' that a click or drag on the image sets (where the thing goes)."""
+    `place` tool has int parameters 'x' and 'y' that a click or drag on the image sets (where the thing goes). A tool
+    with `layer` ('text') makes (or, if one is selected, edits) a Layer of that kind instead of changing the pixels."""
 
-    def __init__(self, name, group, func, params, geometry, preview, doc, interactive=None, place=False):
+    def __init__(self, name, group, func, params, geometry, preview, doc, interactive=None, place=False, layer=None):
         self.name, self.group, self.func, self.params = name, group, func, tuple(params)
         self.geometry, self.preview, self.doc, self.interactive, self.place = geometry, preview, doc, interactive, place
+        self.layer = layer
 
 
-def tool(name, group, params=(), geometry=False, preview=True, doc="", interactive=None, place=False):
+def tool(name, group, params=(), geometry=False, preview=True, doc="", interactive=None, place=False,
+         layer=None):
     """Register `func(img, **params) -> img` as a tool. `img` is an (H, W, 3) uint8 array that must not be
     modified in place (it belongs to the Undo history); return a new array, or `img` itself for 'no change'.
     The keys of `params` are the keyword arguments."""
     def deco(func):
         TOOLS[name] = Tool(name, group, func, params, geometry, preview, doc or (func.__doc__ or "").strip(),
-                           interactive, place)
+                           interactive, place, layer)
         return func
     return deco
 
@@ -567,8 +572,51 @@ def load_font(name, size):
     return ImageFont.load_default(size)
 
 
+@functools.lru_cache(maxsize=64)
+def _render_text_cached(text, size, font, color, angle, opacity):
+    text = text.replace("\n", "\n")                  # a typed backslash-n is a line break (the box is one line)
+    if not text.strip() or opacity == 0:
+        return None
+    cols = parse_colors(color)
+    rgb = cols[0] if cols else (0, 0, 0)
+    f = load_font(font, size)
+    probe = ImageDraw.Draw(Image.new('L', (1, 1)))
+    l, t, r, b = probe.multiline_textbbox((0, 0), text, font=f)
+    pad = 1
+    mask = Image.new('L', (r - l + 2 * pad, b - t + 2 * pad), 0)
+    ImageDraw.Draw(mask).multiline_text((pad - l, pad - t), text, font=f, fill=255)
+    if angle:
+        mask = mask.rotate(angle, expand=True, resample=Image.BICUBIC)
+    a = np.asarray(mask, np.float32) * (opacity / 100.0)
+    out = np.empty(a.shape + (4,), np.uint8)
+    out[..., :3] = rgb
+    out[..., 3] = _to_u8(a)
+    out.flags.writeable = False                       # shared by the cache
+    return out
+
+
+def render_text(text, size, font, color, angle=0.0, opacity=100):
+    """RGBA array (a tight box round the text, straight alpha) or None for an empty text. Anti-aliased, with the
+    font of this computer, optionally rotated (counter-clockwise, degrees) and semi-transparent."""
+    return _render_text_cached(str(text), int(size), str(font), str(color), float(angle), int(opacity))
+
+
+def blend_rgba(dst, rgba, x, y, opacity=1.0):
+    """Blend `rgba` (straight alpha) onto the RGB image `dst` IN PLACE with its top-left corner at (x, y), times
+    `opacity` (0..1). Whatever falls outside `dst` is dropped. Returns False when nothing was inside."""
+    h, w = dst.shape[:2]
+    mh, mw = rgba.shape[:2]
+    x0, y0, x1, y1 = max(0, x), max(0, y), min(w, x + mw), min(h, y + mh)
+    if x1 <= x0 or y1 <= y0:
+        return False
+    src = rgba[y0 - y:y1 - y, x0 - x:x1 - x]
+    a = src[..., 3:4].astype(np.float32) * (opacity / 255.0)
+    dst[y0:y1, x0:x1] = _to_u8(dst[y0:y1, x0:x1].astype(np.float32) * (1 - a) + src[..., :3].astype(np.float32) * a)
+    return True
+
+
 @tool("Add text", "Draw", [
-    Param('text', "Text (type \\n for a new line)", 'text', "Text"),
+    Param('text', "Text (type \n for a new line)", 'text', "Text"),
     Param('size', "Size (px)", 'int', 32, 4, 2000, slider=True),
     Param('font', "Font", 'choice', FONT_CHOICES[0], choices=FONT_CHOICES),
     Param('color', "Colour", 'colors', '#000000', pick='color1'),
@@ -576,33 +624,99 @@ def load_font(name, size):
     Param('y', "Y of the top-left corner (px)", 'int', 20, -100000, 100000),
     Param('angle', "Rotate (deg, counter-clockwise)", 'float', 0.0, -180.0, 180.0, step=0.5, slider=True),
     Param('opacity', "Opacity (%)", 'int', 100, 0, 100, slider=True)],
-    place=True,
-    doc="Click or drag on the image to place the text, then Apply. Inside a selection the text is clipped to it.")
+    place=True, layer='text',
+    doc="Click or drag on the image to place the text, then press the button: the text becomes a layer, which you can "
+        "select in the Layers tab and edit (or move) later. As a plain function it paints the text into the pixels.")
 def add_text(img, text, size, font, color, x, y, angle, opacity):
-    """Anti-aliased text in a font of this computer, optionally rotated and semi-transparent."""
-    text = text.replace("\\n", "\n")                  # a typed backslash-n is a line break (the box is one line)
-    if not text.strip() or opacity == 0:
+    """Paint the text into the pixels (the app makes a layer instead and bakes it only on Flatten)."""
+    rgba = render_text(text, size, font, color, angle, opacity)
+    if rgba is None:
         return img
-    cols = parse_colors(color)
-    rgb = np.asarray(cols[0] if cols else (0, 0, 0), np.float32)
-    f = load_font(font, size)
-    probe = ImageDraw.Draw(Image.new('L', (1, 1)))
-    l, t, r, b = probe.multiline_textbbox((0, 0), text, font=f)
-    pad = 1
-    layer = Image.new('L', (r - l + 2 * pad, b - t + 2 * pad), 0)
-    ImageDraw.Draw(layer).multiline_text((pad - l, pad - t), text, font=f, fill=255)
-    if angle:
-        layer = layer.rotate(angle, expand=True, resample=Image.BICUBIC)
-    mask = np.asarray(layer, np.float32) / 255.0 * (opacity / 100.0)
-    h, w = img.shape[:2]
-    mh, mw = mask.shape
-    dx0, dy0, dx1, dy1 = max(0, x), max(0, y), min(w, x + mw), min(h, y + mh)
-    if dx1 <= dx0 or dy1 <= dy0:
-        return img
-    m = mask[dy0 - y:dy1 - y, dx0 - x:dx1 - x][..., None]
     out = img.copy()
-    out[dy0:dy1, dx0:dx1] = _to_u8(out[dy0:dy1, dx0:dx1].astype(np.float32) * (1 - m) + rgb * m)
-    return out
+    return out if blend_rgba(out, rgba, x, y) else img
+
+
+# ---- layers -----------------------------------------------------------------------------------------------
+@dataclasses.dataclass(frozen=True, eq=False)
+class Layer:
+    """A picture over the background. kind 'image': pixels with alpha (`rgba`, (H, W, 4) uint8, never modified in place);
+    kind 'text': the keyword arguments of render_text in `params`, rasterised on demand so the text stays editable.
+    (x, y) is the top-left corner on the canvas (may be outside it), `opacity` 0..100. Frozen: change one with replace()
+    and put the new object in the history."""
+    kind: str
+    name: str
+    x: int = 0
+    y: int = 0
+    visible: bool = True
+    opacity: int = 100
+    rgba: object = None
+    params: object = None
+
+    def replace(self, **kw):
+        return dataclasses.replace(self, **kw)
+
+    def raster(self):
+        """The RGBA pixels of the layer (None for an empty text)."""
+        if self.kind == 'text':
+            return render_text(**self.params)
+        return self.rgba
+
+    @property
+    def nbytes(self):
+        return self.rgba.nbytes if self.rgba is not None else 0
+
+
+def composite(base, layers):
+    """The picture as seen: `layers` (bottom to top) blended over `base`. Returns `base` itself when no layer shows."""
+    out = None
+    for L in layers:
+        if not L.visible or L.opacity <= 0:
+            continue
+        rgba = L.raster()
+        if rgba is None:
+            continue
+        if out is None:
+            out = base.copy()
+        blend_rgba(out, rgba, L.x, L.y, L.opacity / 100.0)
+    return base if out is None else out
+
+
+def shift_layers(layers, dx, dy):
+    return tuple(L.replace(x=L.x + dx, y=L.y + dy) for L in layers)
+
+
+def merge_layers(lower, upper, name=None):
+    """One image layer holding `upper` over `lower` (each with its own opacity); the result is opaque-opacity 100,
+    its box is the union of the two, and a text layer loses its editability."""
+    parts = [(L.raster(), L) for L in (lower, upper)]
+    parts = [(r, L) for r, L in parts if r is not None and L.visible]
+    if not parts:
+        return lower.replace(kind='image', rgba=np.zeros((1, 1, 4), np.uint8), params=None, name=name or lower.name)
+    x0 = min(L.x for _, L in parts)
+    y0 = min(L.y for _, L in parts)
+    x1 = max(L.x + r.shape[1] for r, L in parts)
+    y1 = max(L.y + r.shape[0] for r, L in parts)
+    col = np.zeros((y1 - y0, x1 - x0, 3), np.float32)
+    alpha = np.zeros((y1 - y0, x1 - x0), np.float32)
+    for r, L in parts:                                # straight-alpha 'over': bottom first
+        h, w = r.shape[:2]
+        sl = (slice(L.y - y0, L.y - y0 + h), slice(L.x - x0, L.x - x0 + w))
+        a_s = r[..., 3].astype(np.float32) / 255.0 * (L.opacity / 100.0)
+        a_d = alpha[sl]
+        a_o = a_s + a_d * (1 - a_s)
+        safe = np.where(a_o > 0, a_o, 1.0)[..., None]
+        col[sl] = (r[..., :3].astype(np.float32) * a_s[..., None] + col[sl] * (a_d * (1 - a_s))[..., None]) / safe
+        alpha[sl] = a_o
+    rgba = np.dstack([_to_u8(col), _to_u8(alpha * 255.0)])
+    return Layer('image', name or lower.name, x0, y0, True, 100, rgba=rgba)
+
+
+def load_rgba(path):
+    """RGBA uint8 array of an image file with its transparency kept (EXIF orientation applied)."""
+    with Image.open(path) as im:
+        im.load()
+        im = ImageOps.exif_transpose(im)
+        return np.array(im.convert('RGBA'))
 
 
 def move_region(img, rect, dx, dy, fill, copy=False):
@@ -619,6 +733,12 @@ def move_region(img, rect, dx, dy, fill, copy=False):
         out[y0:y1, x0:x1] = fill
     out[ny0:ny1, nx0:nx1] = patch
     return out, (nx0, ny0, nx1, ny1)
+
+
+@tool("Move layer", "Layers", [], preview=False, interactive='layer',
+      doc="Drag on the image to move the layer selected in the Layers tab (arrow keys nudge it). One drag is one Undo step.")
+def move_layer_tool(img):
+    return img
 
 
 def border_color(img):
@@ -658,10 +778,12 @@ def crop(img, region):
 # History and files
 # ---------------------------------------------------------------------------------------------------------
 class History:
-    """Undo/Redo stack of (label, array). The arrays are never modified in place, so a state is just kept."""
+    """Undo/Redo stack of (label, background array, layers tuple). Arrays and Layer objects are never modified in
+    place, so a state just keeps references: a step that only touches the layers shares the background of the
+    previous one."""
 
-    def __init__(self, img, limit_bytes=HISTORY_BYTES):
-        self.states = [("Original", img)]
+    def __init__(self, img, limit_bytes=HISTORY_BYTES, layers=()):
+        self.states = [("Original", img, tuple(layers))]
         self.index = 0
         self.limit = limit_bytes
 
@@ -669,11 +791,26 @@ class History:
     def current(self):
         return self.states[self.index][1]
 
-    def push(self, label, img):
+    @property
+    def layers(self):
+        return self.states[self.index][2]
+
+    def _bytes(self):
+        seen, total = set(), 0
+        for _, img, layers in self.states:
+            for a in [img] + [L.rgba for L in layers if L.rgba is not None]:
+                if id(a) not in seen:                 # shared between states: count once
+                    seen.add(id(a))
+                    total += a.nbytes
+        return total
+
+    def push(self, label, img, layers=None):
+        """New state; `layers` None keeps the current layers."""
+        layers = self.layers if layers is None else tuple(layers)
         del self.states[self.index + 1:]
-        self.states.append((label, img))
+        self.states.append((label, img, layers))
         self.index += 1
-        while len(self.states) > 2 and sum(a.nbytes for _, a in self.states) > self.limit:
+        while len(self.states) > 2 and self._bytes() > self.limit:
             del self.states[0]
             self.index -= 1
 
@@ -769,6 +906,11 @@ class ImageForge:
         self.mode = None                 # None, 'color' or 'angle': what a click on the image means (Esc cancels)
         self._pick_key = None            # the parameter a pick fills
         self._pick_pts = []
+        self.active = None               # selected layer (index into hist.layers), None = the Background
+        self.lprev = None                # layers shown instead of the history's while a layer is edited/dragged
+        self._lmove = None               # (press point, layer index, layer) while dragging a layer
+        self._lsync = False              # True while the layer boxes are filled from a layer (no change events)
+        self._comp = None                # cache of the last composite (base, layers, image)
         self._mv = None                  # (press point, selection, copy?, original image) while moving the content
         self._placing = False            # a click/drag is setting the x, y of a 'place' tool
         self._grab = None                # (handle, press point in image pixels, selection at press) while dragging it
@@ -795,12 +937,15 @@ class ImageForge:
         self.root.config(menu=mb)
         self.m_file, self.m_edit, self.m_view = tk.Menu(mb, tearoff=0), tk.Menu(mb, tearoff=0), tk.Menu(mb, tearoff=0)
         self.m_image = tk.Menu(mb, tearoff=0)
+        self.m_layer = tk.Menu(mb, tearoff=0)
         mb.add_cascade(label="File", menu=self.m_file)
         mb.add_cascade(label="Edit", menu=self.m_edit)
         mb.add_cascade(label="View", menu=self.m_view)
         mb.add_cascade(label="Image", menu=self.m_image)
+        mb.add_cascade(label="Layer", menu=self.m_layer)
         f = self.m_file
         f.add_command(label="Open...", accelerator="Ctrl+O", command=self.open_dialog)
+        f.add_command(label="Open as layer...", command=self.open_layer_dialog)
         f.add_command(label="Save", accelerator="Ctrl+S", command=self.save)
         f.add_command(label="Save As...", accelerator="Ctrl+Shift+S", command=self.save_as)
         f.add_separator()
@@ -812,6 +957,14 @@ class ImageForge:
         e.add_command(label="Select all", accelerator="Ctrl+A", command=self.select_all)
         e.add_command(label="Deselect", accelerator="Ctrl+D", command=self.deselect)
         e.add_command(label="Crop to selection", accelerator="Ctrl+Shift+X", command=self.crop_to_selection)
+        e.add_separator()
+        e.add_command(label="Copy selection to layer", accelerator="Ctrl+J", command=lambda: self.selection_to_layer(False))
+        e.add_command(label="Cut selection to layer", accelerator="Ctrl+Shift+J", command=lambda: self.selection_to_layer(True))
+        ly = self.m_layer
+        for label, cmd in (("Raise", self.layer_up), ("Lower", self.layer_down), ("Duplicate", self.layer_duplicate),
+                           ("Delete", self.layer_delete), ("Merge down", self.layer_merge_down),
+                           ("Flatten all", self.flatten_all)):
+            ly.add_command(label=label, command=cmd)
         v = self.m_view
         v.add_command(label="Zoom in", accelerator="Ctrl++", command=lambda: self._zoom_step(1.25))
         v.add_command(label="Zoom out", accelerator="Ctrl+-", command=lambda: self._zoom_step(0.8))
@@ -865,20 +1018,26 @@ class ImageForge:
         tk.Label(panel, text="Inside the selection: Ctrl does the opposite of the box, Shift copies.", bg=bg,
                  fg='#555555', font=('Arial', 8), anchor='w', justify='left', wraplength=300).pack(fill=tk.X, padx=10)
 
-        tk.Label(panel, text="TOOLS", font=('Arial', 10, 'bold'), bg=bg, anchor='w').pack(fill=tk.X, padx=10, pady=(8, 0))
-        tf = tk.Frame(panel, bg=bg)
+        self.nbk = ttk.Notebook(panel)
+        self.nbk.pack(fill=tk.BOTH, expand=True, padx=4, pady=(6, 0))
+        outer, tab = self._scrollable(self.nbk, bg)
+        self.nbk.add(outer, text="  Tools  ")
+        tab_layers = tk.Frame(self.nbk, bg=bg)
+        self.nbk.add(tab_layers, text="  Layers  ")
+        self._build_layers_tab(tab_layers, bg)
+        tf = tk.Frame(tab, bg=bg)
         tf.pack(fill=tk.X, padx=8, pady=2)
-        self.tree = ttk.Treeview(tf, show='tree', selectmode='browse', height=9)
+        self.tree = ttk.Treeview(tf, show='tree', selectmode='browse', height=7)
         sb = ttk.Scrollbar(tf, orient='vertical', command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.tree.bind('<<TreeviewSelect>>', lambda e: self._on_tree_select())
 
-        self.l_doc = tk.Label(panel, text="", bg=bg, fg='#555555', font=('Arial', 8), wraplength=300, justify='left',
+        self.l_doc = tk.Label(tab, text="", bg=bg, fg='#555555', font=('Arial', 8), wraplength=300, justify='left',
                               anchor='w')
         self.l_doc.pack(fill=tk.X, padx=10, pady=(4, 0))
-        self.params_frame = tk.Frame(panel, bg=bg)
+        self.params_frame = tk.Frame(tab, bg=bg)
         self.params_frame.pack(fill=tk.X, padx=8, pady=2)
         c = self.canvas
         c.bind('<Configure>', lambda e: self._redraw())
@@ -905,7 +1064,8 @@ class ImageForge:
         for seq, fn in (("<Control-o>", self.open_dialog), ("<Control-s>", self.save),
                         ("<Control-S>", self.save_as), ("<Control-z>", self.undo), ("<Control-y>", self.redo),
                         ("<Control-a>", self.select_all), ("<Control-d>", self.deselect),
-                        ("<Control-X>", self.crop_to_selection), ("<Control-0>", self.fit_view),
+                        ("<Control-X>", self.crop_to_selection), ("<Control-j>", lambda: self.selection_to_layer(False)),
+                        ("<Control-J>", lambda: self.selection_to_layer(True)), ("<Control-0>", self.fit_view),
                         ("<Control-1>", self.actual_size), ("<Control-plus>", lambda: self._zoom_step(1.25)),
                         ("<Control-equal>", lambda: self._zoom_step(1.25)),
                         ("<Control-minus>", lambda: self._zoom_step(0.8)),
@@ -947,7 +1107,11 @@ class ImageForge:
         self.canvas.delete('brush')
         self.l_doc.config(text=self.tool.doc)
         self._build_params()
-        self.preview = None
+        self.preview = self.lprev = None
+        ei = self._edit_index()
+        if ei is not None:
+            self._load_layer_into_tool(self.hist.layers[ei])
+        self._update_state()
         self._params_changed()
 
     def _build_params(self):
@@ -1021,7 +1185,24 @@ class ImageForge:
 
     def _update_preview(self):
         self._after = None
-        if self.hist is None or self.tool is None or self._stroke is not None or self._mv is not None:
+        if (self.hist is None or self.tool is None or self._stroke is not None or self._mv is not None
+                or self._lmove is not None):
+            return
+        if self.tool.layer:
+            self.preview, self.lprev = None, None
+            params = self._read_params() if self.v_preview.get() else None
+            new = None
+            if params is not None:
+                ei = self._edit_index()
+                new = self._layer_from_params(params, self.hist.layers[ei] if ei is not None else None)
+                layers = list(self.hist.layers)
+                if new is not None:
+                    if ei is not None:
+                        layers[ei] = new
+                    else:
+                        layers.append(new)
+                    self.lprev = tuple(layers)
+            self._redraw()
             return
         if not (self.v_preview.get() and self.tool.preview):
             if self.preview is not None:
@@ -1051,31 +1232,46 @@ class ImageForge:
         if params is None:
             self._status("A parameter is not a valid number.")
             return
+        if self.tool.layer:
+            self._apply_layer_tool(params)
+            return
         cur = self.hist.current
         region = None if self.tool.geometry else self.sel
+        flatten = bool(self.tool.geometry and self.hist.layers)
+        if flatten:
+            if not messagebox.askyesno(APP_NAME, "'%s' changes the whole picture, so the layers are merged into the "
+                                       "background first. Continue?" % self.tool.name):
+                return
+            cur = self._flat()
         try:
             out = apply_tool(self.tool.name, cur, params, region)
         except Exception as ex:
             self._status("%s failed: %s" % (self.tool.name, ex))
             return
-        if out is cur or (out.shape == cur.shape and np.array_equal(out, cur)):
+        if not flatten and (out is cur or (out.shape == cur.shape and np.array_equal(out, cur))):
             self.preview = None
             self._redraw()
             self._status("%s: no change with these parameters." % self.tool.name)
             return
-        self._commit(self.tool.name, out)
+        if flatten:
+            self.active = None
+        self._commit(self.tool.name, out, () if flatten else None)
         extra = " (applied to the whole image: this tool ignores the selection)" if self.sel and self.tool.geometry else ""
+        if self.hist.layers:
+            extra += " (on the Background, not on the layers)"
         self._status("%s applied%s." % (self.tool.name, extra), ok=True)
 
-    def _commit(self, label, img):
-        """Put a new image on the history. Size changes drop the selection and refit the view."""
+    def _commit(self, label, img, layers=None):
+        """Put a new state on the history (`layers` None keeps the current ones). Size changes drop the selection and
+        refit the view."""
         resized = img.shape[:2] != self.hist.current.shape[:2]
-        self.hist.push(label, img)
-        self.preview = None
+        self.hist.push(label, img, layers)
+        self.preview = self.lprev = None
         self.dirty = True
         if resized:
             self.sel = None
             self.fit_view()
+        self._refresh_layers()
         self._update_state()
         self._redraw()
 
@@ -1106,6 +1302,8 @@ class ImageForge:
             return False
         self.hist, self.path, self.save_path, self.dpi = History(img), path, None, dpi
         self.sel, self.preview, self.dirty = None, None, False
+        self.active, self.lprev, self._comp = None, None, None
+        self._refresh_layers()
         self.root.update_idletasks()
         self.fit_view()
         self._update_state()
@@ -1136,13 +1334,13 @@ class ImageForge:
 
     def _write(self, path):
         try:
-            save_image(self.hist.current, path, self.dpi)
+            save_image(self._flat(), path, self.dpi)
         except Exception as ex:
             messagebox.showerror(APP_NAME, "Cannot save %s:\n%s" % (path, ex))
             return
         self.save_path, self.dirty = path, False
         self._update_state()
-        self._status("Saved %s." % path, ok=True)
+        self._status("Saved %s%s." % (path, " (layers flattened into the file)" if self.hist.layers else ""), ok=True)
 
     def on_close(self):
         if self._confirm_discard():
@@ -1161,10 +1359,11 @@ class ImageForge:
         before = self.hist.current.shape[:2]
         label = self.hist.undo_label() if fn == self.hist.undo else self.hist.redo_label()
         fn()
-        self.preview, self.dirty = None, True
+        self.preview, self.lprev, self.dirty = None, None, True
         if self.hist.current.shape[:2] != before:
             self.sel = None
             self.fit_view()
+        self._refresh_layers()
         self._update_state()
         self._redraw()
         self._status("%s: %s." % (word, label), ok=True)
@@ -1199,11 +1398,370 @@ class ImageForge:
         if self.sel is None:
             self._status("Drag a rectangle on the image first.")
             return
-        self._commit("Crop", crop(self.hist.current, self.sel))
+        x0, y0 = self.sel[:2]
+        self._commit("Crop", crop(self.hist.current, self.sel), shift_layers(self.hist.layers, -x0, -y0))
+
+    # ---- layers ----------------------------------------------------------------------------------------
+    @staticmethod
+    def _scrollable(parent, bg):
+        """(outer, inner): `inner` scrolls vertically inside `outer`; the scrollbar shows only when it is needed."""
+        outer = tk.Frame(parent, bg=bg)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(0, weight=1)
+        cv = tk.Canvas(outer, bg=bg, highlightthickness=0)
+        sb = ttk.Scrollbar(outer, orient='vertical', command=cv.yview)
+        cv.configure(yscrollcommand=sb.set)
+        cv.grid(row=0, column=0, sticky='nsew')
+        inner = tk.Frame(cv, bg=bg)
+        win = cv.create_window(0, 0, window=inner, anchor='nw')
+
+        def fit(_=None):
+            cv.configure(scrollregion=cv.bbox('all'))
+            cv.itemconfigure(win, width=cv.winfo_width())
+            if inner.winfo_reqheight() > cv.winfo_height():
+                sb.grid(row=0, column=1, sticky='ns')
+            else:
+                sb.grid_remove()
+                cv.yview_moveto(0)
+        inner.bind('<Configure>', fit)
+        cv.bind('<Configure>', fit)
+
+        def wheel(e):
+            if inner.winfo_reqheight() > cv.winfo_height():
+                cv.yview_scroll(-1 if e.delta > 0 else 1, 'units')
+        outer.bind('<Enter>', lambda e: outer.bind_all('<MouseWheel>', wheel))
+        outer.bind('<Leave>', lambda e: outer.unbind_all('<MouseWheel>'))
+        return outer, inner
+
+    def _build_layers_tab(self, tab, bg):
+        tk.Label(tab, text="Top of the list = on top of the picture. Double-click a layer to edit or move it.", bg=bg,
+                 fg='#555555', font=('Arial', 8), anchor='w', justify='left', wraplength=300).pack(fill=tk.X, padx=8, pady=(6, 0))
+        tf = tk.Frame(tab, bg=bg)
+        tf.pack(fill=tk.X, padx=6, pady=2)
+        self.ltree = ttk.Treeview(tf, show='tree', selectmode='browse', height=7)
+        sb = ttk.Scrollbar(tf, orient='vertical', command=self.ltree.yview)
+        self.ltree.configure(yscrollcommand=sb.set)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.ltree.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.ltree.bind('<<TreeviewSelect>>', lambda e: self._on_layer_select())
+        self.ltree.bind('<Double-1>', lambda e: self._on_layer_double())
+        for buttons in ((("Up", self.layer_up), ("Down", self.layer_down), ("Duplicate", self.layer_duplicate),
+                         ("Delete", self.layer_delete)),
+                        (("Merge down", self.layer_merge_down), ("Flatten all", self.flatten_all),
+                         ("Open as layer...", self.open_layer_dialog))):
+            row = tk.Frame(tab, bg=bg)
+            row.pack(fill=tk.X, padx=6, pady=1)
+            for text, cmd in buttons:
+                tk.Button(row, text=text, command=cmd).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+        props = tk.LabelFrame(tab, text="Selected layer", bg=bg, font=('Arial', 8))
+        props.pack(fill=tk.X, padx=6, pady=(6, 2))
+        self.v_lname, self.v_lvis = tk.StringVar(), tk.BooleanVar(value=True)
+        self.v_lop, self.v_lx, self.v_ly = tk.DoubleVar(value=100), tk.DoubleVar(), tk.DoubleVar()
+        e = ttk.Entry(props, textvariable=self.v_lname)
+        e.pack(fill=tk.X, padx=4, pady=(2, 0))
+        e.bind('<Return>', lambda ev: self._layer_prop())
+        e.bind('<FocusOut>', lambda ev: self._layer_prop())
+        tk.Checkbutton(props, text="Visible", variable=self.v_lvis, bg=bg, command=self._layer_prop).pack(anchor='w')
+        r = tk.Frame(props, bg=bg)
+        r.pack(fill=tk.X, padx=4)
+        tk.Label(r, text="Opacity %", bg=bg, font=('Arial', 8)).pack(side=tk.LEFT)
+        sc = ttk.Scale(r, from_=0, to=100, variable=self.v_lop, orient='horizontal',
+                       command=lambda v: self._layer_live(opacity=int(round(float(v)))))
+        sc.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=4)
+        sc.bind('<ButtonRelease-1>', lambda ev: self._layer_prop())
+        r = tk.Frame(props, bg=bg)
+        r.pack(fill=tk.X, padx=4, pady=(0, 4))
+        for text, var in (("X", self.v_lx), ("Y", self.v_ly)):
+            tk.Label(r, text=text, bg=bg, font=('Arial', 8)).pack(side=tk.LEFT, padx=(4, 1))
+            sp = ttk.Spinbox(r, from_=-100000, to=100000, increment=1, textvariable=var, width=7, format='%.0f',
+                             command=self._layer_prop)
+            sp.pack(side=tk.LEFT)
+            sp.bind('<Return>', lambda ev: self._layer_prop())
+            sp.bind('<FocusOut>', lambda ev: self._layer_prop())
+
+    def _cur_layers(self):
+        return self.hist.layers if self.hist else ()
+
+    def _active_layer(self):
+        layers = self._cur_layers()
+        return layers[self.active] if self.active is not None and self.active < len(layers) else None
+
+    def _refresh_layers(self):
+        """Rebuild the layer list from the history state and show the properties of the active layer."""
+        layers = self._cur_layers()
+        if self.active is not None and self.active >= len(layers):
+            self.active = None
+        self._lsync = True
+        try:
+            self.ltree.delete(*self.ltree.get_children())
+            for i in range(len(layers) - 1, -1, -1):
+                L = layers[i]
+                self.ltree.insert('', tk.END, iid='L%d' % i,
+                                  text=("\u25cf " if L.visible else "\u25cb ") + L.name + ("  [text]" if L.kind == 'text' else ""))
+            self.ltree.insert('', tk.END, iid='BG', text="Background")
+            self.ltree.selection_set('BG' if self.active is None else 'L%d' % self.active)
+            L = self._active_layer()
+            self.v_lname.set(L.name if L else "")
+            self.v_lvis.set(L.visible if L else True)
+            self.v_lop.set(L.opacity if L else 100)
+            self.v_lx.set(L.x if L else 0)
+            self.v_ly.set(L.y if L else 0)
+        finally:
+            self._lsync = False
+
+    def _on_layer_select(self):
+        if self._lsync or self.hist is None:
+            return
+        sel = self.ltree.selection()
+        if not sel:
+            return
+        new = None if sel[0] == 'BG' else int(sel[0][1:])
+        if new == self.active:                      # also the echo of _refresh_layers' own selection_set (the virtual
+            return                                  # event arrives after the _lsync guard is down): no endless loop
+        self.active = new
+        self._refresh_layers()
+        ei = self._edit_index()
+        if ei is not None:
+            self._load_layer_into_tool(self._cur_layers()[ei])
+        self.lprev = None
+        self._update_state()
+        self._redraw()
+
+    def _on_layer_double(self):
+        L = self._active_layer()
+        if L is None:
+            return
+        name = "Add text" if L.kind == 'text' else "Move layer"
+        self.nbk.select(0)
+        if self.tree.selection() != (name,):
+            self.tree.selection_set(name)
+        else:
+            self.select_tool(name)
+
+    def _layer_live(self, **kw):
+        """Show a property change while a slider is being dragged; _layer_prop() records it."""
+        L = self._active_layer()
+        if self._lsync or L is None:
+            return
+        layers = list(self.hist.layers)
+        layers[self.active] = L.replace(**kw)
+        self.lprev = tuple(layers)
+        self._redraw()
+
+    def _layer_prop(self):
+        """Take name, visibility, opacity and position from the boxes into the active layer (one history step)."""
+        L = self._active_layer()
+        if self._lsync or L is None:
+            return
+        try:
+            kw = dict(name=self.v_lname.get().strip() or L.name, visible=bool(self.v_lvis.get()),
+                      opacity=int(round(self.v_lop.get())), x=int(round(self.v_lx.get())), y=int(round(self.v_ly.get())))
+        except tk.TclError:
+            return
+        self.lprev = None
+        if all(getattr(L, k) == v for k, v in kw.items()):
+            self._redraw()
+            return
+        layers = list(self.hist.layers)
+        layers[self.active] = L.replace(**kw)
+        what = "Layer visibility" if kw['visible'] != L.visible else "Layer opacity" if kw['opacity'] != L.opacity \
+            else "Move layer" if (kw['x'], kw['y']) != (L.x, L.y) else "Rename layer"
+        self._commit_layers(what, layers)
+
+    def _commit_layers(self, label, layers, active=-1, base=None):
+        """A history step that changes the layers (and, for a merge, the background)."""
+        if active != -1:
+            self.active = active
+        self._commit(label, self.hist.current if base is None else base, tuple(layers))
+
+    def layer_up(self):
+        i, layers = self.active, list(self._cur_layers())
+        if i is not None and i + 1 < len(layers):
+            layers[i], layers[i + 1] = layers[i + 1], layers[i]
+            self._commit_layers("Raise layer", layers, i + 1)
+
+    def layer_down(self):
+        i, layers = self.active, list(self._cur_layers())
+        if i is not None and i > 0:
+            layers[i], layers[i - 1] = layers[i - 1], layers[i]
+            self._commit_layers("Lower layer", layers, i - 1)
+
+    def layer_duplicate(self):
+        L = self._active_layer()
+        if L is None:
+            self._status("Select a layer first (the Background cannot be duplicated here: use Edit > Copy selection to layer).")
+            return
+        layers = list(self.hist.layers)
+        layers.insert(self.active + 1, L.replace(name=L.name + " copy", x=L.x + 10, y=L.y + 10))
+        self._commit_layers("Duplicate layer", layers, self.active + 1)
+
+    def layer_delete(self):
+        L = self._active_layer()
+        if L is None:
+            self._status("Select a layer first: the Background cannot be deleted.")
+            return
+        layers = list(self.hist.layers)
+        del layers[self.active]
+        self._commit_layers("Delete layer", layers, min(self.active, len(layers) - 1) if layers else None)
+
+    def layer_merge_down(self):
+        L, i = self._active_layer(), self.active
+        if L is None:
+            self._status("Select a layer first.")
+            return
+        layers = list(self.hist.layers)
+        if i == 0:                                              # onto the background
+            base = composite(self.hist.current, (L,))
+            del layers[0]
+            self._commit_layers("Merge down", layers, None, base=base)
+        else:
+            layers[i - 1:i + 1] = [merge_layers(layers[i - 1], L)]
+            self._commit_layers("Merge down", layers, i - 1)
+
+    def flatten_all(self):
+        if not self._need_image():
+            return
+        if not self.hist.layers:
+            self._status("There are no layers to flatten.")
+            return
+        self.active = None
+        self._commit("Flatten", self._flat(), ())
+
+    def open_layer_dialog(self):
+        if not self._need_image():
+            return
+        path = filedialog.askopenfilename(parent=self.root, filetypes=OPEN_TYPES, title="Open as layer")
+        if not path:
+            return
+        try:
+            rgba = load_rgba(path)
+        except Exception as ex:
+            messagebox.showerror(APP_NAME, "Cannot open %s:\n%s" % (path, ex))
+            return
+        h, w = self.hist.current.shape[:2]
+        L = Layer('image', os.path.splitext(os.path.basename(path))[0], (w - rgba.shape[1]) // 2,
+                  (h - rgba.shape[0]) // 2, rgba=rgba)
+        self._commit_layers("Add layer", list(self.hist.layers) + [L], len(self.hist.layers))
+        self.tree.selection_set("Move layer")
+
+    def selection_to_layer(self, cut):
+        """The selected pixels of the Background become a new layer at the same place; a cut fills the hole in the
+        Background (with the colour of the 'leaves' box), a copy leaves it alone."""
+        if not self._need_image():
+            return
+        if self.sel is None:
+            self._status("Drag a rectangle on the image first.")
+            return
+        x0, y0, x1, y1 = self.sel
+        base = self.hist.current
+        rgba = np.dstack([base[y0:y1, x0:x1], np.full((y1 - y0, x1 - x0), 255, np.uint8)])
+        L = Layer('image', "Selection", x0, y0, rgba=rgba)
+        new_base = base
+        if cut:
+            new_base = base.copy()
+            new_base[y0:y1, x0:x1] = self._fill_color(base)
+        self._commit_layers("Cut to layer" if cut else "Copy to layer", list(self.hist.layers) + [L],
+                            len(self.hist.layers), base=new_base)
+        self.tree.selection_set("Move layer")
+        self.nbk.select(1)
+
+    # ---- editing a layer with its tool (text) -----------------------------------------------------------
+    def _edit_index(self):
+        """Index of the selected layer when it is of the kind the current tool edits (then the tool updates it)."""
+        if self.hist is None or self.tool is None or not self.tool.layer or self.active is None:
+            return None
+        layers = self.hist.layers
+        if self.active < len(layers) and layers[self.active].kind == self.tool.layer:
+            return self.active
+        return None
+
+    def _load_layer_into_tool(self, L):
+        """Put the settings of a text layer into the parameter boxes of the Add text tool."""
+        self._params_ready = False
+        for key, val in dict(L.params, x=L.x, y=L.y).items():
+            if key in self.pvars:
+                self.pvars[key].set(val)
+        self._params_ready = True
+        self._params_changed()
+
+    def _layer_from_params(self, params, old=None):
+        p = dict(params)
+        x, y = p.pop('x'), p.pop('y')
+        if render_text(**p) is None:
+            return None
+        first = p['text'].replace("\\n", "\n").strip().split("\n")[0][:24]
+        if old is None:
+            return Layer('text', "Text: " + first, x, y, params=p)
+        name = "Text: " + first if old.name.startswith("Text: ") else old.name
+        return old.replace(x=x, y=y, params=p, name=name)
+
+    def _apply_layer_tool(self, params):
+        ei = self._edit_index()
+        old = self.hist.layers[ei] if ei is not None else None
+        new = self._layer_from_params(params, old)
+        if new is None:
+            self._status("The text is empty: nothing to add.")
+            return
+        layers = list(self.hist.layers)
+        if ei is not None:
+            layers[ei] = new
+            self._commit_layers("Edit text layer", layers)
+            self._status("Text layer updated. Select 'Background' in the Layers tab to add another text.", ok=True)
+        else:
+            layers.append(new)
+            self._commit_layers("Add text layer", layers, len(layers) - 1)
+            self._status("Text added as a layer: change the boxes and press Update layer to edit it.", ok=True)
+
+    # ---- moving a layer with the mouse --------------------------------------------------------------------
+    def _lmove_start(self, e):
+        L = self._active_layer()
+        if L is None:
+            self._status("Select a layer in the Layers tab first (the Background does not move).")
+            return
+        self._lmove = (self._img_xy(e.x, e.y), self.active, L)
+
+    def _lmove_to(self, e):
+        (x, y), i, L = self._lmove
+        nx, ny = self._img_xy(e.x, e.y)
+        layers = list(self.hist.layers)
+        layers[i] = L.replace(x=L.x + int(round(nx - x)), y=L.y + int(round(ny - y)))
+        self.lprev = tuple(layers)
+        self._lsync = True
+        self.v_lx.set(layers[i].x)
+        self.v_ly.set(layers[i].y)
+        self._lsync = False
+        self._redraw()
+        self._set_info("layer at (%d, %d)" % (layers[i].x, layers[i].y))
+
+    def _lmove_end(self):
+        _, i, L = self._lmove
+        layers, self.lprev, self._lmove = self.lprev, None, None
+        if layers is not None and (layers[i].x, layers[i].y) != (L.x, L.y):
+            self._commit_layers("Move layer", layers)
+        else:
+            self._redraw()
 
     # ---- canvas ----------------------------------------------------------------------------------------
     def _shown(self):
-        return self.preview if self.preview is not None else (self.hist.current if self.hist else None)
+        """The picture as seen: background (or its preview) with the layers (or their preview) blended over it."""
+        if self.hist is None:
+            return None
+        base = self.preview if self.preview is not None else self.hist.current
+        return self._composite_cached(base, self.lprev if self.lprev is not None else self.hist.layers)
+
+    def _composite_cached(self, base, layers):
+        """composite() once per distinct (background, layers): panning and zooming redraw without recomputing."""
+        layers = tuple(layers)
+        c = self._comp
+        if c and c[0] is base and len(c[1]) == len(layers) and all(a is b for a, b in zip(c[1], layers)):
+            return c[2]
+        out = composite(base, layers)
+        self._comp = (base, layers, out)
+        return out
+
+    def _flat(self):
+        """The committed picture with the layers merged (what Save writes), not counting any preview."""
+        return self._composite_cached(self.hist.current, self.hist.layers)
 
     def fit_view(self):
         if self.hist is None:
@@ -1309,7 +1867,7 @@ class ImageForge:
 
     def _pick_click(self, e):
         x, y = self._img_xy(e.x, e.y)
-        img = self.hist.current
+        img = self._flat()                       # colours are picked from the picture as seen, layers included
         h, w = img.shape[:2]
         ix, iy = int(math.floor(x)), int(math.floor(y))
         if not (0 <= ix < w and 0 <= iy < h):
@@ -1386,6 +1944,9 @@ class ImageForge:
         elif self._is_brush():
             self._press = None
             self._brush_start(e)
+        elif self.tool is not None and self.tool.interactive == 'layer':
+            self._press = None
+            self._lmove_start(e)
         elif self.tool is not None and self.tool.place and 'x' in self.pvars:
             self._press, self._placing = None, True
             self._place_at(e)
@@ -1444,6 +2005,13 @@ class ImageForge:
         self._set_info("selection %d x %d  at (%d, %d)" % (x1 - x0, y1 - y0, x0, y0))
 
     def nudge(self, dx, dy):
+        if self.hist is not None and self.tool is not None and self.tool.interactive == 'layer':
+            L = self._active_layer()
+            if L is not None:
+                layers = list(self.hist.layers)
+                layers[self.active] = L.replace(x=L.x + dx, y=L.y + dy)
+                self._commit_layers("Move layer", layers)
+            return
         if self.sel and self.hist is not None and not self.mode and not self._is_brush():
             h, w = self.hist.current.shape[:2]
             self.sel = drag_rect(self.sel, 'move', dx, dy, (w, h))
@@ -1451,6 +2019,9 @@ class ImageForge:
 
     def _update_cursor(self, e):
         if self.mode or self._is_brush():
+            return
+        if self.tool is not None and self.tool.interactive == 'layer':
+            self.canvas.config(cursor='fleur')
             return
         if self.tool is not None and self.tool.place:
             self.canvas.config(cursor='crosshair')
@@ -1464,6 +2035,9 @@ class ImageForge:
     def _on_drag(self, e):
         if self._stroke is not None:
             self._brush_to(e)
+            return
+        if self._lmove is not None:
+            self._lmove_to(e)
             return
         if self._placing:
             self._place_at(e)
@@ -1485,6 +2059,9 @@ class ImageForge:
     def _on_release(self, e):
         if self._stroke is not None:
             self._brush_end()
+            return
+        if self._lmove is not None:
+            self._lmove_end()
             return
         if self._placing:
             self._placing = False
@@ -1523,7 +2100,7 @@ class ImageForge:
         ix, iy = int(math.floor(x)), int(math.floor(y))
         h, w = self.hist.current.shape[:2]
         if 0 <= ix < w and 0 <= iy < h:
-            r, g, b = self.hist.current[iy, ix]
+            r, g, b = self._shown()[iy, ix]
             self._set_info("x=%d y=%d   RGB=(%d, %d, %d)" % (ix, iy, r, g, b))
         else:
             self._set_info()
@@ -1561,6 +2138,8 @@ class ImageForge:
                                 state=tk.NORMAL if h and h.can_redo() else tk.DISABLED)
         name = os.path.basename(self.save_path or self.path) if self.path else ""
         self.root.title("%s%s - %s" % (name, "*" if self.dirty else "", APP_NAME) if name else APP_NAME)
+        self.b_apply.config(text="Update layer" if self._edit_index() is not None else
+                            "Add as layer" if self.tool is not None and self.tool.layer else "Apply")
         self._set_info()
 
 

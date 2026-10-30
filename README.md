@@ -14,8 +14,14 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
 - **Move an object**: select it with a rectangle, tick **Drag moves the content** (or hold Ctrl) and drag inside the
   selection: the pixels move and the old place is filled with white, black or the border colour; Shift copies instead.
   One drag is one undo step. The object stops at the image border.
+- **Layers** (tab *Layers*): pictures stacked over the Background, each with name, visibility, opacity (live while you
+  drag the slider) and position (X, Y). Make one from the selection (*Edit > Copy / Cut selection to layer*, Ctrl+J /
+  Ctrl+Shift+J: a cut leaves a hole filled like *leaves*), from a file with its transparency (*Open as layer...*) or with
+  *Add text*. Raise, lower, duplicate, delete, *Merge down* (onto the layer below or the Background), *Flatten all*.
+  The **Move layer** tool drags the selected layer on the image (arrow keys nudge it). Every change is an undo step.
 - **Add text** (group Draw): type the text (`\n` = new line), pick font, size, colour (type, **Pick** from the image or
-  the colour dialog), rotation and opacity; click or drag on the image to place it, then Apply.
+  the colour dialog), rotation and opacity; click or drag on the image to place it, then *Add as layer*. The text stays
+  editable: select its layer, change the boxes, press *Update layer* (select *Background* to add a second text).
 - **Selection**: drag a rectangle; tools then act only inside it (a click outside it clears it). Drag inside it to move it,
   drag a handle (corners, edge midpoints) to resize it, arrow keys nudge it by 1 px (Shift: 10) once the image has been
   clicked. *Crop to selection*.
@@ -31,6 +37,11 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
 
 Geometry tools change the whole image and ignore the selection; all other tools, the eraser brush included, are limited to it.
 The selection takes the place of SpectrumDigitizer's working area (which could also be rotated: not ported).
+
+All other tools, the eraser brush and *Drag moves the content* work on the **Background** only (the status line says so
+when layers exist); to filter a layer's pixels, merge it first. Rotate, flip, resize and auto-crop change the whole
+picture, so they ask to merge the layers first; *Crop to selection* keeps them. Saving writes the picture as seen
+(layers flattened): there is no layered file format yet.
 
 ## Adding a tool
 
