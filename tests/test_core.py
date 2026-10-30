@@ -247,6 +247,36 @@ class SelectionTests(unittest.TestCase):
         self.assertIsNone(il.hit_handle(r, z, ox, oy, sx(50), sy(50)))
 
 
+class AutoCropTests(unittest.TestCase):
+    @staticmethod
+    def framed(bg=(255, 255, 255)):
+        img = np.empty((100, 120, 3), np.uint8)
+        img[:] = bg
+        img[30:60, 40:90] = (10, 90, 200)
+        return img
+
+    def test_crops_to_the_content_on_white_black_and_coloured_borders(self):
+        for bg in ((255, 255, 255), (0, 0, 0), (200, 180, 20)):
+            out = il.apply_tool("Auto-crop borders", self.framed(bg))
+            self.assertEqual(out.shape[:2], (30, 50), bg)
+            self.assertTrue((out == (10, 90, 200)).all(), bg)
+
+    def test_explicit_border_colour_and_margin(self):
+        img = self.framed()
+        out = il.apply_tool("Auto-crop borders", img, {'background': 'white', 'margin': 5})
+        self.assertEqual(out.shape[:2], (40, 60))
+        near = il.apply_tool("Auto-crop borders", img, {'margin': 500})
+        self.assertIs(near, img)                                  # the margin is clamped to the whole image: no change
+
+    def test_tolerance_ignores_faint_noise_and_all_border_is_left_alone(self):
+        img = self.framed()
+        img[2, 3] = (240, 240, 240)
+        self.assertEqual(il.apply_tool("Auto-crop borders", img, {'tolerance': 30}).shape[:2], (30, 50))
+        self.assertEqual(il.apply_tool("Auto-crop borders", img, {'tolerance': 5}).shape[:2], (58, 87))     # rows 2..59, columns 3..89
+        blank = np.full((20, 20, 3), 255, np.uint8)
+        self.assertIs(il.apply_tool("Auto-crop borders", blank), blank)
+
+
 class HistoryTests(unittest.TestCase):
     def test_undo_redo_and_truncation(self):
         a, b, c = (np.full((2, 2, 3), v, np.uint8) for v in (1, 2, 3))

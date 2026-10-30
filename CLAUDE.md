@@ -58,6 +58,10 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   is recomputed only on release (`_after_selection`). Cursor follows the hit (`_update_cursor`); picks and the brush take priority.
   Arrow keys are bound on the canvas (it takes focus on click) so they do not fight with the tool tree. Tests: `SelectionTests`.
 
+- **Auto-crop** (`autocrop`, geometry tool, no preview): bounding box of the pixels further than the tolerance from the border
+  colour ('auto' = median of the outermost pixel ring, `border_color`), plus a margin clamped to the image. One speck in the border
+  widens the box (documented in the tool; Despeckle first). Tests: `AutoCropTests`.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a
@@ -72,5 +76,5 @@ scaling other than the screenshot script's, drag-and-drop (tkinterdnd2 path), th
 
 ## Ideas not done yet (from SpectrumDigitizer's cleaning tab)
 
-Rotation of the selection (SpectrumDigitizer's working area could rotate), auto-crop of white borders, join dashed lines,
+Rotation of the selection (SpectrumDigitizer's working area could rotate), join dashed lines,
 manual link of a broken line, magnifier next to the cursor, arrow keys to nudge by one pixel.

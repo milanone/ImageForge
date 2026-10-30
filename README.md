@@ -19,7 +19,7 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
 - **Tools**, with live preview:
   - Tone: brightness / contrast, grayscale (with strength), invert, threshold (plug-in example)
   - Filters: sharpen (unsharp mask), Gaussian blur
-  - Geometry: rotate 90/180, rotate by any angle (with **Measure**: click two points of a line to level it), flip,
+  - Geometry: auto-crop borders (uniform white / black / frame colour, tolerance, margin), rotate 90/180, rotate by any angle (with **Measure**: click two points of a line to level it), flip,
     resize (percent or pixels, choice of interpolation)
   - Clean (ported from SpectrumDigitizer): erase / keep colours (**Pick** colours on the image, with tolerance),
     despeckle, flatten ink to one colour, eraser brush (drag on the image; one stroke = one undo step)

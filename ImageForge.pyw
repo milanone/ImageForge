@@ -438,6 +438,33 @@ def drag_rect(rect, handle, dx, dy, bounds):
     return (x0, y0, x1, y1)
 
 
+def border_color(img):
+    """The colour of the image frame: the per-channel median of its outermost pixel ring."""
+    ring = np.concatenate([img[0], img[-1], img[:, 0], img[:, -1]])
+    return tuple(int(v) for v in np.median(ring, axis=0))
+
+
+@tool("Auto-crop borders", "Geometry", [
+    Param('background', "Border colour", 'choice', 'auto', choices=('auto',) + tuple(FILLS)),
+    Param('tolerance', "Content = further from it than", 'int', 30, 1, 441, slider=True),
+    Param('margin', "Keep a margin (px)", 'int', 0, 0, 500)],
+    geometry=True, preview=False)
+def autocrop(img, background, tolerance, margin):
+    """Cut off the uniform border around the content: the smallest rectangle holding every pixel that differs
+    from the border colour ('auto' = the colour of the image frame) by more than the tolerance, plus a margin.
+    A speck in the border widens it: run Despeckle first. An image that is all border is left alone."""
+    bg = border_color(img) if background == 'auto' else FILLS[background]
+    rows, cols = np.nonzero(_distance_from(img, bg) > tolerance)
+    if rows.size == 0:
+        return img
+    h, w = img.shape[:2]
+    region = (max(0, cols.min() - margin), max(0, rows.min() - margin),
+              min(w, cols.max() + 1 + margin), min(h, rows.max() + 1 + margin))
+    if region == (0, 0, w, h):
+        return img
+    return crop(img, region)
+
+
 def crop(img, region):
     """The (x0, y0, x1, y1) rectangle of `img` as a new array."""
     x0, y0, x1, y1 = region
