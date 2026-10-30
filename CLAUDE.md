@@ -94,7 +94,7 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   drag, text being edited); `_commit_layers` is the way to push a layer change.
   *Tools act on the Background only* (decision to keep every tool a pure `(H, W, 3) -> (H, W, 3)` function): the status line says
   so; geometry tools flatten first after a confirmation; Crop shifts the layers (`shift_layers`). Save writes `_flat()`.
-  Not done: tools acting on a layer's own pixels, a layered file format (ORA / own zip), layer blend modes, masks, scaling or
+  Not done: tools acting on a layer's own pixels, layer blend modes, masks, scaling or
   rotating a layer (rotation exists only inside a text layer), lifting from a layer other than the Background.
 - **Tool-made layers** (`Tool.layer == 'text'`, only Add text): `_apply_layer_tool` adds a layer, or updates the selected one when
   its kind matches (`_edit_index`); selecting such a layer while the tool is open loads its parameters into the boxes
@@ -103,6 +103,16 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   down: `_on_layer_select` therefore ignores a selection equal to `active` (otherwise it refreshed forever and froze the UI -
   found by a scripted session). Property boxes commit on Return / FocusOut / slider release, one history step each.
   `examples/layers_session.py` is that scripted session (real Tk events, prints what it checked; it grabs the screen).
+
+- **Project file** (`.ifl`, `save_project` / `load_project`, `PROJECT_VERSION` = 1): zip (stored, PNG is already compressed) with
+  `manifest.json` (format string, version, width, height, dpi, layers: kind, name, x, y, visible, opacity, `params` for text or
+  `file` for image layers), `background.png`, `layer_N.png` (RGBA). Members are only ever read by name (never extracted: no
+  path traversal). Written to `<path>.tmp` then `os.replace`, so a failed save keeps the old project. A newer version, a
+  wrong format string, a missing member or a size mismatch raise `ValueError` with a plain message (shown in a dialog). Text
+  parameters are coerced with `TEXT_KEYS`. History, selection and the active layer are not stored. `open_path` of a project sets
+  `save_path` to it (Ctrl+S writes back); of an image leaves it None. `_write`: exporting a flat image while layers exist does not
+  clear `dirty`; `save()` with layers and a non-project `save_path` asks again. Tests: `ProjectTests`; real-window check
+  `examples/project_session.py` (dialogs mocked: save, close, reopen, edit the text, save back).
 
 ## Adding a tool
 
@@ -118,4 +128,4 @@ scaling other than the screenshot script's, drag-and-drop (tkinterdnd2 path), th
 
 ## Ideas not done yet (from SpectrumDigitizer's cleaning tab)
 
-Tools on a layer's own pixels, layered file format, scaling/rotating a layer, rotation of the selection (SpectrumDigitizer's working area could rotate), manual link of a broken line, magnifier next to the cursor.
+Tools on a layer's own pixels, scaling/rotating a layer, rotation of the selection (SpectrumDigitizer's working area could rotate), manual link of a broken line, magnifier next to the cursor.

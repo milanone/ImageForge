@@ -493,6 +493,74 @@ class LayerTests(unittest.TestCase):
         self.assertEqual((int(out[0, 0, 3]), int(out[3, 0, 3])), (0, 255))
 
 
+class ProjectTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = os.path.join(self.tmp.name, "p.ifl")
+        rng = np.random.default_rng(1)
+        self.base = rng.integers(0, 255, (50, 70, 3), dtype=np.uint8)
+        px = rng.integers(0, 255, (12, 9, 4), dtype=np.uint8)
+        self.layers = (
+            il.Layer('image', "Pic", 7, -3, visible=False, opacity=40, rgba=px),
+            il.Layer('text', "Text: Hi", 20, 10, opacity=80,
+                     params=dict(text="Hi\nthere", size=24, font='Arial', color='#ff0000', angle=15.5, opacity=90)))
+
+    def test_roundtrip_keeps_pixels_layers_text_and_dpi(self):
+        il.save_project(self.path, self.base, self.layers, (300.0, 300.0))
+        base, layers, dpi = il.load_project(self.path)
+        self.assertTrue(np.array_equal(base, self.base))
+        self.assertEqual(dpi, (300.0, 300.0))
+        self.assertEqual(len(layers), 2)
+        a, b = layers
+        self.assertEqual((a.kind, a.name, a.x, a.y, a.visible, a.opacity), ('image', "Pic", 7, -3, False, 40))
+        self.assertTrue(np.array_equal(a.rgba, self.layers[0].rgba))
+        self.assertEqual((b.kind, b.name, b.x, b.y, b.visible, b.opacity), ('text', "Text: Hi", 20, 10, True, 80))
+        self.assertEqual(b.params, self.layers[1].params)
+        self.assertTrue(np.array_equal(il.composite(base, layers), il.composite(self.base, self.layers)))
+
+    def test_no_layers_no_dpi_and_no_leftover_temp_file(self):
+        il.save_project(self.path, self.base, ())
+        base, layers, dpi = il.load_project(self.path)
+        self.assertEqual((layers, dpi), ((), None))
+        self.assertEqual(os.listdir(self.tmp.name), ["p.ifl"])
+
+    def test_failed_save_keeps_the_previous_project(self):
+        il.save_project(self.path, self.base, self.layers)
+        bad = il.Layer('image', "x", 0, 0, rgba=None)
+        with self.assertRaises(Exception):
+            il.save_project(self.path, self.base, (bad,))
+        self.assertEqual(os.listdir(self.tmp.name), ["p.ifl"])
+        self.assertEqual(len(il.load_project(self.path)[1]), 2)
+
+    def test_bad_files_give_a_plain_error(self):
+        import zipfile, json
+        junk = os.path.join(self.tmp.name, "junk.ifl")
+        with open(junk, "wb") as f:
+            f.write(b"not a zip")
+        with self.assertRaises(ValueError):
+            il.load_project(junk)
+        il.save_project(self.path, self.base, self.layers)
+        newer = os.path.join(self.tmp.name, "new.ifl")
+        with zipfile.ZipFile(self.path) as zin, zipfile.ZipFile(newer, "w") as zout:
+            for n in zin.namelist():
+                data = zin.read(n)
+                if n == "manifest.json":
+                    m = json.loads(data)
+                    m["version"] = 99
+                    data = json.dumps(m)
+                zout.writestr(n, data)
+        with self.assertRaisesRegex(ValueError, "newer"):
+            il.load_project(newer)
+        broken = os.path.join(self.tmp.name, "broken.ifl")
+        with zipfile.ZipFile(self.path) as zin, zipfile.ZipFile(broken, "w") as zout:
+            for n in zin.namelist():
+                if n != "layer_0.png":
+                    zout.writestr(n, zin.read(n))
+        with self.assertRaises(ValueError):
+            il.load_project(broken)
+
+
 class HistoryTests(unittest.TestCase):
     def test_undo_redo_and_truncation(self):
         a, b, c = (np.full((2, 2, 3), v, np.uint8) for v in (1, 2, 3))

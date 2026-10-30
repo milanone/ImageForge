@@ -8,8 +8,9 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
 
 ## What it does now
 
-- **Open / Save**: PNG, JPEG, TIFF, BMP, WebP, GIF (drag a file onto the window, or `pythonw ImageForge.pyw image.png`).
-  *Save* never overwrites the original: the first save asks for a new name (`<name>_edited.png`).
+- **Open / Save**: PNG, JPEG, TIFF, BMP, WebP, GIF and `.ifl` projects (drag a file onto the window, or
+  `pythonw ImageForge.pyw image.png`). *Save* never overwrites the original: the first save asks for a new name
+  (`<name>_edited.png`, or `<name>_edited.ifl` when there are layers).
 - **Undo / Redo** of every step (Ctrl+Z / Ctrl+Y), limited to about 1 GB of history.
 - **Move an object**: select it with a rectangle, tick **Drag moves the content** (or hold Ctrl) and drag inside the
   selection: the pixels move and the old place is filled with white, black or the border colour; Shift copies instead.
@@ -40,8 +41,12 @@ The selection takes the place of SpectrumDigitizer's working area (which could a
 
 All other tools, the eraser brush and *Drag moves the content* work on the **Background** only (the status line says so
 when layers exist); to filter a layer's pixels, merge it first. Rotate, flip, resize and auto-crop change the whole
-picture, so they ask to merge the layers first; *Crop to selection* keeps them. Saving writes the picture as seen
-(layers flattened): there is no layered file format yet.
+picture, so they ask to merge the layers first; *Crop to selection* keeps them.
+
+**Projects**: *Save* with layers writes an `.ifl` project (a zip: `manifest.json`, `background.png`, one PNG per image
+layer; text layers keep their text, font and colour), which reopens with all layers and editable text. Saving as PNG/JPEG
+etc. writes the flattened picture and does not count as saved while layers exist (closing still asks). Ctrl+S goes back
+to the project once there is one; an image file is never overwritten silently.
 
 ## Adding a tool
 

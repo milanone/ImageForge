@@ -12,10 +12,13 @@ The core (registry, tools, history, load/save) does not need a display, so the t
 import dataclasses
 import functools
 import importlib.util
+import io
+import json
 import math
 import os
 import sys
 import traceback
+import zipfile
 
 import numpy as np
 import cv2
@@ -34,8 +37,10 @@ APP_NAME = "ImageForge"
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN_DIR = os.path.join(HERE, "plugins")
 HISTORY_BYTES = 1 << 30            # oldest undo steps are dropped beyond this (at least 2 states are always kept)
-OPEN_TYPES = [("Images", "*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.webp *.gif"), ("All files", "*.*")]
+IMAGE_TYPES = [("Images", "*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.webp *.gif"), ("All files", "*.*")]
+OPEN_TYPES = [("Images and projects", "*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.webp *.gif *.ifl"), ("All files", "*.*")]
 SAVE_TYPES = [("PNG", "*.png"), ("JPEG", "*.jpg"), ("TIFF", "*.tif"), ("BMP", "*.bmp"), ("WebP", "*.webp")]
+PROJECT_TYPE = ("ImageForge project (layers kept)", "*.ifl")
 
 # ---------------------------------------------------------------------------------------------------------
 # Tool registry
@@ -861,6 +866,78 @@ def load_image(path):
     return arr, dpi
 
 
+PROJECT_EXT = ".ifl"
+PROJECT_VERSION = 1
+
+
+def _png_bytes(arr):
+    buf = io.BytesIO()
+    Image.fromarray(arr).save(buf, 'PNG', compress_level=6)
+    return buf.getvalue()
+
+
+def save_project(path, base, layers, dpi=None):
+    """Write a project: a zip with manifest.json (version, size, dpi, one entry per layer: kind, name, position,
+    visibility, opacity and, for text, its parameters), background.png and one RGBA layer_N.png per image layer.
+    Written to a temporary file first, so a failure never destroys the previous project."""
+    entries, files = [], {}
+    for i, L in enumerate(layers):
+        e = dict(kind=L.kind, name=L.name, x=int(L.x), y=int(L.y), visible=bool(L.visible), opacity=int(L.opacity))
+        if L.kind == 'text':
+            e['params'] = L.params
+        else:
+            e['file'] = "layer_%d.png" % i
+            files[e['file']] = _png_bytes(L.rgba)
+        entries.append(e)
+    manifest = dict(format="ImageForge project", version=PROJECT_VERSION, width=int(base.shape[1]),
+                    height=int(base.shape[0]), dpi=list(dpi) if dpi else None, layers=entries)
+    tmp = path + ".tmp"
+    try:
+        with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_STORED) as zf:          # PNG is already compressed
+            zf.writestr("manifest.json", json.dumps(manifest, indent=1))
+            zf.writestr("background.png", _png_bytes(base))
+            for name, data in files.items():
+                zf.writestr(name, data)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+TEXT_KEYS = {'text': str, 'size': int, 'font': str, 'color': str, 'angle': float, 'opacity': int}
+
+
+def load_project(path):
+    """(background RGB array, layers tuple, dpi or None) from a project file; ValueError with a plain message when
+    the file is not a valid project or comes from a newer ImageForge."""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            manifest = json.loads(zf.read("manifest.json"))
+            if manifest.get("format") != "ImageForge project":
+                raise ValueError("not an ImageForge project")
+            if int(manifest["version"]) > PROJECT_VERSION:
+                raise ValueError("saved by a newer ImageForge (project version %s)" % manifest["version"])
+            base = np.array(Image.open(io.BytesIO(zf.read("background.png"))).convert('RGB'))
+            if base.shape[:2] != (manifest["height"], manifest["width"]):
+                raise ValueError("the background does not match the recorded size")
+            layers = []
+            for e in manifest["layers"]:
+                common = dict(name=str(e["name"]), x=int(e["x"]), y=int(e["y"]), visible=bool(e["visible"]),
+                              opacity=max(0, min(100, int(e["opacity"]))))
+                if e["kind"] == 'text':
+                    params = {k: t(e["params"][k]) for k, t in TEXT_KEYS.items()}
+                    layers.append(Layer('text', params=params, **common))
+                elif e["kind"] == 'image':
+                    rgba = np.array(Image.open(io.BytesIO(zf.read(e["file"]))).convert('RGBA'))
+                    layers.append(Layer('image', rgba=rgba, **common))
+                else:
+                    raise ValueError("unknown layer kind %r" % e["kind"])
+    except (zipfile.BadZipFile, KeyError, json.JSONDecodeError, TypeError) as ex:
+        raise ValueError("not a valid ImageForge project (%s: %s)" % (type(ex).__name__, ex))
+    dpi = manifest.get("dpi")
+    return base, tuple(layers), (float(dpi[0]), float(dpi[1])) if dpi else None
+
+
 def save_image(img, path, dpi=None, jpeg_quality=95):
     """Write `img` in the format of the extension (PNG, JPEG, TIFF, BMP, WebP)."""
     ext = os.path.splitext(path)[1].lower()
@@ -1295,12 +1372,17 @@ class ImageForge:
     def open_path(self, path):
         if not self._confirm_discard():
             return False
+        project = path.lower().endswith(PROJECT_EXT)
         try:
-            img, dpi = load_image(path)
+            if project:
+                img, layers, dpi = load_project(path)
+            else:
+                (img, dpi), layers = load_image(path), ()
         except Exception as ex:
             messagebox.showerror(APP_NAME, "Cannot open %s:\n%s" % (path, ex))
             return False
-        self.hist, self.path, self.save_path, self.dpi = History(img), path, None, dpi
+        self.hist, self.path, self.dpi = History(img, layers=layers), path, dpi
+        self.save_path = path if project else None             # a project is saved back to itself, an image never
         self.sel, self.preview, self.dirty = None, None, False
         self.active, self.lprev, self._comp = None, None, None
         self._refresh_layers()
@@ -1317,9 +1399,11 @@ class ImageForge:
             self.open_path(files[0])
 
     def save(self):
+        """Ctrl+S: back to the project, or to the image saved before; with layers and no project yet it asks, because a
+        plain image file would lose them."""
         if not self._need_image():
             return
-        if self.save_path is None:
+        if self.save_path is None or (self.hist.layers and not self.save_path.lower().endswith(PROJECT_EXT)):
             return self.save_as()
         self._write(self.save_path)
 
@@ -1327,23 +1411,38 @@ class ImageForge:
         if not self._need_image():
             return
         base = os.path.splitext(os.path.basename(self.path or "image"))[0]
-        path = filedialog.asksaveasfilename(parent=self.root, filetypes=SAVE_TYPES, defaultextension=".png",
-                                            initialfile=base + "_edited.png")
+        layered = bool(self.hist.layers)
+        types = [PROJECT_TYPE] + SAVE_TYPES if layered else SAVE_TYPES + [PROJECT_TYPE]
+        path = filedialog.asksaveasfilename(parent=self.root, filetypes=types,
+                                            defaultextension=PROJECT_EXT if layered else ".png",
+                                            initialfile=base + ("" if self.path and self.path.lower().endswith(PROJECT_EXT)
+                                                                else "_edited") + (PROJECT_EXT if layered else ".png"))
         if path:
             self._write(path)
 
     def _write(self, path):
+        """A .ifl path writes the project (layers kept); any other writes the picture as seen. Exporting a picture that
+        has layers does not count as saving it: the work stays 'unsaved' until a project is written."""
+        project = path.lower().endswith(PROJECT_EXT)
         try:
-            save_image(self._flat(), path, self.dpi)
+            if project:
+                save_project(path, self.hist.current, self.hist.layers, self.dpi)
+            else:
+                save_image(self._flat(), path, self.dpi)
         except Exception as ex:
             messagebox.showerror(APP_NAME, "Cannot save %s:\n%s" % (path, ex))
             return
-        self.save_path, self.dirty = path, False
+        if project or not self.hist.layers:
+            self.save_path, self.dirty = path, False
+            self._status("Saved %s." % path, ok=True)
+        else:
+            self._status("Exported the flattened picture to %s. The layers are NOT saved: use a .ifl project to keep them." % path)
         self._update_state()
-        self._status("Saved %s%s." % (path, " (layers flattened into the file)" if self.hist.layers else ""), ok=True)
 
     def on_close(self):
         if self._confirm_discard():
+            if self._after is not None:
+                self.root.after_cancel(self._after)
             self.root.destroy()
 
     # ---- history / selection ---------------------------------------------------------------------------
@@ -1630,7 +1729,7 @@ class ImageForge:
     def open_layer_dialog(self):
         if not self._need_image():
             return
-        path = filedialog.askopenfilename(parent=self.root, filetypes=OPEN_TYPES, title="Open as layer")
+        path = filedialog.askopenfilename(parent=self.root, filetypes=IMAGE_TYPES, title="Open as layer")
         if not path:
             return
         try:
