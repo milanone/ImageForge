@@ -322,14 +322,33 @@ def _distance_from(img, color):
     return np.sqrt(((img.astype(np.float32) - np.asarray(color, np.float32)) ** 2).sum(axis=2))
 
 
+def fill_nearest(img, hole, valid=None):
+    """Paint the `hole` pixels (bool mask) with the colour of the nearest pixel that is not in the hole (and, when given,
+    is in `valid`): erasing a coloured line or text leaves the surrounding colour or gradient instead of a flat patch.
+    Returns `img` itself when there is nothing to fill or nothing to copy from."""
+    src = ~hole if valid is None else (valid & ~hole)
+    if not hole.any() or not src.any():
+        return img
+    _, labels = cv2.distanceTransformWithLabels(np.where(src, 0, 255).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_5,
+                                                labelType=cv2.DIST_LABEL_PIXEL)
+    sy, sx = np.nonzero(src)
+    lut_y, lut_x = np.zeros(labels.max() + 1, np.intp), np.zeros(labels.max() + 1, np.intp)
+    lut_y[labels[sy, sx]], lut_x[labels[sy, sx]] = sy, sx           # label -> the source pixel that owns it
+    hy, hx = np.nonzero(hole)
+    out = img.copy()
+    out[hy, hx] = img[lut_y[labels[hy, hx]], lut_x[labels[hy, hx]]]
+    return out
+
+
 @tool("Erase / keep colours", "Clean", [
     Param('colors', "Colours (click Pick on the image)", 'colors', '', pick='color'),
     Param('mode', "Mode", 'choice', 'erase', choices=('erase', 'keep only')),
     Param('tolerance', "Tolerance (RGB distance)", 'int', 60, 1, 441, slider=True),
-    Param('fill', "Paint with", 'choice', 'white', choices=tuple(FILLS) + ('transparent',))])
+    Param('fill', "Paint with", 'choice', 'white', choices=tuple(FILLS) + ('transparent', 'nearest colour'))])
 def erase_colors(img, colors, mode, tolerance, fill):
     """Paint with the fill colour the pixels within the tolerance of any picked colour ('erase') or of none of them
-    ('keep only'). Shades of one ink need several picks, or a larger tolerance."""
+    ('keep only'). 'nearest colour' copies, for each such pixel, the colour of the closest pixel that was not picked
+    (a line over a gradient disappears into the gradient). Shades of one ink need several picks, or a larger tolerance."""
     cols = parse_colors(colors)
     if not cols:
         return img
@@ -339,6 +358,8 @@ def erase_colors(img, colors, mode, tolerance, fill):
     hit = ~near if mode == 'keep only' else near
     if not hit.any():
         return img
+    if fill == 'nearest colour':
+        return fill_nearest(img, hit)
     out = img.copy()
     out[hit] = FILLS[fill]
     return out
@@ -715,13 +736,16 @@ def apply_tool_to_layer(name, rgba, params=None, region=None):
         return rgba
     rgb, alpha = np.ascontiguousarray(rgba[..., :3]), rgba[..., 3]
     params = dict(params or {})
-    if params.get('fill') == 'transparent':
+    if params.get('fill') in ('transparent', 'nearest colour'):
         a = apply_tool(name, rgb, dict(params, fill='white'), region)
         b = apply_tool(name, rgb, dict(params, fill='black'), region)
         painted = (a != b).any(axis=2)
         if not painted.any():
             return rgba
-        out_rgb, alpha = a, np.where(painted, 0, alpha).astype(np.uint8)
+        if params['fill'] == 'transparent':
+            out_rgb, alpha = a, np.where(painted, 0, alpha).astype(np.uint8)
+        else:                                          # copy from visible pixels only: transparent ones carry no colour
+            out_rgb = fill_nearest(rgb, painted, alpha > 0)
     else:
         out_rgb = apply_tool(name, rgb, params, region)
         if out_rgb is rgb:

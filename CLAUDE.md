@@ -130,6 +130,15 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   clear `dirty`; `save()` with layers and a non-project `save_path` asks again. Tests: `ProjectTests`; real-window check
   `examples/project_session.py` (dialogs mocked: save, close, reopen, edit the text, save back).
 
+- **Nearest-colour fill** (`fill_nearest`, `Erase / keep colours` with `fill='nearest colour'`): `cv2.distanceTransformWithLabels` on
+  the kept pixels (labels = which source pixel is closest; a label -> source LUT is built from the labels at the source pixels
+  themselves, so no assumption about the label numbering), erased pixels copy the colour of their closest kept pixel. DIST_MASK_5
+  is an approximation of the Euclidean distance (ties and diagonal cases may pick another equally near pixel). On a layer
+  (`apply_tool_to_layer`) the erased pixels are found by the white/black comparison trick and only visible pixels (alpha > 0) are
+  used as sources. Only this tool has it; the eraser brush paints with a flat colour. A smoother alternative not done:
+  `cv2.inpaint` (Telea / Navier-Stokes), better for wide holes; nearest-colour leaves streaks across holes wider than the
+  texture it copies. Tests: `NearestColourTests`.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a
