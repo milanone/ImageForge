@@ -171,6 +171,17 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   pass with it. A report 'eraser brush does nothing' that does not reproduce here is therefore a state problem (selection / layer /
   Hand / Space) or an error in the log, not the painting code.
 
+- **Clone source and picked colour** (second round): the clone source is two ordinary int params, `src_x` / `src_y` (-1 = not set;
+  `_clone_source()` reads them), so it can be typed, set by the 'Set source' button (`pick='point'` on `src_x`, `start_pick('point')`,
+  one click writes both), or by Ctrl+click while painting; `_draw_clone_marker()` keeps a cyan cross on it (called from `_redraw`,
+  `_params_changed`, tool change) and `_draw_brush_circle` adds the moving cross (pointer + kept offset). `_clone_off` is rebuilt
+  when the source differs from `_clone_last`. 'Erase rectangle' has `fill='picked colour'` + `color` (`pick='color1'`): after a Pick
+  the tool's 'Paint with' switches to 'picked colour' by itself (`_pick_click`: any tool whose `fill` offers that choice).
+  `erase_rect(..., color)` / `erase_rect_layer(..., color)`; `_picked_rgb` = first colour of the text, white if none.
+- **Tools tab layout**: `ttk.PanedWindow` (vertical): tool tree on top, the parameters (a `_scrollable` frame) below, divider at 400 px
+  after start (`_set_tools_divider`, 500 ms later so the window has a size) and draggable. The tree's `height` is now only a
+  minimum. Before, the parameters were pushed below the fold by the tall list and the clone source button was out of sight.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a

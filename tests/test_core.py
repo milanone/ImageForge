@@ -759,6 +759,18 @@ class RectangleTests(unittest.TestCase):
         self.assertIs(il.erase_rect(out, (10, 5, 30, 15), 'white'), out)              # already white: no change
         self.assertTrue((il.erase_rect(img, (0, 0, 4, 4), 'transparent')[:4, :4] == 255).all())   # no alpha: white
 
+    def test_erase_rect_with_a_picked_colour(self):
+        img = self.pic()
+        out = il.erase_rect(img, (10, 5, 30, 15), 'picked colour', 3, '#336699')
+        self.assertTrue((out[5:15, 10:30] == (0x33, 0x66, 0x99)).all())
+        self.assertTrue(np.array_equal(out[:5], img[:5]))
+        self.assertTrue((il.erase_rect(img, (0, 0, 4, 4), 'picked colour', 3, '')[:4, :4] == 255).all())      # no colour: white
+        self.assertTrue((il.erase_rect(img, (0, 0, 4, 4), 'picked colour', 3, 'nonsense #102030 #405060')[:4, :4] == (16, 32, 48)).all())
+        a = np.zeros((30, 50, 4), np.uint8)
+        w = il.erase_rect_layer(a, (10, 10, 20, 20), 'picked colour', 3, '#ff8000')
+        self.assertTrue((w[10:20, 10:20] == (255, 128, 0, 255)).all())                                   # opaque on a layer
+        self.assertTrue((w[:5] == 0).all())
+
     def test_erase_rect_inpaint_rebuilds_from_the_surroundings(self):
         img = self.pic()
         out = il.erase_rect(img, (30, 10, 40, 20), 'inpaint', 3)

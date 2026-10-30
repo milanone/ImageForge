@@ -55,7 +55,8 @@ class Param:
     options and `default` is one of them), 'colors' (text with hex colours such as '#ff0000 #00ff00') or 'text'.
     `slider` adds a slider next to the number box. `pick` adds a button that fills the value by clicking on
     the image: 'color' (appends the colour clicked), 'color1' (a single colour, also with a colour dialog) or
-    'angle' (two clicks on a line that should be level)."""
+    'angle' (two clicks on a line that should be level) or 'point' (one click sets this int and the one named `<key>` with
+    x/y swapped: used by the clone source, src_x / src_y)."""
 
     def __init__(self, key, label, kind, default, lo=None, hi=None, step=1, choices=(), slider=False, pick=None):
         self.key, self.label, self.kind, self.default = key, label, kind, default
@@ -371,9 +372,15 @@ def erase_colors(img, colors, mode, tolerance, grow, fill, radius):
     return out
 
 
-def erase_rect(img, rect, fill='white', radius=3):
-    """Paint the rectangle (x0, y0, x1, y1) of an RGB image: a flat 'white' / 'black' ('transparent' is white here, there
-    is no alpha) or 'inpaint' (rebuilt from the surroundings). Returns `img` itself when nothing changes."""
+def _picked_rgb(color):
+    cols = parse_colors(color or "")
+    return cols[0] if cols else (255, 255, 255)
+
+
+def erase_rect(img, rect, fill='white', radius=3, color=None):
+    """Paint the rectangle (x0, y0, x1, y1) of an RGB image: a flat 'white' / 'black' / 'picked colour' (the first colour
+    of `color`, '#rrggbb'; 'transparent' is white here, there is no alpha) or 'inpaint' (rebuilt from the surroundings).
+    Returns `img` itself when nothing changes."""
     h, w = img.shape[:2]
     x0, y0, x1, y1 = max(0, rect[0]), max(0, rect[1]), min(w, rect[2]), min(h, rect[3])
     if x1 <= x0 or y1 <= y0:
@@ -383,11 +390,11 @@ def erase_rect(img, rect, fill='white', radius=3):
         hole[y0:y1, x0:x1] = True
         return inpaint_mask(img, hole, radius)
     out = img.copy()
-    out[y0:y1, x0:x1] = FILLS.get(fill, FILLS['white'])
+    out[y0:y1, x0:x1] = _picked_rgb(color) if fill == 'picked colour' else FILLS.get(fill, FILLS['white'])
     return out if not np.array_equal(out, img) else img
 
 
-def erase_rect_layer(rgba, rect, fill='transparent', radius=3):
+def erase_rect_layer(rgba, rect, fill='transparent', radius=3, color=None):
     """The same on an RGBA layer, `rect` in the layer's own coordinates: 'transparent' makes the rectangle see-through,
     'white' / 'black' paint it opaque, 'inpaint' rebuilds the colours from the visible pixels around it (alpha kept)."""
     h, w = rgba.shape[:2]
@@ -402,18 +409,20 @@ def erase_rect_layer(rgba, rect, fill='transparent', radius=3):
     elif fill == 'transparent':
         out[y0:y1, x0:x1, 3] = 0
     else:
-        out[y0:y1, x0:x1, :3] = FILLS[fill]
+        out[y0:y1, x0:x1, :3] = _picked_rgb(color) if fill == 'picked colour' else FILLS[fill]
         out[y0:y1, x0:x1, 3] = 255
     return out if not np.array_equal(out, rgba) else rgba
 
 
 @tool("Erase rectangle", "Areas", [
-    Param('fill', "Paint with", 'choice', 'white', choices=tuple(FILLS) + ('transparent', 'inpaint')),
+    Param('fill', "Paint with", 'choice', 'white', choices=tuple(FILLS) + ('picked colour', 'transparent', 'inpaint')),
+    Param('color', "Picked colour", 'colors', '#ffffff', pick='color1'),
     Param('radius', "Inpaint radius (px)", 'int', 3, 1, 30, slider=True)],
     preview=False, interactive='rect-erase',
-    doc="Drag a rectangle: what is inside is erased as soon as you let go (one Undo step). On an image layer 'transparent' "
-        "makes it see-through; on the Background it paints white. The current selection is not used.")
-def erase_rectangle(img, fill, radius):
+    doc="Drag a rectangle: what is inside is erased as soon as you let go (one Undo step). Pick a colour from the picture "
+        "(Pick) or choose one (...) and the rectangle is painted with it. On an image layer 'transparent' makes it "
+        "see-through; on the Background it paints white. The current selection is not used.")
+def erase_rectangle(img, fill, color, radius):
     return img
 
 
@@ -454,12 +463,15 @@ def stamp_clone(dst, src, cx, cy, ox, oy, size, hardness=100, opacity=100, regio
     Param('size', "Diameter (px)", 'int', 30, 1, 400, slider=True),
     Param('hardness', "Hardness (%)", 'int', 60, 0, 100, slider=True),
     Param('opacity', "Opacity (%)", 'int', 100, 1, 100, slider=True),
-    Param('aligned', "Aligned (keep the offset between strokes)", 'bool', True)],
+    Param('aligned', "Aligned (keep the offset between strokes)", 'bool', True),
+    Param('src_x', "Source X (px, -1 = not set)", 'int', -1, -1, 100000, pick='point'),
+    Param('src_y', "Source Y (px)", 'int', -1, -1, 100000)],
     preview=False, interactive='clone',
-    doc="Ctrl+click where you want to copy FROM, then paint where the copy should go: the pixels under the cursor are "
-        "copied from the source, which moves along with it (a cross shows it). Limited to the selection if there is one; "
-        "on an image layer it copies inside that layer. One stroke is one Undo step.")
-def clone_stamp(img, size, hardness, opacity, aligned):
+    doc="First define the SOURCE: press 'Set source' and click on the picture (or Ctrl+click while painting, or type X and "
+        "Y); a cyan cross marks it. Then paint where the copy should go: the pixels under the cursor are copied from the "
+        "source, which moves along with it. Limited to the selection if there is one; on an image layer it copies inside "
+        "that layer. One stroke is one Undo step.")
+def clone_stamp(img, size, hardness, opacity, aligned, src_x, src_y):
     return img
 
 
@@ -1205,8 +1217,8 @@ class ImageForge:
         self._stroke_layer = None        # the layer a brush stroke paints on (None: the Background)
         self._stroke_orig = None         # the target as it was when the stroke began (never modified)
         self._stroke_mask = None         # Clean brush: the painted pixels
-        self._clone_src = None           # Clone stamp: the source point (image pixels) and the offset kept between strokes
-        self._clone_off = None
+        self._clone_off = None           # Clone stamp: the offset kept between strokes, and the source it was made for
+        self._clone_last = None
         self._stroke = None              # image being painted by the eraser brush, and the last brush point
         self._last = None
         root.title(APP_NAME)
@@ -1342,21 +1354,26 @@ class ImageForge:
 
         self.nbk = ttk.Notebook(panel)
         self.nbk.pack(fill=tk.BOTH, expand=True, padx=4, pady=(6, 0))
-        outer, tab = self._scrollable(self.nbk, bg)
-        self.nbk.add(outer, text="  Tools  ")
+        # Tools tab: the tool list on top and the parameters below, with a draggable divider between them (the list is
+        # tall, so the parameters would otherwise sit below the fold).
+        self.tools_pane = ttk.PanedWindow(self.nbk, orient='vertical')
+        self.nbk.add(self.tools_pane, text="  Tools  ")
         tab_layers = tk.Frame(self.nbk, bg=bg)
         self.nbk.add(tab_layers, text="  Layers  ")
         self._build_layers_tab(tab_layers, bg)
-        tf = tk.Frame(tab, bg=bg)
-        tf.pack(fill=tk.X, padx=8, pady=2)
-        self.tree = ttk.Treeview(tf, show='tree', selectmode='browse', height=21)
+        tf = tk.Frame(self.tools_pane, bg=bg)
+        self.tools_pane.add(tf, weight=1)
+        outer, tab = self._scrollable(self.tools_pane, bg)
+        self.tools_pane.add(outer, weight=1)
+        self.tree = ttk.Treeview(tf, show='tree', selectmode='browse', height=8)
         sb = ttk.Scrollbar(tf, orient='vertical', command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
-        sb.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        sb.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 4), pady=2)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0), pady=2)
         self.tree.bind('<<TreeviewSelect>>', lambda e: self._on_tree_select())
+        self.root.after(500, self._set_tools_divider)
 
-        self.l_doc = tk.Label(tab, text="", bg=bg, fg='#555555', font=('Arial', 8), wraplength=300, justify='left',
+        self.l_doc = tk.Label(tab, text="", bg=bg, fg='#555555', font=('Arial', 8), wraplength=270, justify='left',
                               anchor='w')
         self.l_doc.pack(fill=tk.X, padx=10, pady=(4, 0))
         self.params_frame = tk.Frame(tab, bg=bg)
@@ -1433,6 +1450,13 @@ class ImageForge:
                 sub.add_command(label=t.name, command=lambda n=t.name: self.tree.selection_set(n))
 
     # ---- tools and parameters --------------------------------------------------------------------------
+    def _set_tools_divider(self, y=400):
+        """Start with a tall tool list (about three times the first version); the divider can be dragged."""
+        try:
+            self.tools_pane.sashpos(0, y)
+        except tk.TclError:
+            pass
+
     def _on_tree_select(self):
         sel = self.tree.selection()
         if sel and sel[0] in TOOLS:
@@ -1442,6 +1466,7 @@ class ImageForge:
         self.cancel_mode()
         self.tool = TOOLS[name]
         self.canvas.delete('brush')
+        self.canvas.delete('clone')
         self.l_doc.config(text=self.tool.doc)
         self._build_params()
         self.preview = self.lprev = None
@@ -1493,6 +1518,9 @@ class ImageForge:
                 if p.pick == 'angle':
                     tk.Button(self.params_frame, text="Measure: click two points of a line to level",
                               command=lambda k=p.key: self.start_pick('angle', k)).pack(fill=tk.X, pady=(2, 0))
+                elif p.pick == 'point':
+                    tk.Button(self.params_frame, text="Set source: click on the picture",
+                              command=lambda k=p.key: self.start_pick('point', k), bg='#cdeefc').pack(fill=tk.X, pady=(2, 0))
             var.trace_add('write', lambda *a: self._params_changed())
             self.pvars[p.key] = var
         self._params_ready = True
@@ -1516,6 +1544,8 @@ class ImageForge:
     def _params_changed(self):
         if not self._params_ready or self.tool is None:
             return
+        self._clone_off = None if self._clone_source() != self._clone_last else self._clone_off
+        self._draw_clone_marker()
         if self._after is not None:
             self.root.after_cancel(self._after)
         self._after = self.root.after(60, self._update_preview)
@@ -2260,6 +2290,7 @@ class ImageForge:
             c.create_image(round(x0 * z + self.ox), round(y0 * z + self.oy), anchor='nw', image=self._photo, tags='img')
             c.tag_lower('img')
         self._draw_selection()
+        self._draw_clone_marker()
         self._set_info()
 
     def _draw_selection(self, rect=None):
@@ -2299,6 +2330,7 @@ class ImageForge:
         self.canvas.config(cursor='tcross')
         self._status({'color': "Click a colour on the image (as many as needed), Esc to finish.",
                       'color1': "Click the colour to use on the image. Esc cancels.",
+                      'point': "Click the point of the picture to copy FROM. Esc cancels.",
                       'angle': "Click two points of a line that should be level (or vertical). Esc cancels."}[what])
 
     def choose_color(self, key):
@@ -2321,12 +2353,23 @@ class ImageForge:
         ix, iy = int(math.floor(x)), int(math.floor(y))
         if not (0 <= ix < w and 0 <= iy < h):
             return
+        if self.mode == 'point':                                 # the clone source: x here, y in the paired parameter
+            self.pvars[self._pick_key].set(ix)
+            self.pvars[self._pick_key.replace('_x', '_y')].set(iy)
+            self.cancel_mode()
+            self._clone_off = None
+            self._draw_clone_marker()
+            self._status("Clone source set at (%d, %d). Now paint where the copy should go." % (ix, iy), ok=True)
+            return
         if self.mode in ('color', 'color1'):
             patch = img[max(0, iy - 1):iy + 2, max(0, ix - 1):ix + 2].reshape(-1, 3)
             r, g, b = (int(v) for v in np.median(patch, axis=0))             # median of 3x3: robust to a stray pixel
             var = self.pvars[self._pick_key]
             if self.mode == 'color1':
                 var.set("#%02x%02x%02x" % (r, g, b))
+                fill = self.pvars.get('fill')
+                if fill is not None and 'picked colour' in next((q.choices for q in self.tool.params if q.key == 'fill'), ()):
+                    fill.set('picked colour')                      # the colour was picked to be used: use it
                 self.cancel_mode()
                 self._status("Colour #%02x%02x%02x set." % (r, g, b), ok=True)
             else:
@@ -2369,7 +2412,10 @@ class ImageForge:
         x, y = self._img_xy(e.x, e.y)
         pt = (int(math.floor(x)), int(math.floor(y)))
         if mode == 'clone' and (e.state & 0x4):                 # Ctrl+click: choose where to copy from
-            self._clone_src, self._clone_off = pt, None
+            self.pvars['src_x'].set(pt[0])
+            self.pvars['src_y'].set(pt[1])
+            self._clone_off = None
+            self._draw_clone_marker()
             self._status("Clone source set at (%d, %d). Now paint where the copy should go." % pt, ok=True)
             self._draw_brush_circle(e)
             return
@@ -2378,11 +2424,13 @@ class ImageForge:
             self._status(self._TEXT_LAYER_MSG)
             return
         if mode == 'clone':
-            if self._clone_src is None:
-                self._status("Ctrl+click on the picture first, to choose what to copy from.")
+            src = self._clone_source()
+            if src is None:
+                self._status("Define the source first: press 'Set source' and click on the picture (or Ctrl+click).")
                 return
-            if self._clone_off is None or not (self._read_params() or {}).get('aligned', True):
-                self._clone_off = (self._clone_src[0] - pt[0], self._clone_src[1] - pt[1])
+            if self._clone_off is None or src != self._clone_last or not (self._read_params() or {}).get('aligned', True):
+                self._clone_off = (src[0] - pt[0], src[1] - pt[1])
+                self._clone_last = src
         self._stroke_layer = L if kind == 'layer' else None
         self._stroke_orig = L.rgba if L is not None else self.hist.current
         self._stroke = self._stroke_orig.copy()
@@ -2464,20 +2512,39 @@ class ImageForge:
             self._commit_layers("%s (layer)" % self.tool.name, layers)
             self._status("%s stroke done on layer '%s'." % (self.tool.name, L.name), ok=True)
 
+    def _clone_source(self):
+        """The clone source (x, y) in image pixels from the two boxes, or None while it is not set."""
+        if self.tool is None or self.tool.interactive != 'clone' or 'src_x' not in self.pvars:
+            return None
+        try:
+            x, y = int(round(float(self.pvars['src_x'].get()))), int(round(float(self.pvars['src_y'].get())))
+        except (tk.TclError, ValueError):
+            return None
+        return (x, y) if x >= 0 and y >= 0 else None
+
+    def _cross(self, sx, sy, tag):
+        for dx, dy in ((10, 0), (-10, 0), (0, 10), (0, -10)):
+            self.canvas.create_line(sx, sy, sx + dx, sy + dy, fill='#00e5ff', width=2, tags=tag)
+        self.canvas.create_oval(sx - 3, sy - 3, sx + 3, sy + 3, outline='#00e5ff', width=2, tags=tag)
+
+    def _draw_clone_marker(self):
+        """A cross on the clone source, kept while the Clone stamp tool is selected (follows pan and zoom)."""
+        self.canvas.delete('clone')
+        src = self._clone_source()
+        if src is not None and self.hist is not None:
+            self._cross((src[0] + 0.5) * self.zoom + self.ox, (src[1] + 0.5) * self.zoom + self.oy, 'clone')
+
     def _draw_brush_circle(self, e):
         self.canvas.delete('brush')
         if self._is_brush() and self.hist is not None:
             r = self._brush_params()[0] / 2.0 * self.zoom
             self.canvas.create_oval(e.x - r, e.y - r, e.x + r, e.y + r, outline='#ff3366', tags='brush')
-            if self.tool.interactive == 'clone' and self._clone_src is not None:
-                if self._clone_off is not None:                # the source follows the pointer by the kept offset
-                    ix, iy = self._img_xy(e.x, e.y)
-                    sx, sy = (math.floor(ix) + self._clone_off[0] + 0.5) * self.zoom + self.ox, \
-                        (math.floor(iy) + self._clone_off[1] + 0.5) * self.zoom + self.oy
-                else:
-                    sx, sy = (self._clone_src[0] + 0.5) * self.zoom + self.ox, (self._clone_src[1] + 0.5) * self.zoom + self.oy
-                for dx, dy in ((10, 0), (-10, 0), (0, 10), (0, -10)):
-                    self.canvas.create_line(sx, sy, sx + dx, sy + dy, fill='#00e5ff', width=2, tags='brush')
+            if self.tool.interactive == 'clone' and self._clone_source() is not None and self._clone_off is not None \
+                    and self._clone_source() == self._clone_last:   # the source follows the pointer by the kept offset
+                ix, iy = self._img_xy(e.x, e.y)
+                sx, sy = (math.floor(ix) + self._clone_off[0] + 0.5) * self.zoom + self.ox, \
+                    (math.floor(iy) + self._clone_off[1] + 0.5) * self.zoom + self.oy
+                self._cross(sx, sy, 'brush')
 
     def _on_press(self, e):
         if self.hist is None:
@@ -2582,13 +2649,13 @@ class ImageForge:
     # ---- 'Erase rectangle' ------------------------------------------------------------------------------
     def _rect_erase_apply(self, rect):
         p = self._read_params() or {}
-        fill, radius = p.get('fill', 'white'), int(p.get('radius', 3))
+        fill, radius, color = p.get('fill', 'white'), int(p.get('radius', 3)), p.get('color', '#ffffff')
         kind, L = self._tool_target()
         if kind == 'text':
             self._status(self._TEXT_LAYER_MSG)
             return
         if kind == 'layer':
-            out = erase_rect_layer(L.rgba, layer_region(rect, L), fill, radius)
+            out = erase_rect_layer(L.rgba, layer_region(rect, L), fill, radius, color)
             if out is L.rgba:
                 self._status("Nothing to erase there on layer '%s'." % L.name)
                 return
@@ -2596,7 +2663,7 @@ class ImageForge:
             layers[self.active] = L.replace(rgba=out)
             self._commit_layers("Erase rectangle (layer)", layers)
         else:
-            out = erase_rect(self.hist.current, rect, fill, radius)
+            out = erase_rect(self.hist.current, rect, fill, radius, color)
             if out is self.hist.current:
                 self._status("Nothing changed (the rectangle is already that colour).")
                 return

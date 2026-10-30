@@ -29,17 +29,19 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
 - **View**: the bar above the picture has **Center** (middle of the window, same zoom), **Fit** (fill the window and
   centre) and **100%**, plus a **Hand** button: while it is pressed, or while you hold **Space**, dragging with the left
   button moves the picture instead of selecting (right/middle drag always moves it). Wheel = zoom at the cursor.
-  The status line shows the pixel under the cursor. The tool list is tall (21 rows) and scrolls.
+  The status line shows the pixel under the cursor. The tool list is tall (about 20 rows); the line between it and the parameters below can be dragged.
 - **Tools**, with live preview:
   - Tone: brightness / contrast, grayscale (with strength), invert, threshold (plug-in example)
   - Filters: sharpen (unsharp mask), Gaussian blur
   - Geometry: auto-crop borders (uniform white / black / frame colour, tolerance, margin), rotate 90/180, rotate by any angle (with **Measure**: click two points of a line to level it), flip,
     resize (percent or pixels, choice of interpolation)
-  - Retouch: **Clone stamp** (Ctrl+click the spot to copy from, then paint: the copy follows the cursor, soft edge, opacity,
-    *Aligned* keeps the offset between strokes) and **Clean brush** (paint over a spot, scratch or stray mark, it shows red; when
-    you let go it is rebuilt from its surroundings). Both are limited to the selection and work on the selected layer's pixels.
-  - Areas: **Erase rectangle** (drag a rectangle, what is inside is erased on release: white, black, transparent on a
-    layer, or inpainted) and **Move area** (drag a rectangle round something, then drag inside it to move it; Shift or its
+  - Retouch: **Clone stamp** (define the **source** first: press *Set source* and click on the picture, or type X / Y, or
+    Ctrl+click while painting; a cyan cross marks it and follows the cursor while you paint. Then paint where the copy should
+    go: soft edge, opacity, *Aligned* keeps the offset between strokes) and **Clean brush** (paint over a spot, scratch or stray
+    mark, it shows red; when you let go it is rebuilt from its surroundings). Both are limited to the selection and work on the
+    selected layer's pixels.
+  - Areas: **Erase rectangle** (drag a rectangle, what is inside is erased on release: white, black, a colour **picked from the
+    picture** (Pick) or chosen with a dialog (...), transparent on a layer, or inpainted) and **Move area** (drag a rectangle round something, then drag inside it to move it; Shift or its
     *Copy* box copies; the old place is filled as the *leaves* box says; on an image layer it works inside that layer)
   - Clean (ported from SpectrumDigitizer): erase / keep colours (**Pick** colours on the image, with tolerance and an
     optional widening of the area; paint with white, black, transparent or **inpaint**, which rebuilds the erased pixels from
