@@ -69,6 +69,21 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   (original: the darkest, i.e. white background only). With a selection the result is computed on the whole image and only the
   selection pasted (so a dash crossing the selection edge can be half joined). Tests: `JoinDashesTests`.
 
+- **Move content** (not a tool: an app mode): `hit_handle` == 'move' and (`v_content` XOR Ctrl) starts `_mv` = (press point, selection,
+  copy?, original image); every motion recomputes `move_region(original, ...)` as the preview (so nothing accumulates) and sets
+  `self.sel` to the new rectangle; release commits one history step ('Move content' / 'Copy content'). The fill left behind is
+  white, black or `border_color` of the whole image (`v_fill`). `drag_rect('move')` keeps the object inside the image, so nothing is
+  ever cut off. The image is still flat pixels: there are no layers, so an object cannot be moved again later independently of
+  the background it was pasted on (undo is the way back). Tests: `TextAndMoveTests`.
+- **Add text** (`add_text`, `Tool.place=True`): the text is rendered by PIL into an 8-bit alpha mask (multiline, optional rotation
+  about the box, opacity), then blended into the image as float and clipped at the borders; the selection clips it further
+  (standard region rule). A `place` tool has int params `x`, `y`; a press/drag on the image sets them (`_place_at`), which drives
+  the normal debounced preview. Fonts: `FONT_FILES` names -> file names looked up in `FONT_DIRS` (Windows Fonts folder first),
+  only those found are offered, plus Pillow's built-in 'default'. The text box is one line: `\n` typed in it is a line break.
+  Colour param = `Param(kind='colors', pick='color1')`: first colour of the text, Pick replaces it, '...' opens the colour dialog.
+  Not done: editing text that is already applied (it is pixels after Apply), alignment, outline/shadow, tool-wide font bold flag.
+- The Apply/Preview/Reset row is packed at the bottom of the panel *first*, so it stays visible however many parameters a tool has.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a
@@ -78,9 +93,9 @@ new tree nodes automatically.
 ## Verified / not verified
 
 Unit tests on synthetic arrays and files; a scripted session with real Tk mouse events (drag selection, move/resize by handles, arrow nudge, Apply, crop,
-undo, redo, wheel, pan, click-to-deselect, colour pick, angle pick, brush stroke) and a screenshot from the real window. Not verified: large photos, HiDPI
+undo, redo, wheel, pan, click-to-deselect, colour pick, angle pick, brush stroke, content move/copy, text placement) and a screenshot from the real window. Not verified: large photos, HiDPI
 scaling other than the screenshot script's, drag-and-drop (tkinterdnd2 path), the Save dialogs by hand.
 
 ## Ideas not done yet (from SpectrumDigitizer's cleaning tab)
 
-Rotation of the selection (SpectrumDigitizer's working area could rotate), manual link of a broken line, magnifier next to the cursor, arrow keys to nudge by one pixel.
+Layers / non-destructive objects (move or edit a pasted object or its text later), rotation of the selection (SpectrumDigitizer's working area could rotate), manual link of a broken line, magnifier next to the cursor.

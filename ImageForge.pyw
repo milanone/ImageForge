@@ -17,10 +17,10 @@ import traceback
 
 import numpy as np
 import cv2
-from PIL import Image, ImageDraw, ImageOps, ImageTk
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageTk
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import colorchooser, filedialog, messagebox, ttk
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -43,9 +43,10 @@ TOOLS = {}                          # name -> Tool, in registration order (which
 
 class Param:
     """One adjustable value of a tool. kind: 'int', 'float', 'bool', 'choice' (then `choices` lists the
-    options and `default` is one of them) or 'colors' (text with hex colours such as '#ff0000 #00ff00').
+    options and `default` is one of them), 'colors' (text with hex colours such as '#ff0000 #00ff00') or 'text'.
     `slider` adds a slider next to the number box. `pick` adds a button that fills the value by clicking on
-    the image: 'color' (appends the colour clicked) or 'angle' (two clicks on a line that should be level)."""
+    the image: 'color' (appends the colour clicked), 'color1' (a single colour, also with a colour dialog) or
+    'angle' (two clicks on a line that should be level)."""
 
     def __init__(self, key, label, kind, default, lo=None, hi=None, step=1, choices=(), slider=False, pick=None):
         self.key, self.label, self.kind, self.default = key, label, kind, default
@@ -64,7 +65,7 @@ class Param:
                 return bool(value)
             if self.kind == 'choice':
                 return value if value in self.choices else self.default
-            if self.kind == 'colors':
+            if self.kind in ('colors', 'text'):
                 return str(value)
             v = float(value)
             if not math.isfinite(v):
@@ -81,20 +82,21 @@ class Param:
 class Tool:
     """`geometry` tools change the whole image (size, orientation) and ignore the selection; the others are
     computed on the whole image and only the selected rectangle is taken from the result. An `interactive` tool
-    ('brush') is not applied with the Apply button: the user paints on the image and the app does the work."""
+    ('brush') is not applied with the Apply button: the user paints on the image and the app does the work. A
+    `place` tool has int parameters 'x' and 'y' that a click or drag on the image sets (where the thing goes)."""
 
-    def __init__(self, name, group, func, params, geometry, preview, doc, interactive=None):
+    def __init__(self, name, group, func, params, geometry, preview, doc, interactive=None, place=False):
         self.name, self.group, self.func, self.params = name, group, func, tuple(params)
-        self.geometry, self.preview, self.doc, self.interactive = geometry, preview, doc, interactive
+        self.geometry, self.preview, self.doc, self.interactive, self.place = geometry, preview, doc, interactive, place
 
 
-def tool(name, group, params=(), geometry=False, preview=True, doc="", interactive=None):
+def tool(name, group, params=(), geometry=False, preview=True, doc="", interactive=None, place=False):
     """Register `func(img, **params) -> img` as a tool. `img` is an (H, W, 3) uint8 array that must not be
     modified in place (it belongs to the Undo history); return a new array, or `img` itself for 'no change'.
     The keys of `params` are the keyword arguments."""
     def deco(func):
         TOOLS[name] = Tool(name, group, func, params, geometry, preview, doc or (func.__doc__ or "").strip(),
-                           interactive)
+                           interactive, place)
         return func
     return deco
 
@@ -534,6 +536,91 @@ def join_dashed(img, max_gap, max_turn, tolerance, background):
     return join_dashes(img, background, tolerance, max_gap, max_turn)[0]
 
 
+# ---- text -------------------------------------------------------------------------------------------------
+FONT_DIRS = [r"C:\Windows\Fonts", "/usr/share/fonts/truetype/dejavu", "/Library/Fonts", "/System/Library/Fonts/Supplemental"]
+FONT_FILES = {'Arial': ('arial.ttf', 'Arial.ttf', 'DejaVuSans.ttf'), 'Arial Bold': ('arialbd.ttf', 'Arial Bold.ttf'),
+              'Arial Italic': ('ariali.ttf', 'Arial Italic.ttf'), 'Times New Roman': ('times.ttf', 'Times New Roman.ttf'),
+              'Courier New': ('cour.ttf', 'Courier New.ttf'), 'Calibri': ('calibri.ttf',), 'Segoe UI': ('segoeui.ttf',),
+              'Verdana': ('verdana.ttf', 'Verdana.ttf'), 'Consolas': ('consola.ttf',)}
+
+
+def find_font(name):
+    """Path of the TrueType file of a font name from FONT_FILES, or None when this computer does not have it."""
+    for d in FONT_DIRS:
+        for fn in FONT_FILES.get(name, ()):
+            path = os.path.join(d, fn)
+            if os.path.isfile(path):
+                return path
+    return None
+
+
+FONT_CHOICES = tuple(n for n in FONT_FILES if find_font(n)) + ('default',)
+
+
+def load_font(name, size):
+    path = find_font(name)
+    if path:
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            pass
+    return ImageFont.load_default(size)
+
+
+@tool("Add text", "Draw", [
+    Param('text', "Text (type \\n for a new line)", 'text', "Text"),
+    Param('size', "Size (px)", 'int', 32, 4, 2000, slider=True),
+    Param('font', "Font", 'choice', FONT_CHOICES[0], choices=FONT_CHOICES),
+    Param('color', "Colour", 'colors', '#000000', pick='color1'),
+    Param('x', "X of the top-left corner (px)", 'int', 20, -100000, 100000),
+    Param('y', "Y of the top-left corner (px)", 'int', 20, -100000, 100000),
+    Param('angle', "Rotate (deg, counter-clockwise)", 'float', 0.0, -180.0, 180.0, step=0.5, slider=True),
+    Param('opacity', "Opacity (%)", 'int', 100, 0, 100, slider=True)],
+    place=True,
+    doc="Click or drag on the image to place the text, then Apply. Inside a selection the text is clipped to it.")
+def add_text(img, text, size, font, color, x, y, angle, opacity):
+    """Anti-aliased text in a font of this computer, optionally rotated and semi-transparent."""
+    text = text.replace("\\n", "\n")                  # a typed backslash-n is a line break (the box is one line)
+    if not text.strip() or opacity == 0:
+        return img
+    cols = parse_colors(color)
+    rgb = np.asarray(cols[0] if cols else (0, 0, 0), np.float32)
+    f = load_font(font, size)
+    probe = ImageDraw.Draw(Image.new('L', (1, 1)))
+    l, t, r, b = probe.multiline_textbbox((0, 0), text, font=f)
+    pad = 1
+    layer = Image.new('L', (r - l + 2 * pad, b - t + 2 * pad), 0)
+    ImageDraw.Draw(layer).multiline_text((pad - l, pad - t), text, font=f, fill=255)
+    if angle:
+        layer = layer.rotate(angle, expand=True, resample=Image.BICUBIC)
+    mask = np.asarray(layer, np.float32) / 255.0 * (opacity / 100.0)
+    h, w = img.shape[:2]
+    mh, mw = mask.shape
+    dx0, dy0, dx1, dy1 = max(0, x), max(0, y), min(w, x + mw), min(h, y + mh)
+    if dx1 <= dx0 or dy1 <= dy0:
+        return img
+    m = mask[dy0 - y:dy1 - y, dx0 - x:dx1 - x][..., None]
+    out = img.copy()
+    out[dy0:dy1, dx0:dx1] = _to_u8(out[dy0:dy1, dx0:dx1].astype(np.float32) * (1 - m) + rgb * m)
+    return out
+
+
+def move_region(img, rect, dx, dy, fill, copy=False):
+    """Move (or copy) the pixels of `rect` by (dx, dy): returns (new image, new rect). The rectangle stops at the
+    image border (nothing is cut off). A move leaves `fill` (r, g, b) where the object was; a copy leaves it as is."""
+    h, w = img.shape[:2]
+    x0, y0, x1, y1 = rect
+    nx0, ny0, nx1, ny1 = drag_rect(rect, 'move', dx, dy, (w, h))
+    if (nx0, ny0) == (x0, y0):
+        return img, rect
+    patch = img[y0:y1, x0:x1].copy()
+    out = img.copy()
+    if not copy:
+        out[y0:y1, x0:x1] = fill
+    out[ny0:ny1, nx0:nx1] = patch
+    return out, (nx0, ny0, nx1, ny1)
+
+
 def border_color(img):
     """The colour of the image frame: the per-channel median of its outermost pixel ring."""
     ring = np.concatenate([img[0], img[-1], img[:, 0], img[:, -1]])
@@ -682,6 +769,8 @@ class ImageForge:
         self.mode = None                 # None, 'color' or 'angle': what a click on the image means (Esc cancels)
         self._pick_key = None            # the parameter a pick fills
         self._pick_pts = []
+        self._mv = None                  # (press point, selection, copy?, original image) while moving the content
+        self._placing = False            # a click/drag is setting the x, y of a 'place' tool
         self._grab = None                # (handle, press point in image pixels, selection at press) while dragging it
         self._stroke = None              # image being painted by the eraser brush, and the last brush point
         self._last = None
@@ -744,6 +833,18 @@ class ImageForge:
         self.info.pack(fill=tk.X, side=tk.BOTTOM)
 
         bg = '#f0f4f7'
+        # Packed first, at the bottom: Apply must stay visible whatever the window height or the number of parameters.
+        self.v_preview = tk.BooleanVar(value=True)
+        row = tk.Frame(panel, bg=bg)
+        row.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(2, 8))
+        self.c_preview = tk.Checkbutton(row, text="Preview", variable=self.v_preview, bg=bg,
+                                        command=self._params_changed)
+        self.c_preview.pack(side=tk.LEFT)
+        tk.Button(row, text="Reset", command=self.reset_params).pack(side=tk.LEFT, padx=6)
+        self.b_apply = tk.Button(row, text="Apply", command=self.apply, bg='#2ecc71', fg='white',
+                                 font=('Arial', 10, 'bold'))
+        self.b_apply.pack(side=tk.RIGHT, expand=True, fill=tk.X, padx=(10, 2))
+
         row = tk.Frame(panel, bg=bg)
         row.pack(fill=tk.X, padx=8, pady=(8, 2))
         self.b_undo = tk.Button(row, text="Undo", command=self.undo)
@@ -753,10 +854,21 @@ class ImageForge:
         self.b_crop = tk.Button(row, text="Crop to selection", command=self.crop_to_selection)
         self.b_crop.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
 
+        row = tk.Frame(panel, bg=bg)
+        row.pack(fill=tk.X, padx=8, pady=(4, 0))
+        self.v_content = tk.BooleanVar(value=False)
+        tk.Checkbutton(row, text="Drag moves the content", variable=self.v_content, bg=bg).pack(side=tk.LEFT)
+        tk.Label(row, text="leaves", bg=bg, font=('Arial', 8)).pack(side=tk.LEFT, padx=(6, 2))
+        self.v_fill = tk.StringVar(value='white')
+        ttk.Combobox(row, textvariable=self.v_fill, values=('white', 'black', 'background'), state='readonly',
+                     width=10).pack(side=tk.LEFT)
+        tk.Label(panel, text="Inside the selection: Ctrl does the opposite of the box, Shift copies.", bg=bg,
+                 fg='#555555', font=('Arial', 8), anchor='w', justify='left', wraplength=300).pack(fill=tk.X, padx=10)
+
         tk.Label(panel, text="TOOLS", font=('Arial', 10, 'bold'), bg=bg, anchor='w').pack(fill=tk.X, padx=10, pady=(8, 0))
         tf = tk.Frame(panel, bg=bg)
         tf.pack(fill=tk.X, padx=8, pady=2)
-        self.tree = ttk.Treeview(tf, show='tree', selectmode='browse', height=12)
+        self.tree = ttk.Treeview(tf, show='tree', selectmode='browse', height=9)
         sb = ttk.Scrollbar(tf, orient='vertical', command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
@@ -768,17 +880,6 @@ class ImageForge:
         self.l_doc.pack(fill=tk.X, padx=10, pady=(4, 0))
         self.params_frame = tk.Frame(panel, bg=bg)
         self.params_frame.pack(fill=tk.X, padx=8, pady=2)
-        self.v_preview = tk.BooleanVar(value=True)
-        row = tk.Frame(panel, bg=bg)
-        row.pack(fill=tk.X, padx=8, pady=(6, 2))
-        self.c_preview = tk.Checkbutton(row, text="Preview", variable=self.v_preview, bg=bg,
-                                        command=self._params_changed)
-        self.c_preview.pack(side=tk.LEFT)
-        tk.Button(row, text="Reset", command=self.reset_params).pack(side=tk.LEFT, padx=6)
-        self.b_apply = tk.Button(row, text="Apply", command=self.apply, bg='#2ecc71', fg='white',
-                                 font=('Arial', 10, 'bold'))
-        self.b_apply.pack(side=tk.RIGHT, expand=True, fill=tk.X, padx=(10, 2))
-
         c = self.canvas
         c.bind('<Configure>', lambda e: self._redraw())
         c.bind('<ButtonPress-1>', self._on_press)
@@ -863,14 +964,18 @@ class ImageForge:
                 var = tk.StringVar(value=p.default)
                 tk.Label(self.params_frame, text=p.label, bg=bg, anchor='w', font=('Arial', 9)).pack(fill=tk.X)
                 ttk.Combobox(self.params_frame, textvariable=var, values=p.choices, state='readonly').pack(fill=tk.X)
-            elif p.kind == 'colors':
+            elif p.kind in ('colors', 'text'):
                 var = tk.StringVar(value=p.default)
                 tk.Label(self.params_frame, text=p.label, bg=bg, anchor='w', font=('Arial', 9)).pack(fill=tk.X)
                 r = tk.Frame(self.params_frame, bg=bg)
                 r.pack(fill=tk.X)
                 ttk.Entry(r, textvariable=var).pack(side=tk.LEFT, expand=True, fill=tk.X)
-                tk.Button(r, text="Clear", command=lambda v=var: v.set("")).pack(side=tk.RIGHT, padx=(4, 0))
-                tk.Button(r, text="Pick", command=lambda k=p.key: self.start_pick('color', k)).pack(side=tk.RIGHT)
+                if p.pick == 'color1':
+                    tk.Button(r, text="...", command=lambda k=p.key: self.choose_color(k)).pack(side=tk.RIGHT, padx=(4, 0))
+                    tk.Button(r, text="Pick", command=lambda k=p.key: self.start_pick('color1', k)).pack(side=tk.RIGHT)
+                elif p.pick == 'color':
+                    tk.Button(r, text="Clear", command=lambda v=var: v.set("")).pack(side=tk.RIGHT, padx=(4, 0))
+                    tk.Button(r, text="Pick", command=lambda k=p.key: self.start_pick('color', k)).pack(side=tk.RIGHT)
             else:
                 var = tk.DoubleVar(value=p.default)
                 tk.Label(self.params_frame, text=p.label, bg=bg, anchor='w', font=('Arial', 9)).pack(fill=tk.X)
@@ -916,7 +1021,7 @@ class ImageForge:
 
     def _update_preview(self):
         self._after = None
-        if self.hist is None or self.tool is None or self._stroke is not None:
+        if self.hist is None or self.tool is None or self._stroke is not None or self._mv is not None:
             return
         if not (self.v_preview.get() and self.tool.preview):
             if self.preview is not None:
@@ -1185,8 +1290,17 @@ class ImageForge:
         self.cancel_mode()
         self.mode, self._pick_key, self._pick_pts = what, key, []
         self.canvas.config(cursor='tcross')
-        self._status("Click a colour on the image (as many as needed), Esc to finish." if what == 'color'
-                     else "Click two points of a line that should be level (or vertical). Esc cancels.")
+        self._status({'color': "Click a colour on the image (as many as needed), Esc to finish.",
+                      'color1': "Click the colour to use on the image. Esc cancels.",
+                      'angle': "Click two points of a line that should be level (or vertical). Esc cancels."}[what])
+
+    def choose_color(self, key):
+        var = self.pvars[key]
+        first = parse_colors(var.get())
+        start = "#%02x%02x%02x" % first[0] if first else "#000000"
+        _, hexv = colorchooser.askcolor(color=start, parent=self.root)
+        if hexv:
+            var.set(hexv)
 
     def cancel_mode(self):
         self.mode, self._pick_pts = None, []
@@ -1200,12 +1314,17 @@ class ImageForge:
         ix, iy = int(math.floor(x)), int(math.floor(y))
         if not (0 <= ix < w and 0 <= iy < h):
             return
-        if self.mode == 'color':
+        if self.mode in ('color', 'color1'):
             patch = img[max(0, iy - 1):iy + 2, max(0, ix - 1):ix + 2].reshape(-1, 3)
             r, g, b = (int(v) for v in np.median(patch, axis=0))             # median of 3x3: robust to a stray pixel
             var = self.pvars[self._pick_key]
-            var.set((var.get().strip() + " #%02x%02x%02x" % (r, g, b)).strip())
-            self._status("Added #%02x%02x%02x. Click more colours, or Esc to finish." % (r, g, b), ok=True)
+            if self.mode == 'color1':
+                var.set("#%02x%02x%02x" % (r, g, b))
+                self.cancel_mode()
+                self._status("Colour #%02x%02x%02x set." % (r, g, b), ok=True)
+            else:
+                var.set((var.get().strip() + " #%02x%02x%02x" % (r, g, b)).strip())
+                self._status("Added #%02x%02x%02x. Click more colours, or Esc to finish." % (r, g, b), ok=True)
         else:
             self._pick_pts.append((x, y))
             sx, sy = x * self.zoom + self.ox, y * self.zoom + self.oy
@@ -1267,13 +1386,52 @@ class ImageForge:
         elif self._is_brush():
             self._press = None
             self._brush_start(e)
+        elif self.tool is not None and self.tool.place and 'x' in self.pvars:
+            self._press, self._placing = None, True
+            self._place_at(e)
         else:
             grab = hit_handle(self.sel, self.zoom, self.ox, self.oy, e.x, e.y) if self.sel else None
-            if grab:
+            if grab == 'move' and self._moves_content(e):
+                self._press = None
+                self._mv = (self._img_xy(e.x, e.y), self.sel, bool(e.state & 0x1), self.hist.current)
+            elif grab:
                 self._press = None
                 self._grab = (grab, self._img_xy(e.x, e.y), self.sel)
             else:
                 self._press, self._drag_sel = (e.x, e.y), None
+
+    def _place_at(self, e):
+        """A 'place' tool (text): the pixel under the pointer becomes its x, y."""
+        x, y = self._img_xy(e.x, e.y)
+        self.pvars['x'].set(int(math.floor(x)))
+        self.pvars['y'].set(int(math.floor(y)))
+
+    def _moves_content(self, e):
+        return self.v_content.get() != bool(e.state & 0x4)            # the box, flipped by Ctrl
+
+    def _fill_color(self, img):
+        f = self.v_fill.get()
+        return border_color(img) if f == 'background' else FILLS[f]
+
+    def _mv_to(self, e):
+        """Show the selected pixels moved by the distance dragged so far (one history step is made on release)."""
+        (x, y), rect, copy, orig = self._mv
+        nx, ny = self._img_xy(e.x, e.y)
+        out, new = move_region(orig, rect, int(round(nx - x)), int(round(ny - y)), self._fill_color(orig), copy)
+        self.preview = None if out is orig else out
+        self.sel = new
+        self._redraw()
+        x0, y0, x1, y1 = new
+        self._set_info("%s %d x %d  at (%d, %d)" % ("copy" if copy else "move", x1 - x0, y1 - y0, x0, y0))
+
+    def _mv_end(self):
+        _, rect, copy, orig = self._mv
+        self._mv = None
+        out, self.preview = self.preview, None
+        if out is not None:
+            self._commit("Copy content" if copy else "Move content", out)
+        self._after_selection()
+        self._redraw()
 
     def _grab_to(self, e):
         """Move or resize the selection by the distance dragged since the press."""
@@ -1294,12 +1452,24 @@ class ImageForge:
     def _update_cursor(self, e):
         if self.mode or self._is_brush():
             return
+        if self.tool is not None and self.tool.place:
+            self.canvas.config(cursor='crosshair')
+            return
         grab = hit_handle(self.sel, self.zoom, self.ox, self.oy, e.x, e.y) if self.sel else None
-        self.canvas.config(cursor=HANDLE_CURSORS[grab] if grab else 'crosshair')
+        cursor = HANDLE_CURSORS[grab] if grab else 'crosshair'
+        if grab == 'move' and self._moves_content(e):
+            cursor = 'hand2'
+        self.canvas.config(cursor=cursor)
 
     def _on_drag(self, e):
         if self._stroke is not None:
             self._brush_to(e)
+            return
+        if self._placing:
+            self._place_at(e)
+            return
+        if self._mv is not None:
+            self._mv_to(e)
             return
         if self._grab is not None:
             self._grab_to(e)
@@ -1315,6 +1485,12 @@ class ImageForge:
     def _on_release(self, e):
         if self._stroke is not None:
             self._brush_end()
+            return
+        if self._placing:
+            self._placing = False
+            return
+        if self._mv is not None:
+            self._mv_end()
             return
         if self._grab is not None:
             self._grab = None

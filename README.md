@@ -11,6 +11,11 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
 - **Open / Save**: PNG, JPEG, TIFF, BMP, WebP, GIF (drag a file onto the window, or `pythonw ImageForge.pyw image.png`).
   *Save* never overwrites the original: the first save asks for a new name (`<name>_edited.png`).
 - **Undo / Redo** of every step (Ctrl+Z / Ctrl+Y), limited to about 1 GB of history.
+- **Move an object**: select it with a rectangle, tick **Drag moves the content** (or hold Ctrl) and drag inside the
+  selection: the pixels move and the old place is filled with white, black or the border colour; Shift copies instead.
+  One drag is one undo step. The object stops at the image border.
+- **Add text** (group Draw): type the text (`\n` = new line), pick font, size, colour (type, **Pick** from the image or
+  the colour dialog), rotation and opacity; click or drag on the image to place it, then Apply.
 - **Selection**: drag a rectangle; tools then act only inside it (a click outside it clears it). Drag inside it to move it,
   drag a handle (corners, edge midpoints) to resize it, arrow keys nudge it by 1 px (Shift: 10) once the image has been
   clicked. *Crop to selection*.

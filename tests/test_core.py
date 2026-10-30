@@ -331,6 +331,69 @@ class JoinDashesTests(unittest.TestCase):
         self.assertFalse(np.array_equal(part[:, :100], img[:, :100]))
 
 
+class TextAndMoveTests(unittest.TestCase):
+    @staticmethod
+    def white(h=100, w=200):
+        return np.full((h, w, 3), 255, np.uint8)
+
+    def test_text_is_drawn_where_asked_in_the_colour_asked(self):
+        img = self.white()
+        out = il.apply_tool("Add text", img, {'text': "Hi", 'x': 50, 'y': 30, 'size': 30, 'color': '#ff0000'})
+        ys, xs = np.nonzero((out != img).any(axis=2))
+        self.assertGreater(len(xs), 50)
+        self.assertGreaterEqual(xs.min(), 49)
+        self.assertGreaterEqual(ys.min(), 29)
+        self.assertLess(xs.max(), 120)
+        dark = out[(out != img).any(axis=2)]
+        self.assertTrue((dark[:, 0] == 255).all())                # a red text over white keeps full red
+        self.assertEqual(int(dark[:, 1].min()), 0)                # and reaches pure red in the middle of the strokes
+
+    def test_text_options_and_edge_cases(self):
+        img = self.white()
+        self.assertIs(il.apply_tool("Add text", img, {'text': "   "}), img)
+        self.assertIs(il.apply_tool("Add text", img, {'text': "A", 'opacity': 0}), img)
+        self.assertIs(il.apply_tool("Add text", img, {'text': "A", 'x': 500, 'y': 500}), img)     # entirely outside
+        part = il.apply_tool("Add text", img, {'text': "ABCD", 'x': -20, 'y': -10, 'size': 40})    # partly outside
+        self.assertTrue((part != img).any())
+        faint = il.apply_tool("Add text", img, {'text': "H", 'x': 10, 'y': 10, 'size': 40, 'opacity': 50})
+        self.assertGreater(int(faint.min()), 100)                 # half-transparent black over white is grey
+        one = il.apply_tool("Add text", img, {'text': "A", 'x': 5, 'y': 5, 'size': 20})
+        two = il.apply_tool("Add text", img, {'text': "A\nA", 'x': 5, 'y': 5, 'size': 20})
+        self.assertGreater(int((two != img).any(axis=2).sum()), int((one != img).any(axis=2).sum()) * 1.8)
+        rot = il.apply_tool("Add text", img, {'text': "Hello", 'x': 20, 'y': 20, 'size': 20, 'angle': 90})
+        r, c = np.nonzero((rot != img).any(axis=2))
+        self.assertGreater(np.ptp(r), np.ptp(c))                  # turned: taller than wide
+
+    def test_text_is_clipped_to_the_selection(self):
+        img = self.white()
+        out = il.apply_tool("Add text", img, {'text': "WWWW", 'x': 10, 'y': 10, 'size': 40}, region=(0, 0, 40, 100))
+        self.assertTrue((out[:, 40:] == 255).all())
+        self.assertTrue((out[:, :40] != 255).any())
+
+    def test_move_region_moves_and_leaves_the_fill(self):
+        img = self.white()
+        img[10:20, 10:30] = (200, 0, 0)
+        out, rect = il.move_region(img, (10, 10, 30, 20), 50, 30, (255, 255, 255))
+        self.assertEqual(rect, (60, 40, 80, 50))
+        self.assertTrue((out[40:50, 60:80] == (200, 0, 0)).all())
+        self.assertTrue((out[10:20, 10:30] == 255).all())
+        self.assertTrue((img[10:20, 10:30] == (200, 0, 0)).all())                 # the input is untouched
+
+    def test_move_region_copy_overlap_clamp_and_no_move(self):
+        img = self.white()
+        img[10:20, 10:30] = (0, 0, 200)
+        out, rect = il.move_region(img, (10, 10, 30, 20), 5, 0, (255, 255, 255), copy=True)
+        self.assertEqual(rect, (15, 10, 35, 20))
+        self.assertTrue((out[10:20, 10:35] == (0, 0, 200)).all())                 # the copy joins the original
+        out, rect = il.move_region(img, (10, 10, 30, 20), 3, 0, (255, 255, 255))   # overlapping move keeps all pixels
+        self.assertTrue((out[10:20, 13:33] == (0, 0, 200)).all())
+        self.assertTrue((out[10:20, 10:13] == 255).all())
+        out, rect = il.move_region(img, (10, 10, 30, 20), 999, 999, (0, 0, 0))
+        self.assertEqual(rect, (180, 90, 200, 100))
+        same, rect = il.move_region(img, (10, 10, 30, 20), 0, 0, (0, 0, 0))
+        self.assertIs(same, img)
+
+
 class HistoryTests(unittest.TestCase):
     def test_undo_redo_and_truncation(self):
         a, b, c = (np.full((2, 2, 3), v, np.uint8) for v in (1, 2, 3))
