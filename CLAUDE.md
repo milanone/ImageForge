@@ -147,6 +147,12 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   object stops at the layer's own border and `self.sel` is shown in canvas coordinates. The checkbox "Drag moves the content" got
   the same layer support. Tests: `RectangleTests`; real window: `examples/rectangle_session.py`.
 
+- **Eraser brush feedback** (`_brush_scope`, `_brush_end`): the brush is limited by the selection and paints on the selected layer
+  (or refuses a text layer), and used to do nothing, silently, when a selection was left over from another tool or a layer was
+  still selected after Add text / Copy to layer. Now the status line names the limit when a stroke starts and says why a stroke
+  changed nothing; a good stroke reports itself. Rule of thumb for 'a tool does nothing': check the selection (Esc) and the
+  selected item in the Layers tab first.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a

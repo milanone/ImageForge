@@ -2291,7 +2291,19 @@ class ImageForge:
         self._stroke_layer = L if kind == 'layer' else None
         self._stroke = (L.rgba if L is not None else self.hist.current).copy()
         self._last = None
+        where = self._brush_scope(L)
+        if where:                                      # the two silent traps: a forgotten selection, a selected layer
+            self._status("%s (Esc drops the selection; click Background in the Layers tab to paint the picture)." % where)
         self._brush_to(e)
+
+    def _brush_scope(self, L):
+        """What limits the brush right now, in words ('' when nothing does: it paints the whole Background)."""
+        parts = []
+        if L is not None:
+            parts.append("painting on layer '%s'" % L.name)
+        if self.sel is not None:
+            parts.append("only inside the selection")
+        return ("Eraser: " + ", ".join(parts)) if parts else ""
 
     def _brush_to(self, e):
         if self._stroke is None:
@@ -2326,12 +2338,21 @@ class ImageForge:
             changed = not np.array_equal(stroke, L.rgba)
         if not changed:
             self._redraw()
+            why = []
+            if self.sel is not None:
+                why.append("the stroke was outside the selection (Esc drops it)")
+            if L is not None:
+                why.append("layer '%s' is not under the stroke or already has that colour (select Background to paint the "
+                           "picture)" % L.name)
+            self._status("The eraser changed nothing: " + ("; ".join(why) if why else "those pixels already have that colour."))
         elif L is None:
             self._commit(self.tool.name, stroke)
+            self._status("Eraser stroke done%s." % (" (inside the selection)" if self.sel is not None else ""), ok=True)
         else:
             layers = list(self.hist.layers)
             layers[self.active] = L.replace(rgba=stroke)
             self._commit_layers("%s (layer)" % self.tool.name, layers)
+            self._status("Eraser stroke done on layer '%s'." % L.name, ok=True)
 
     def _draw_brush_circle(self, e):
         self.canvas.delete('brush')
