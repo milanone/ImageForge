@@ -62,6 +62,13 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   colour ('auto' = median of the outermost pixel ring, `border_color`), plus a margin clamped to the image. One speck in the border
   widens the box (documented in the tool; Despeckle first). Tests: `AutoCropTests`.
 
+- **Join dashed lines** (`join_dashes`, port of SpectrumDigitizer's): groups by `cv2.connectedComponentsWithStats`, two ends per group
+  (SVD main axis), local end direction, candidate pairs found in numpy blocks of 256 rows (a text page has thousands of ends; the
+  original's Python double loop was only ever run inside a curve's box), best score `d*(3-ca-cb)` first, one join per end and per
+  pair of groups, cubic Hermite stroke drawn with PIL. The colour is that of the most contrasted third of the dash's pixels
+  (original: the darkest, i.e. white background only). With a selection the result is computed on the whole image and only the
+  selection pasted (so a dash crossing the selection edge can be half joined). Tests: `JoinDashesTests`.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a
@@ -76,5 +83,4 @@ scaling other than the screenshot script's, drag-and-drop (tkinterdnd2 path), th
 
 ## Ideas not done yet (from SpectrumDigitizer's cleaning tab)
 
-Rotation of the selection (SpectrumDigitizer's working area could rotate), join dashed lines,
-manual link of a broken line, magnifier next to the cursor, arrow keys to nudge by one pixel.
+Rotation of the selection (SpectrumDigitizer's working area could rotate), manual link of a broken line, magnifier next to the cursor, arrow keys to nudge by one pixel.

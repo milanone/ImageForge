@@ -22,7 +22,7 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
   - Geometry: auto-crop borders (uniform white / black / frame colour, tolerance, margin), rotate 90/180, rotate by any angle (with **Measure**: click two points of a line to level it), flip,
     resize (percent or pixels, choice of interpolation)
   - Clean (ported from SpectrumDigitizer): erase / keep colours (**Pick** colours on the image, with tolerance),
-    despeckle, flatten ink to one colour, eraser brush (drag on the image; one stroke = one undo step)
+    despeckle, flatten ink to one colour, join dashed lines (smooth strokes that follow the dashes), eraser brush (drag on the image; one stroke = one undo step)
 
 Geometry tools change the whole image and ignore the selection; all other tools, the eraser brush included, are limited to it.
 The selection takes the place of SpectrumDigitizer's working area (which could also be rotated: not ported).

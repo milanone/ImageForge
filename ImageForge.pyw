@@ -17,7 +17,7 @@ import traceback
 
 import numpy as np
 import cv2
-from PIL import Image, ImageOps, ImageTk
+from PIL import Image, ImageDraw, ImageOps, ImageTk
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -436,6 +436,102 @@ def drag_rect(rect, handle, dx, dy, bounds):
     if 's' in handle:
         y1 = min(h, max(y1 + dy, y0 + 1))
     return (x0, y0, x1, y1)
+
+
+HERMITE_TENSION = 0.6                # length of the end tangents of a join, in fractions of the gap
+
+
+def join_dashes(img, background, tolerance, max_gap, max_turn):
+    """Make dashed lines continuous; returns (new image, number of joins) or (img, 0). The ink (further from the
+    background than `tolerance`) is split into connected groups; each group has two ends (the extremes along its main
+    axis) and, at each end, the local direction the dash is heading (from the pixels within 8 px of the tip, so a dash
+    bent over a peak keeps its bend). Two ends of different groups at most `max_gap` pixels apart that look at each
+    other (the line between them leaves each end within `max_turn` degrees of its direction) are joined, best pairs
+    first, each end used once and two groups joined at most once. The join is a smooth curve (cubic Hermite: it leaves
+    each end along its direction), so a peak whose top fell in the gap is rounded, not cut flat. It has the colour (the
+    most contrasted shades) and thickness of the dash. Dashes touching another line are one group with it: erase that
+    line first."""
+    bg = FILLS[background]
+    dist = _distance_from(img, bg)
+    n, lab, stats, _ = cv2.connectedComponentsWithStats((dist > tolerance).astype(np.uint8), connectivity=8)
+    ends, look = [], []                              # ends: (group, end point, outward unit vector); look: (colour, width)
+    for i in range(1, n):
+        x0, y0, bw, bh, area = stats[i]
+        if area < 4:
+            continue
+        ys, xs = np.nonzero(lab[y0:y0 + bh, x0:x0 + bw] == i)
+        ys, xs = ys + y0, xs + x0
+        pts = np.c_[xs, ys].astype(float)
+        c = pts.mean(axis=0)
+        axis = np.linalg.svd(pts - c, full_matrices=False)[2][0]
+        t = (pts - c) @ axis
+        g = len(look)
+        for sign in (-1, 1):
+            tip = t.max() if sign > 0 else t.min()
+            sel = (t >= tip - 1.5) if sign > 0 else (t <= tip + 1.5)
+            end = pts[sel].mean(axis=0)
+            near = pts[np.hypot(*(pts - end).T) <= 8.0].mean(axis=0)
+            d = end - near
+            norm = float(np.hypot(*d))
+            ends.append((g, end, d / norm if norm > 0.5 else sign * axis))
+        shade = img[ys, xs]
+        strong = shade[np.argsort(-dist[ys, xs])[:max(1, len(xs) // 3)]]
+        span = max(np.ptp(xs), np.ptp(ys)) + 1
+        look.append((tuple(int(v) for v in np.median(strong, axis=0)), max(1, int(round(len(xs) / span)))))
+    if len(ends) < 2:
+        return img, 0
+    G = np.array([e[0] for e in ends])
+    P = np.array([e[1] for e in ends])
+    D = np.array([e[2] for e in ends])
+    cos_min = math.cos(math.radians(max_turn))
+    cand = []
+    for s in range(0, len(ends), 256):               # in blocks: a page of text has thousands of ends
+        a = np.arange(s, min(len(ends), s + 256))
+        v = P[None, :, :] - P[a][:, None, :]
+        d = np.hypot(v[..., 0], v[..., 1])
+        ok = (d <= max_gap) & (G[None, :] != G[a][:, None]) & (np.arange(len(ends))[None, :] > a[:, None])
+        ia, ib = np.nonzero(ok)
+        if ia.size == 0:
+            continue
+        vv, dd = v[ia, ib], d[ia, ib]
+        safe = np.maximum(dd, 1e-9)
+        ca = np.where(dd > 1e-9, (vv * D[a[ia]]).sum(axis=1) / safe, 1.0)
+        cb = np.where(dd > 1e-9, -(vv * D[ib]).sum(axis=1) / safe, 1.0)
+        good = (ca >= cos_min) & (cb >= cos_min)
+        for k in np.nonzero(good)[0]:
+            # nearest first, but a dash straight ahead beats a nearer one off to the side (the other flank of a peak)
+            cand.append((dd[k] * (3.0 - ca[k] - cb[k]), dd[k], int(a[ia[k]]), int(ib[k])))
+    cand.sort()
+    pim = Image.fromarray(img)
+    draw = ImageDraw.Draw(pim)
+    used, pairs, joins = set(), set(), 0
+    for _, d, a, b in cand:
+        ga, gb = ends[a][0], ends[b][0]
+        if a in used or b in used or (min(ga, gb), max(ga, gb)) in pairs:
+            continue
+        used.update((a, b))
+        pairs.add((min(ga, gb), max(ga, gb)))
+        p0, p1 = ends[a][1], ends[b][1]
+        m0, m1 = ends[a][2] * d * HERMITE_TENSION, -ends[b][2] * d * HERMITE_TENSION
+        u = np.linspace(0.0, 1.0, max(int(d), 4) + 1)[:, None]
+        curve = ((2 * u**3 - 3 * u**2 + 1) * p0 + (u**3 - 2 * u**2 + u) * m0
+                 + (-2 * u**3 + 3 * u**2) * p1 + (u**3 - u**2) * m1)
+        draw.line([tuple(q) for q in curve], fill=look[ga][0], width=max(look[ga][1], look[gb][1]), joint='curve')
+        joins += 1
+    return (np.asarray(pim), joins) if joins else (img, 0)
+
+
+@tool("Join dashed lines", "Clean", [
+    Param('max_gap', "Largest gap to join (px)", 'int', 15, 1, 200, slider=True),
+    Param('max_turn', "Largest turn at a join (deg)", 'int', 50, 10, 89, slider=True),
+    Param('tolerance', "Ink = further from background than", 'int', 60, 1, 441, slider=True),
+    Param('background', "Background", 'choice', 'white', choices=tuple(FILLS))])
+def join_dashed(img, max_gap, max_turn, tolerance, background):
+    """Close the gaps of a dashed or dotted line with smooth strokes that follow the direction of the dashes. Only
+    ends that face each other are joined, so neighbouring lines and text are mostly left alone; select the line
+    first to keep other marks out of it. A dashed line that touches a continuous one is a single group: erase the
+    continuous one first (the gap it leaves is joined too)."""
+    return join_dashes(img, background, tolerance, max_gap, max_turn)[0]
 
 
 def border_color(img):

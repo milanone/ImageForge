@@ -277,6 +277,60 @@ class AutoCropTests(unittest.TestCase):
         self.assertIs(il.apply_tool("Auto-crop borders", blank), blank)
 
 
+class JoinDashesTests(unittest.TestCase):
+    @staticmethod
+    def dashed(y_of, x_from=10, x_to=290, on=14, off=9, width=3, shape=(120, 300)):
+        from PIL import Image, ImageDraw
+        im = Image.new("RGB", (shape[1], shape[0]), "white")
+        d = ImageDraw.Draw(im)
+        for a in np.arange(x_from, x_to - on, on + off):
+            seg = np.arange(a, a + on, 1.0)
+            d.line(list(zip(seg, y_of(seg))), fill=(20, 20, 20), width=width)
+        return np.asarray(im)
+
+    @staticmethod
+    def columns_with_ink(img, lo, hi):
+        ink = (img < 128).any(axis=2).any(axis=0)
+        return ink[lo:hi]
+
+    def test_straight_dashes_become_a_continuous_line(self):
+        img = self.dashed(lambda x: np.full_like(x, 60.0))
+        self.assertFalse(self.columns_with_ink(img, 10, 280).all())
+        out, n = il.join_dashes(img, 'white', 60, 15, 50)
+        self.assertGreater(n, 8)
+        self.assertTrue(self.columns_with_ink(out, 10, 275).all())
+        self.assertTrue(np.array_equal(il.apply_tool("Join dashed lines", img, {}), out))
+
+    def test_curved_dashes_and_gap_limit(self):
+        img = self.dashed(lambda x: 80 - 40 * np.exp(-((x - 150) / 40.0) ** 2))
+        out, n = il.join_dashes(img, 'white', 60, 15, 50)
+        self.assertTrue(self.columns_with_ink(out, 10, 275).all())
+        same, n0 = il.join_dashes(img, 'white', 60, 3, 50)             # gaps are 9 px: nothing within 3 px
+        self.assertEqual(n0, 0)
+        self.assertIs(same, img)
+
+    def test_continuous_line_and_parallel_dashed_lines_are_not_cross_joined(self):
+        solid = np.full((60, 200, 3), 255, np.uint8)
+        solid[30:33, 10:190] = 20
+        self.assertEqual(il.join_dashes(solid, 'white', 60, 20, 50)[1], 0)
+        two = np.minimum(self.dashed(lambda x: np.full_like(x, 30.0), shape=(120, 300)),
+                         self.dashed(lambda x: np.full_like(x, 44.0), shape=(120, 300)))
+        out, n = il.join_dashes(two, 'white', 60, 16, 50)
+        rows = (out < 128).any(axis=2)
+        self.assertFalse(rows[34:41].any())                            # nothing drawn between the two lines
+        self.assertGreater(n, 8)
+
+    def test_white_on_black_and_selection(self):
+        img = 255 - self.dashed(lambda x: np.full_like(x, 60.0))
+        out, n = il.join_dashes(img, 'black', 60, 15, 50)
+        self.assertGreater(n, 8)
+        ink = (out > 128).any(axis=2).any(axis=0)
+        self.assertTrue(ink[10:275].all())
+        part = il.apply_tool("Join dashed lines", img, {'background': 'black'}, region=(0, 0, 100, 120))
+        self.assertTrue(np.array_equal(part[:, 100:], img[:, 100:]))
+        self.assertFalse(np.array_equal(part[:, :100], img[:, :100]))
+
+
 class HistoryTests(unittest.TestCase):
     def test_undo_redo_and_truncation(self):
         a, b, c = (np.full((2, 2, 3), v, np.uint8) for v in (1, 2, 3))
