@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.claude/
+*.lnk
+example data/
+examples/test_picture.png

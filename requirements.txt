@@ -1,0 +1,4 @@
+numpy
+pillow
+opencv-python
+tkinterdnd2  # optional: drag-and-drop of an image onto the window
