@@ -92,10 +92,16 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   the cache); `_shown()` composites `preview or base` with `lprev or layers`, cached by identity in `_comp`, so pan/zoom do not
   recompute. `self.active` = index of the selected layer or None (Background). `lprev` is the layers preview (slider drag, layer
   drag, text being edited); `_commit_layers` is the way to push a layer change.
-  *Tools act on the Background only* (decision to keep every tool a pure `(H, W, 3) -> (H, W, 3)` function): the status line says
-  so; geometry tools flatten first after a confirmation; Crop shifts the layers (`shift_layers`). Save writes `_flat()`.
-  Not done: tools acting on a layer's own pixels, layer blend modes, masks, scaling or
-  rotating a layer (rotation exists only inside a text layer), lifting from a layer other than the Background.
+  *Ordinary tools act on the selected item* (`_tool_target`: base / image layer / text layer): on an image layer
+  `apply_tool_to_layer` runs the tool on the RGB channels and keeps alpha; `layer_region` converts the selection to layer
+  coordinates (empty = no overlap = no change). A tool with a `fill` param set to `'transparent'` (Erase / keep colours,
+  Eraser brush) makes what it would paint transparent: found by running it with white and with black and comparing (generic,
+  no per-tool code); `apply_tool` turns `'transparent'` into white where there is no alpha (Background). The brush paints a
+  4-channel working copy `(0,0,0,0)` / `(r,g,b,255)` through `paint_segment`. Text layers refuse pixel tools
+  (`_TEXT_LAYER_MSG`). Geometry tools still flatten first after a confirmation; Crop shifts the layers (`shift_layers`).
+  Save writes `_flat()`. Not done: geometry tools on a single layer (scale/rotate a layer; alpha of the new corners is the
+  problem), layer blend modes, masks, *Drag moves the content* and Cut/Copy to layer from a layer (they use the Background).
+  Colours picked with Pick come from the composite, so on a layer under another or with opacity < 100 they may not match its own.
 - **Tool-made layers** (`Tool.layer == 'text'`, only Add text): `_apply_layer_tool` adds a layer, or updates the selected one when
   its kind matches (`_edit_index`); selecting such a layer while the tool is open loads its parameters into the boxes
   (`_load_layer_into_tool`); double-click in the Layers tab opens the matching tool. The button reads Add as layer / Update layer.
@@ -123,9 +129,9 @@ new tree nodes automatically.
 ## Verified / not verified
 
 Unit tests on synthetic arrays and files; a scripted session with real Tk mouse events (drag selection, move/resize by handles, arrow nudge, Apply, crop,
-undo, redo, wheel, pan, click-to-deselect, colour pick, angle pick, brush stroke, content move/copy, text placement, layers: add/edit/move/opacity/merge/flatten/undo/save) and a screenshot from the real window. Not verified: large photos, HiDPI
+undo, redo, wheel, pan, click-to-deselect, colour pick, angle pick, brush stroke, content move/copy, text placement, layers: add/edit/move/opacity/merge/flatten/undo/save, tools and brush on a layer) and a screenshot from the real window. Not verified: large photos, HiDPI
 scaling other than the screenshot script's, drag-and-drop (tkinterdnd2 path), the Save dialogs by hand.
 
 ## Ideas not done yet (from SpectrumDigitizer's cleaning tab)
 
-Tools on a layer's own pixels, scaling/rotating a layer, rotation of the selection (SpectrumDigitizer's working area could rotate), manual link of a broken line, magnifier next to the cursor.
+Geometry tools on a single layer (scale/rotate it), blend modes, rotation of the selection (SpectrumDigitizer's working area could rotate), manual link of a broken line, magnifier next to the cursor.

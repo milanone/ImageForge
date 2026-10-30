@@ -39,9 +39,13 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
 Geometry tools change the whole image and ignore the selection; all other tools, the eraser brush included, are limited to it.
 The selection takes the place of SpectrumDigitizer's working area (which could also be rotated: not ported).
 
-All other tools, the eraser brush and *Drag moves the content* work on the **Background** only (the status line says so
-when layers exist); to filter a layer's pixels, merge it first. Rotate, flip, resize and auto-crop change the whole
-picture, so they ask to merge the layers first; *Crop to selection* keeps them.
+**Tools act on what is selected in the Layers tab.** With the Background selected (or no layers) they change the
+Background; with an *image layer* selected they change that layer's own pixels (its transparency is kept; the live
+preview and the selection work as usual, the selection being cut to the layer). The eraser brush and *Erase / keep
+colours* have a **transparent** option for the paint: on a layer it erases to see through, on the Background it paints
+white. A *text layer* is not made of pixels: pixel tools refuse it (edit it with Add text, or merge it down first).
+*Drag moves the content*, *Add text* positioning and *Cut/Copy to layer* work from the Background. Rotate, flip, resize
+and auto-crop change the whole picture, so they ask to merge the layers first; *Crop to selection* keeps them.
 
 **Projects**: *Save* with layers writes an `.ifl` project (a zip: `manifest.json`, `background.png`, one PNG per image
 layer; text layers keep their text, font and colour), which reopens with all layers and editable text. Saving as PNG/JPEG

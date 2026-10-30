@@ -118,6 +118,8 @@ def apply_tool(name, img, params=None, region=None):
     for p in t.params:
         if params and p.key in params:
             values[p.key] = p.coerce(params[p.key])
+    if values.get('fill') == 'transparent':           # only a layer has transparency: pixels have to be white here
+        values['fill'] = 'white'
     out = t.func(img, **values)
     if region is not None and not t.geometry and out is not img:
         x0, y0, x1, y1 = region
@@ -322,7 +324,7 @@ def _distance_from(img, color):
     Param('colors', "Colours (click Pick on the image)", 'colors', '', pick='color'),
     Param('mode', "Mode", 'choice', 'erase', choices=('erase', 'keep only')),
     Param('tolerance', "Tolerance (RGB distance)", 'int', 60, 1, 441, slider=True),
-    Param('fill', "Paint with", 'choice', 'white', choices=tuple(FILLS))])
+    Param('fill', "Paint with", 'choice', 'white', choices=tuple(FILLS) + ('transparent',))])
 def erase_colors(img, colors, mode, tolerance, fill):
     """Paint with the fill colour the pixels within the tolerance of any picked colour ('erase') or of none of them
     ('keep only'). Shades of one ink need several picks, or a larger tolerance."""
@@ -379,9 +381,10 @@ def flatten_ink(img, tolerance, background):
 
 @tool("Eraser brush", "Clean", [
     Param('size', "Diameter (px)", 'int', 15, 1, 300, slider=True),
-    Param('fill', "Paint with", 'choice', 'white', choices=tuple(FILLS))],
+    Param('fill', "Paint with", 'choice', 'white', choices=tuple(FILLS) + ('transparent',))],
     preview=False, interactive='brush',
-    doc="Drag on the image to paint over it (limited to the selection if there is one: draw the selection with another tool first). One stroke is one Undo step.")
+    doc="Drag on the image to paint over it (limited to the selection if there is one: draw the selection with another tool first). "
+        "On an image layer 'transparent' erases to see through. One stroke is one Undo step.")
 def eraser_brush(img, size, fill):
     return img
 
@@ -690,6 +693,43 @@ def shift_layers(layers, dx, dy):
     return tuple(L.replace(x=L.x + dx, y=L.y + dy) for L in layers)
 
 
+def layer_region(sel, layer):
+    """The canvas rectangle `sel` in the layer's own pixel coordinates, clipped to the layer; empty when they do not
+    overlap (x1 <= x0 or y1 <= y0). None stays None."""
+    if sel is None:
+        return None
+    h, w = layer.rgba.shape[:2]
+    x0, y0, x1, y1 = sel[0] - layer.x, sel[1] - layer.y, sel[2] - layer.x, sel[3] - layer.y
+    return max(0, x0), max(0, y0), min(w, x1), min(h, y1)
+
+
+def apply_tool_to_layer(name, rgba, params=None, region=None):
+    """Run a (non-geometry) tool on the pixels of an image layer: the colour channels go through the tool, the alpha
+    channel is kept. A tool with a 'fill' parameter set to 'transparent' (erase colours, eraser) makes the pixels it
+    would have painted transparent instead: they are found by running it with white and with black and comparing.
+    `region` is in layer coordinates (see layer_region); an empty one changes nothing. Returns `rgba` itself when
+    nothing changed."""
+    if region is not None and (region[2] <= region[0] or region[3] <= region[1]):
+        return rgba
+    rgb, alpha = np.ascontiguousarray(rgba[..., :3]), rgba[..., 3]
+    params = dict(params or {})
+    if params.get('fill') == 'transparent':
+        a = apply_tool(name, rgb, dict(params, fill='white'), region)
+        b = apply_tool(name, rgb, dict(params, fill='black'), region)
+        painted = (a != b).any(axis=2)
+        if not painted.any():
+            return rgba
+        out_rgb, alpha = a, np.where(painted, 0, alpha).astype(np.uint8)
+    else:
+        out_rgb = apply_tool(name, rgb, params, region)
+        if out_rgb is rgb:
+            return rgba
+    out = np.empty_like(rgba)
+    out[..., :3] = out_rgb
+    out[..., 3] = alpha
+    return out if not np.array_equal(out, rgba) else rgba
+
+
 def merge_layers(lower, upper, name=None):
     """One image layer holding `upper` over `lower` (each with its own opacity); the result is opaque-opacity 100,
     its box is the union of the two, and a text layer loses its editability."""
@@ -991,6 +1031,7 @@ class ImageForge:
         self._mv = None                  # (press point, selection, copy?, original image) while moving the content
         self._placing = False            # a click/drag is setting the x, y of a 'place' tool
         self._grab = None                # (handle, press point in image pixels, selection at press) while dragging it
+        self._stroke_layer = None        # the layer a brush stroke paints on (None: the Background)
         self._stroke = None              # image being painted by the eraser brush, and the last brush point
         self._last = None
         root.title(APP_NAME)
@@ -1282,12 +1323,27 @@ class ImageForge:
             self._redraw()
             return
         if not (self.v_preview.get() and self.tool.preview):
-            if self.preview is not None:
-                self.preview = None
+            if self.preview is not None or self.lprev is not None:
+                self.preview = self.lprev = None
                 self._redraw()
             return
         params = self._read_params()
         if params is None:
+            return
+        kind, L = self._tool_target()
+        if not self.tool.geometry and kind != 'base':
+            self.preview = self.lprev = None
+            if kind == 'layer':                               # the tool works on the pixels of the selected layer
+                try:
+                    out = apply_tool_to_layer(self.tool.name, L.rgba, params, layer_region(self.sel, L))
+                except Exception as ex:
+                    self._status("%s: %s" % (self.tool.name, ex))
+                    return
+                if out is not L.rgba:
+                    layers = list(self.hist.layers)
+                    layers[self.active] = L.replace(rgba=out)
+                    self.lprev = tuple(layers)
+            self._redraw()
             return
         try:
             out = apply_tool(self.tool.name, self.hist.current, params, None if self.tool.geometry else self.sel)
@@ -1312,6 +1368,28 @@ class ImageForge:
         if self.tool.layer:
             self._apply_layer_tool(params)
             return
+        kind, L = self._tool_target()
+        if not self.tool.geometry and kind == 'text':
+            self._status(self._TEXT_LAYER_MSG)
+            return
+        if not self.tool.geometry and kind == 'layer':
+            region = layer_region(self.sel, L)
+            try:
+                out = apply_tool_to_layer(self.tool.name, L.rgba, params, region)
+            except Exception as ex:
+                self._status("%s failed: %s" % (self.tool.name, ex))
+                return
+            if out is L.rgba:
+                self.lprev = None
+                self._redraw()
+                self._status("%s: no change on layer '%s'%s." % (self.tool.name, L.name, " (the selection does not "
+                             "touch it)" if region is not None and (region[2] <= region[0] or region[3] <= region[1]) else ""))
+                return
+            layers = list(self.hist.layers)
+            layers[self.active] = L.replace(rgba=out)
+            self._commit_layers("%s (layer)" % self.tool.name, layers)
+            self._status("%s applied on layer '%s'." % (self.tool.name, L.name), ok=True)
+            return
         cur = self.hist.current
         region = None if self.tool.geometry else self.sel
         flatten = bool(self.tool.geometry and self.hist.layers)
@@ -1335,7 +1413,7 @@ class ImageForge:
         self._commit(self.tool.name, out, () if flatten else None)
         extra = " (applied to the whole image: this tool ignores the selection)" if self.sel and self.tool.geometry else ""
         if self.hist.layers:
-            extra += " (on the Background, not on the layers)"
+            extra += " (on the Background: select a layer to filter it)"
         self._status("%s applied%s." % (self.tool.name, extra), ok=True)
 
     def _commit(self, label, img, layers=None):
@@ -1580,6 +1658,16 @@ class ImageForge:
 
     def _cur_layers(self):
         return self.hist.layers if self.hist else ()
+
+    _TEXT_LAYER_MSG = ("A text layer is not made of pixels: select the Background or an image layer, or merge the "
+                       "text down first. (Its text, font and colour are edited with Add text.)")
+
+    def _tool_target(self):
+        """What an ordinary tool works on: ('base', None), ('layer', image layer) or ('text', text layer)."""
+        L = self._active_layer()
+        if L is None:
+            return 'base', None
+        return ('text' if L.kind == 'text' else 'layer'), L
 
     def _active_layer(self):
         layers = self._cur_layers()
@@ -2002,30 +2090,57 @@ class ImageForge:
 
     def _brush_params(self):
         p = self._read_params() or {}
-        return int(p.get('size', 15)), FILLS[p.get('fill', 'white')]
+        return int(p.get('size', 15)), p.get('fill', 'white')
 
     def _brush_start(self, e):
-        self._stroke = self.hist.current.copy()
+        kind, L = self._tool_target()
+        if kind == 'text':
+            self._status(self._TEXT_LAYER_MSG)
+            return
+        self._stroke_layer = L if kind == 'layer' else None
+        self._stroke = (L.rgba if L is not None else self.hist.current).copy()
         self._last = None
         self._brush_to(e)
 
     def _brush_to(self, e):
-        size, color = self._brush_params()
+        if self._stroke is None:
+            return
+        size, fill = self._brush_params()
+        L = self._stroke_layer
         x, y = self._img_xy(e.x, e.y)
         pt = (int(math.floor(x)), int(math.floor(y)))
-        paint_segment(self._stroke, self._last or pt, pt, size, color, self.sel)
+        if L is None:
+            paint_segment(self._stroke, self._last or pt, pt, size, FILLS.get(fill, FILLS['white']), self.sel)
+        else:                                                  # layer coordinates; four channels: colour and alpha
+            lp, ll = (pt[0] - L.x, pt[1] - L.y), self._last and (self._last[0] - L.x, self._last[1] - L.y)
+            color = (0, 0, 0, 0) if fill == 'transparent' else FILLS[fill] + (255,)
+            paint_segment(self._stroke, ll or lp, lp, size, color, layer_region(self.sel, L))
         self._last = pt
-        self.preview = self._stroke
+        if L is None:
+            self.preview = self._stroke
+        else:
+            layers = list(self.hist.layers)
+            layers[self.active] = L.replace(rgba=self._stroke)
+            self.lprev = tuple(layers)
         self._redraw()
         self._draw_brush_circle(e)
 
     def _brush_end(self):
-        stroke, self._stroke, self._last = self._stroke, None, None
-        self.preview = None
-        if not np.array_equal(stroke, self.hist.current):
+        stroke, L = self._stroke, self._stroke_layer
+        self._stroke = self._stroke_layer = self._last = None
+        self.preview = self.lprev = None
+        if L is None:
+            changed = not np.array_equal(stroke, self.hist.current)
+        else:
+            changed = not np.array_equal(stroke, L.rgba)
+        if not changed:
+            self._redraw()
+        elif L is None:
             self._commit(self.tool.name, stroke)
         else:
-            self._redraw()
+            layers = list(self.hist.layers)
+            layers[self.active] = L.replace(rgba=stroke)
+            self._commit_layers("%s (layer)" % self.tool.name, layers)
 
     def _draw_brush_circle(self, e):
         self.canvas.delete('brush')

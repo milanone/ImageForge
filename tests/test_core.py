@@ -561,6 +561,64 @@ class ProjectTests(unittest.TestCase):
             il.load_project(broken)
 
 
+class LayerToolTests(unittest.TestCase):
+    @staticmethod
+    def sprite():
+        a = np.zeros((30, 40, 4), np.uint8)
+        a[..., :3] = 255
+        a[5:25, 5:35, 3] = 255                              # an opaque 20x30 patch inside a transparent frame
+        a[10:20, 10:20, :3] = (200, 0, 0)                   # a red square in it
+        return a
+
+    def test_a_tool_changes_the_colours_and_keeps_the_alpha(self):
+        a = self.sprite()
+        out = il.apply_tool_to_layer("Invert", a)
+        self.assertTrue(np.array_equal(out[..., 3], a[..., 3]))
+        self.assertTrue(np.array_equal(out[..., :3], 255 - a[..., :3]))
+        self.assertTrue((a[10:20, 10:20, :3] == (200, 0, 0)).all())              # input untouched
+        self.assertIs(il.apply_tool_to_layer("Invert", a, {}, (0, 0, 0, 0)), a)    # empty region: nothing to do
+        self.assertIs(il.apply_tool_to_layer("Brightness / contrast", a, {}), a)   # no change at defaults
+
+    def test_region_is_in_layer_coordinates(self):
+        L = il.Layer('image', 'l', 100, 50, rgba=self.sprite())
+        self.assertEqual(il.layer_region((110, 60, 130, 80), L), (10, 10, 30, 30))
+        self.assertEqual(il.layer_region((90, 40, 120, 70), L), (0, 0, 20, 20))        # clipped
+        r = il.layer_region((500, 500, 600, 600), L)
+        self.assertTrue(r[2] <= r[0])                                                  # no overlap: empty
+        self.assertIsNone(il.layer_region(None, L))
+        region = il.layer_region((110, 60, 130, 80), L)
+        out = il.apply_tool_to_layer("Invert", L.rgba, {}, region)
+        self.assertTrue(np.array_equal(out[10:30, 10:30, :3], 255 - L.rgba[10:30, 10:30, :3]))
+        self.assertTrue(np.array_equal(out[:10], L.rgba[:10]))
+
+    def test_erase_colour_to_transparent_makes_the_pixels_see_through(self):
+        a = self.sprite()
+        out = il.apply_tool_to_layer("Erase / keep colours", a, {'colors': '#c80000', 'tolerance': 30, 'fill': 'transparent'})
+        self.assertTrue((out[10:20, 10:20, 3] == 0).all())
+        self.assertTrue((out[5:10, 5:35, 3] == 255).all())                              # the rest keeps its alpha
+        self.assertTrue((out[0, 0, 3] == 0))
+        base = np.full((40, 50, 3), 90, np.uint8)
+        seen = il.composite(base, (il.Layer('image', 'l', 3, 3, rgba=out),))
+        self.assertTrue((seen[3 + 10:3 + 20, 3 + 10:3 + 20] == 90).all())               # the Background shows through
+        white = il.apply_tool_to_layer("Erase / keep colours", a, {'colors': '#c80000', 'tolerance': 30})
+        self.assertTrue((white[10:20, 10:20, 3] == 255).all() and (white[10:20, 10:20, :3] == 255).all())
+
+    def test_transparent_on_the_background_is_white(self):
+        img = np.full((20, 20, 3), 50, np.uint8)
+        img[5:10, 5:10] = (200, 0, 0)
+        out = il.apply_tool("Erase / keep colours", img, {'colors': '#c80000', 'tolerance': 30, 'fill': 'transparent'})
+        self.assertTrue((out[5:10, 5:10] == 255).all())
+
+    def test_paint_segment_on_four_channels_erases_alpha(self):
+        a = self.sprite()
+        il.paint_segment(a, (8, 15), (30, 15), 6, (0, 0, 0, 0))
+        self.assertTrue((a[15, 8:31, 3] == 0).all())
+        self.assertEqual(int(a[5, 20, 3]), 255)
+        b = self.sprite()
+        il.paint_segment(b, (8, 15), (30, 15), 6, (0, 0, 0, 0), region=(0, 0, 20, 30))
+        self.assertTrue((b[15, 8:20, 3] == 0).all() and (b[15, 20:31, 3] == 255).all())
+
+
 class HistoryTests(unittest.TestCase):
     def test_undo_redo_and_truncation(self):
         a, b, c = (np.full((2, 2, 3), v, np.uint8) for v in (1, 2, 3))
