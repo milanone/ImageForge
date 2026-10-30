@@ -866,6 +866,29 @@ class RetouchTests(unittest.TestCase):
         self.assertTrue(((mask > 0).sum()) > 30)
 
 
+class PickedColourFillTests(unittest.TestCase):
+    def test_erase_colours_can_paint_with_a_picked_colour(self):
+        img = np.full((20, 40, 3), 235, np.uint8)
+        img[5:10, 5:30] = (200, 0, 0)
+        out = il.apply_tool("Erase / keep colours", img,
+                            {'colors': '#c80000', 'tolerance': 30, 'fill': 'picked colour', 'fill_color': '#336699'})
+        self.assertTrue((out[5:10, 5:30] == (0x33, 0x66, 0x99)).all())
+        self.assertTrue((out[0] == 235).all())
+        keep = il.apply_tool("Erase / keep colours", img,
+                             {'colors': '#c80000', 'tolerance': 30, 'mode': 'keep only', 'fill': 'picked colour',
+                              'fill_color': '#00ff00'})
+        self.assertTrue((keep[5:10, 5:30] == (200, 0, 0)).all() and (keep[0] == (0, 255, 0)).all())
+
+    def test_on_a_layer_the_alpha_is_kept_when_painting_with_a_colour(self):
+        a = np.zeros((20, 40, 4), np.uint8)
+        a[..., :3] = 255
+        a[5:15, 5:35] = (200, 0, 0, 255)
+        out = il.apply_tool_to_layer("Erase / keep colours", a, {'colors': '#c80000', 'tolerance': 30,
+                                                                 'fill': 'picked colour', 'fill_color': '#0000ff'})
+        self.assertTrue((out[5:15, 5:35, :3] == (0, 0, 255)).all())
+        self.assertTrue(np.array_equal(out[..., 3], a[..., 3]))
+
+
 class HistoryTests(unittest.TestCase):
     def test_undo_redo_and_truncation(self):
         a, b, c = (np.full((2, 2, 3), v, np.uint8) for v in (1, 2, 3))

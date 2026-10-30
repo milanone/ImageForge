@@ -182,6 +182,11 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   after start (`_set_tools_divider`, 500 ms later so the window has a size) and draggable. The tree's `height` is now only a
   minimum. Before, the parameters were pushed below the fold by the tall list and the clone source button was out of sight.
 
+- **Picked colour everywhere it paints**: Erase rectangle (`color`), Eraser brush (`color`) and Erase / keep colours (`fill_color`, its
+  `colors` param being the colours to find) all have `fill='picked colour'` + a `pick='color1'` text param; after a Pick `_pick_click`
+  switches 'Paint with' by itself. `_picked_rgb` gives the first colour of the text (white if none). On a layer the brush paints it
+  opaque, and Erase / keep colours keeps the alpha (generic path of `apply_tool_to_layer`). Tests: `PickedColourFillTests`.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a

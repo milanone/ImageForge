@@ -44,9 +44,9 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
     picture** (Pick) or chosen with a dialog (...), transparent on a layer, or inpainted) and **Move area** (drag a rectangle round something, then drag inside it to move it; Shift or its
     *Copy* box copies; the old place is filled as the *leaves* box says; on an image layer it works inside that layer)
   - Clean (ported from SpectrumDigitizer): erase / keep colours (**Pick** colours on the image, with tolerance and an
-    optional widening of the area; paint with white, black, transparent or **inpaint**, which rebuilds the erased pixels from
+    optional widening of the area; paint with white, black, a **picked colour** (Pick it from the picture, or choose it), transparent or **inpaint**, which rebuilds the erased pixels from
     their surroundings so a line over a gradient or a photo fades into it - keep the area narrow, a wide hole gets smeared),
-    despeckle, flatten ink to one colour, join dashed lines (smooth strokes that follow the dashes), eraser brush (drag on the image; one stroke = one undo step)
+    despeckle, flatten ink to one colour, join dashed lines (smooth strokes that follow the dashes), eraser brush (drag on the image; white, black, a picked colour or transparent; one stroke = one undo step)
 
 Geometry tools change the whole image and ignore the selection; all other tools, the eraser brush included, are limited to it.
 The selection takes the place of SpectrumDigitizer's working area (which could also be rotated: not ported).

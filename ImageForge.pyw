@@ -347,11 +347,12 @@ def inpaint_mask(img, hole, radius, valid=None):
     Param('mode', "Mode", 'choice', 'erase', choices=('erase', 'keep only')),
     Param('tolerance', "Tolerance (RGB distance)", 'int', 60, 1, 441, slider=True),
     Param('grow', "Widen the area by (px)", 'int', 0, 0, 20),
-    Param('fill', "Paint with", 'choice', 'white', choices=tuple(FILLS) + ('transparent', 'inpaint')),
+    Param('fill', "Paint with", 'choice', 'white', choices=tuple(FILLS) + ('picked colour', 'transparent', 'inpaint')),
+    Param('fill_color', "Picked colour (to paint with)", 'colors', '#ffffff', pick='color1'),
     Param('radius', "Inpaint radius (px)", 'int', 3, 1, 30, slider=True)])
-def erase_colors(img, colors, mode, tolerance, grow, fill, radius):
+def erase_colors(img, colors, mode, tolerance, grow, fill, fill_color, radius):
     """Paint with the fill colour the pixels within the tolerance of any picked colour ('erase') or of none of them
-    ('keep only'). 'inpaint' rebuilds them from their surroundings instead (a line over a gradient or a photo fades into
+    ('keep only') with white, black or 'picked colour' (Pick it from the picture, or choose it). 'inpaint' rebuilds them from their surroundings instead (a line over a gradient or a photo fades into
     it): widen the area by a pixel or two so that the pale edge of the line goes too, and keep the area narrow, since
     inpainting a wide hole invents smeared texture. Shades of one ink need several picks, or a larger tolerance."""
     cols = parse_colors(colors)
@@ -368,7 +369,7 @@ def erase_colors(img, colors, mode, tolerance, grow, fill, radius):
     if fill == 'inpaint':
         return inpaint_mask(img, hit, radius)
     out = img.copy()
-    out[hit] = FILLS[fill]
+    out[hit] = _picked_rgb(fill_color) if fill == 'picked colour' else FILLS[fill]
     return out
 
 
@@ -525,11 +526,13 @@ def flatten_ink(img, tolerance, background):
 
 @tool("Eraser brush", "Clean", [
     Param('size', "Diameter (px)", 'int', 15, 1, 300, slider=True),
-    Param('fill', "Paint with", 'choice', 'white', choices=tuple(FILLS) + ('transparent',))],
+    Param('fill', "Paint with", 'choice', 'white', choices=tuple(FILLS) + ('picked colour', 'transparent')),
+    Param('color', "Picked colour", 'colors', '#ffffff', pick='color1')],
     preview=False, interactive='brush',
     doc="Drag on the image to paint over it (limited to the selection if there is one: draw the selection with another tool first). "
-        "On an image layer 'transparent' erases to see through. One stroke is one Undo step.")
-def eraser_brush(img, size, fill):
+        "Pick a colour from the picture (Pick) or choose one (...) to paint with it. On an image layer 'transparent' erases "
+        "to see through. One stroke is one Undo step.")
+def eraser_brush(img, size, fill, color):
     return img
 
 
@@ -2455,10 +2458,11 @@ class ImageForge:
         lp = (self._last[0] - ox, self._last[1] - oy) if self._last else tp
         region = layer_region(self.sel, L) if L is not None else self.sel
         if mode == 'brush':
+            rgb = _picked_rgb(p.get('color')) if fill == 'picked colour' else FILLS.get(fill, FILLS['white'])
             if L is None:
-                color = FILLS.get(fill, FILLS['white'])
+                color = tuple(rgb)
             else:
-                color = (0, 0, 0, 0) if fill == 'transparent' else FILLS[fill] + (255,)
+                color = (0, 0, 0, 0) if fill == 'transparent' else tuple(rgb) + (255,)
             paint_segment(self._stroke, lp, tp, size, color, region)
         elif mode == 'clone':
             ofx, ofy = self._clone_off
