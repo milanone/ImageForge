@@ -200,7 +200,7 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   (divider at 400 px) and the parameters both show.
 
 - **Progressive slider** (`Param(progressive=True)`): slider position t in 0..1 maps to `lo + (hi-lo)*t^2`, so low values have fine steps and
-  high ones coarse; the number box and the slider follow each other. Used by the Diameter of Clone stamp and Clean brush (default 10).
+  high ones coarse; the number box and the slider follow each other. Used by the Diameter of Clone stamp, Clean brush and Eraser brush (default 10).
 
 ## Adding a tool
 

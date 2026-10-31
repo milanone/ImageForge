@@ -527,7 +527,7 @@ def flatten_ink(img, tolerance, background):
 
 
 @tool("Eraser brush", "Clean", [
-    Param('size', "Diameter (px)", 'int', 15, 1, 300, slider=True),
+    Param('size', "Diameter (px)", 'int', 10, 1, 300, slider=True, progressive=True),
     Param('fill', "Paint with", 'choice', 'white', choices=tuple(FILLS) + ('picked colour', 'transparent')),
     Param('color', "Picked colour", 'colors', '#ffffff', pick='color1')],
     preview=False, interactive='brush',
