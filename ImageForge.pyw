@@ -380,17 +380,56 @@ def _picked_rgb(color):
     return cols[0] if cols else (255, 255, 255)
 
 
-def _stubs(roi, ink, hole, others, reach):
-    """Dark strokes (stubs) that run into `hole` (one component): list of dicts with the entry point on its rim, the unit
-    direction pointing into the hole, the width and the colour. One stub per place where the ink crosses the rim; its direction
-    comes from the ink within `reach` px of that crossing, so a second line that joins it further out (a T junction) does
-    not bend it. Blobs (letters, round dots) are not elongated and are ignored."""
+def _fit_stub(pts, roi, near, ratio):
+    """A stub from the ink pixels `pts` (N x 2, x then y) that lead to a hole: entry point (their end nearest to the hole),
+    unit direction pointing into the hole, width and colour; None when they are too few or not elongated (a letter, a dot)."""
+    if len(pts) < 6:
+        return None
+    pts = pts.astype(np.float32)
+    c = pts.mean(0)
+    evals, evecs = np.linalg.eigh(np.cov((pts - c).T) + 1e-6 * np.eye(2))
+    if evals[1] < ratio * evals[0]:
+        return None
+    d = evecs[:, 1]
+    xi, yi = pts[:, 0].astype(int), pts[:, 1].astype(int)
+    dist = near[yi, xi]
+    e = pts[dist <= dist.min() + 1.5].mean(0)
+    if np.dot(d, e - c) < 0:                                # from the body of the stub towards the hole
+        d = -d
+    proj = (pts - e) @ d
+    width = max(1.0, len(pts) / max(float(proj.max() - proj.min()) + 1.0, 1.0))
+    px = roi[yi, xi]
+    dark = px[px.max(axis=1) <= np.percentile(px.max(axis=1), 60)]
+    return dict(p=e, d=d, w=width, color=dark.mean(axis=0))
+
+
+def _points_at(hole, p, d, limit):
+    """True when the ray from p along d enters `hole` (bool mask) within `limit` px."""
+    for t in range(1, int(limit)):
+        x, y = int(round(p[0] + d[0] * t)), int(round(p[1] + d[1] * t))
+        if not (0 <= y < hole.shape[0] and 0 <= x < hole.shape[1]):
+            return False
+        if hole[y, x]:
+            return True
+    return False
+
+
+def _stubs(roi, ink, hole, others, reach, min_extent=0.0):
+    """Dark strokes (stubs) that run into `hole` (one component): list of dicts (see `_fit_stub`). One stub per place where
+    the ink crosses the rim of the hole (`near <= 3.5`); its direction comes from the ink within 0.8 x `reach` px of the
+    crossing. Where two lines meet right at the hole (a divider joining a ring) that estimate is bent, so the ink further out
+    (6 .. 1.3 x `reach` px from the hole), where the lines have come apart, is looked at too: if it falls into several strokes,
+    or points another way, those are the stubs. Blobs (letters, round dots) are not elongated and are ignored, and so are
+    strokes whose whole ink shape (the ink they are joined to) is smaller than `min_extent` px: the arm of a letter is not an
+    outline that goes on under the mark."""
     near = cv2.distanceTransform((~hole).astype(np.uint8), cv2.DIST_L2, 3)
     free = ~others
+    far_reach = reach * 1.3
     rim = (near <= 3.5) & ~hole & free
-    zone = (near <= reach) & ~hole & free
+    zone = (near <= far_reach) & ~hole & free
     nr, lab_r = cv2.connectedComponents((ink & rim).astype(np.uint8), connectivity=8)
     nz, lab_z = cv2.connectedComponents((ink & zone).astype(np.uint8), connectivity=8)
+    _, lab_all, shapes, _ = cv2.connectedComponentsWithStats(ink.astype(np.uint8), connectivity=8)
     out = []
     for i in range(1, nr):
         cross = lab_r == i
@@ -399,48 +438,74 @@ def _stubs(roi, ink, hole, others, reach):
         ey, ex = [float(v.mean()) for v in np.nonzero(cross)]
         mem = lab_z == lab_z[cross][0]
         yy, xx = np.nonzero(mem)
-        keep = np.hypot(xx - ex, yy - ey) <= reach * 0.8
-        yy, xx = yy[keep], xx[keep]
-        if len(yy) < 6:
+        whole = shapes[lab_all[yy[0], xx[0]]]
+        if float(np.hypot(whole[cv2.CC_STAT_WIDTH], whole[cv2.CC_STAT_HEIGHT])) < min_extent:
             continue
-        pts = np.stack([xx, yy], 1).astype(np.float32)
-        c = pts.mean(0)
-        evals, evecs = np.linalg.eigh(np.cov((pts - c).T) + 1e-6 * np.eye(2))
-        if evals[1] < 1.8 * evals[0]:
-            continue                                        # not a line
-        d = evecs[:, 1]
-        if np.dot(d, [ex - c[0], ey - c[1]]) < 0:           # from the body of the stub towards its entry into the hole
-            d = -d
-        proj = (pts - [ex, ey]) @ d
-        width = max(1.0, len(pts) / max(float(proj.max() - proj.min()) + 1.0, 1.0))
-        px = roi[yy, xx]
-        dark = px[px.max(axis=1) <= np.percentile(px.max(axis=1), 60)]
-        out.append(dict(p=np.array([ex, ey]), d=d, w=width, color=dark.mean(axis=0)))
+        dd = np.hypot(xx - ex, yy - ey)
+        pts = np.stack([xx, yy], 1)
+        s_near = _fit_stub(pts[dd <= reach * 0.8], roi, near, 1.8)
+        if s_near is not None:
+            s_near['p'] = np.array([ex, ey])                # the crossing itself
+        far = mem & (near >= 6)
+        far[yy[dd > far_reach], xx[dd > far_reach]] = False
+        nf, lab_f = cv2.connectedComponents(far.astype(np.uint8), connectivity=8)
+        far_stubs = []
+        for j in range(1, nf):
+            fy, fx = np.nonzero(lab_f == j)
+            st = _fit_stub(np.stack([fx, fy], 1), roi, near, 1.5)
+            if st is not None and _points_at(hole, st['p'], st['d'], far_reach * 2):
+                far_stubs.append(st)                        # (ink further out that does not point at the hole is something else)
+        if len(far_stubs) >= 2 or (len(far_stubs) == 1 and (s_near is None or float(np.dot(s_near['d'], far_stubs[0]['d'])) < 0.9)):
+            out.extend(far_stubs)                           # a junction near the hole (or a bent estimate): trust the far ink
+        elif s_near is not None:
+            out.append(s_near)
     return out
 
 
-def _link_stubs(stubs, diag):
-    """Pairs (a, b) of stubs that are the two halves of one line: facing each other, close enough, roughly in line.
-    Best first (shorter and straighter), each stub used once."""
+def _link_stubs(stubs, diag, corners=False, skip=()):
+    """Links between stubs that are the two halves of one line, as (a, b, corner). With `corners` False only smooth ones
+    (`corner` None): facing each other, close enough, similar width, shorter / straighter / more alike first. With `corners`
+    True only corners (a cone's tip, a box corner hidden under the mark): `corner` is the point where the two lines would meet.
+    Each stub is used once; `skip` lists stubs (by id) that are already taken."""
     cand = []
     for i in range(len(stubs)):
         for j in range(i + 1, len(stubs)):
             a, b = stubs[i], stubs[j]
+            if id(a) in skip or id(b) in skip:
+                continue
+            wmax = max(a['w'], b['w'])
             v = b['p'] - a['p']
             dist = float(np.hypot(*v))
             if dist < 1 or dist > diag * 1.6 + 6:
                 continue
             u = v / dist
             ca, cb = float(np.dot(a['d'], u)), float(np.dot(b['d'], -u))
-            if ca < 0.55 or cb < 0.55 or abs(a['w'] - b['w']) > 0.5 * max(a['w'], b['w']) + 1.5:
+            if not corners:
+                if abs(a['w'] - b['w']) > 0.5 * wmax + 1.5 or ca < 0.55 or cb < 0.55:
+                    continue
+                cand.append((dist * (3.0 - ca - cb) * (1.0 + 2.0 * abs(a['w'] - b['w']) / wmax), i, j, None))
                 continue
-            cand.append((dist * (3.0 - ca - cb), i, j))
+            if abs(a['w'] - b['w']) > 0.25 * wmax + 0.6:
+                continue
+            m = np.array([a['d'], -b['d']]).T                  # a.p + t a.d = b.p + s b.d
+            if abs(np.linalg.det(m)) < 0.25:                    # nearly parallel: no corner
+                continue
+            t, s_ = np.linalg.solve(m, v)
+            if 1 <= t <= diag * 1.3 and 1 <= s_ <= diag * 1.3:
+                cand.append((2.0 * (t + s_), i, j, a['p'] + a['d'] * t))
     used, pairs = set(), []
-    for _, i, j in sorted(cand):
+    for _, i, j, corner in sorted(cand, key=lambda c: c[0]):
         if i not in used and j not in used:
             used |= {i, j}
-            pairs.append((stubs[i], stubs[j]))
+            pairs.append((stubs[i], stubs[j], corner))
     return pairs
+
+
+def _draw_stroke(shape, pts, width, ss=4):
+    """Anti-aliased polyline (points x, y) of the given width on a float 0..1 plane of `shape`, drawn `ss` times larger."""
+    layer = np.zeros((shape[0] * ss, shape[1] * ss), np.uint8)
+    cv2.polylines(layer, [np.round((np.asarray(pts) + 0.5) * ss - 0.5).astype(np.int32)], False, 255, max(1, int(round(width * ss))), cv2.LINE_AA)
+    return cv2.resize(layer, (shape[1], shape[0]), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
 
 
 def rebuild_under(img, hole, ink_below=100, reach=12):
@@ -466,28 +531,35 @@ def rebuild_under(img, hole, ink_below=100, reach=12):
         ink = (roi.max(axis=2) < ink_below) & ~hc & ~others
         inkd = cv2.dilate(ink.astype(np.uint8), ell(1)) > 0
         colour = cv2.inpaint(roi, ((inkd | hc | others).astype(np.uint8)) * 255, 3, cv2.INPAINT_TELEA)
-        stubs = _stubs(roi, ink, hc, others, reach)
         diag = float(np.hypot(ys.max() - ys.min() + 1, xs.max() - xs.min() + 1))
+        stubs = _stubs(roi, ink, hc, others, reach)
         alpha = np.zeros(hc.shape, np.float32)
         paint = np.zeros(roi.shape, np.float32)
-        ss = 4
-        for a, b in _link_stubs(stubs, diag):
-            dist = float(np.hypot(*(b['p'] - a['p'])))
-            p0, p3 = a['p'] - a['d'] * 2, b['p'] - b['d'] * 2           # start a little outside the hole: no gap at the rim
-            p1, p2 = a['p'] + a['d'] * dist / 3, b['p'] + b['d'] * dist / 3
-            t = np.linspace(0, 1, 40)[:, None]
-            curve = (1 - t) ** 3 * p0 + 3 * (1 - t) ** 2 * t * p1 + 3 * (1 - t) * t ** 2 * p2 + t ** 3 * p3
-            layer = np.zeros((hc.shape[0] * ss, hc.shape[1] * ss), np.uint8)
-            cv2.polylines(layer, [np.round((curve + 0.5) * ss - 0.5).astype(np.int32)], False, 255,
-                          max(1, int(round((a['w'] + b['w']) / 2 * ss))), cv2.LINE_AA)
-            lay = cv2.resize(layer, (hc.shape[1], hc.shape[0]), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
-            col = (a['color'] + b['color']) / 2
-            paint = np.where((lay > alpha)[..., None], col, paint)
+        def draw(a, b, corner):
+            nonlocal alpha, paint
+            if corner is None:
+                dist = float(np.hypot(*(b['p'] - a['p'])))
+                p0, p3 = a['p'] - a['d'] * 2, b['p'] - b['d'] * 2           # start a little outside the hole: no gap at the rim
+                p1, p2 = a['p'] + a['d'] * dist / 3, b['p'] + b['d'] * dist / 3
+                t = np.linspace(0, 1, 40)[:, None]
+                pts = (1 - t) ** 3 * p0 + 3 * (1 - t) ** 2 * t * p1 + 3 * (1 - t) * t ** 2 * p2 + t ** 3 * p3
+            else:
+                pts = np.array([a['p'] - a['d'] * 2, corner, b['p'] - b['d'] * 2])
+            lay = _draw_stroke(hc.shape, pts, (a['w'] + b['w']) / 2)
+            body = lay > 0.5
+            if (body & ~hc & ~others & ~inkd).sum() > 0.15 * body.sum():
+                return False                                               # it would cross visible pixels that are not ink: no such line
+            paint = np.where((lay > alpha)[..., None], (a['color'] + b['color']) / 2, paint)
             alpha = np.maximum(alpha, lay)
-        # a stub with no partner that runs into one of the lines just drawn (a divider meeting a ring): extend it up to that line
-        linked = [id(x) for pr in _link_stubs(stubs, diag) for x in pr]
+            return True
+
+        links = [(a, b, c) for a, b, c in _link_stubs(stubs, diag) if draw(a, b, c)]
+        taken = {id(x) for pr in links for x in pr[:2]}
+        # a stub with no partner that runs into one of the lines just drawn (a divider meeting a ring) is extended up to that
+        # line, if it is about as thick as the lines drawn (a thin letter stem is not a line)
+        wref = float(np.mean([(a['w'] + b['w']) / 2 for a, b, _ in links])) if links else 0.0
         for a in stubs:
-            if id(a) in linked or alpha.max() < 0.3:
+            if id(a) in taken or not links or not 0.7 * wref <= a['w'] <= 1.4 * wref:
                 continue
             entered = False
             for step in range(2, int(diag * 1.2) + 14):
@@ -500,13 +572,13 @@ def rebuild_under(img, hole, ink_below=100, reach=12):
                     continue
                 entered = True
                 if alpha[yi, xi] > 0.3:
-                    layer = np.zeros((hc.shape[0] * ss, hc.shape[1] * ss), np.uint8)
-                    pa, pb = (a['p'] - a['d'] * 2 + 0.5) * ss - 0.5, (q + 0.5) * ss - 0.5
-                    cv2.line(layer, tuple(np.round(pa).astype(int)), tuple(np.round(pb).astype(int)), 255, max(1, int(round(a['w'] * ss))), cv2.LINE_AA)
-                    lay = cv2.resize(layer, (hc.shape[1], hc.shape[0]), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
+                    lay = _draw_stroke(hc.shape, np.array([a['p'] - a['d'] * 2, q]), a['w'])
                     paint = np.where((lay > alpha)[..., None], a['color'], paint)
                     alpha = np.maximum(alpha, lay)
+                    taken.add(id(a))
                     break
+        for a, b, corner in _link_stubs(stubs, diag, corners=True, skip=taken):
+            draw(a, b, corner)
         barrier = cv2.dilate((alpha > 0.05).astype(np.uint8), ell(1)) > 0
         if barrier.any():
             # each side of a drawn outline is filled only from its own side (a mark that straddles a border would otherwise
@@ -546,9 +618,9 @@ def rebuild_under(img, hole, ink_below=100, reach=12):
         "Pick the colour on a mark (Pick, then click it); every shape of that colour no bigger than the limit is taken out "
         "together with its anti-aliased fringe ('Widen'), so a larger object of a similar colour is left alone. 'colour + "
         "outlines' fills the shading from the fills around, side by side, and joins the dark outlines that enter the mark "
-        "with the ones that leave it, so rings, dividers and shapes run on through it; 'inpaint' just smears the surroundings "
-        "in (fine over flat colour only). A mark right on a corner or a junction of several lines may leave a small gap: "
-        "touch it up with the Clone stamp. Use the working area to restrict it.")
+        "with the ones that leave it (also through a corner, and a divider that ends on a ring), so rings, dividers and shapes run on "
+        "through it; 'inpaint' just smears the surroundings in (fine over flat colour only). A line that runs along the mark "
+        "instead of into it may leave a small gap: touch it up with the Clone stamp. Use the working area to restrict it.")
 def remove_marks(img, colors, tolerance, grow, max_area, method):
     cols = parse_colors(colors)
     if not cols:

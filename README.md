@@ -53,8 +53,8 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
     their surroundings so a line over a gradient or a photo fades into it - keep the area narrow, a wide hole gets smeared),
     **Remove marks** (pick the colour of small marks such as the red stars on a scheme: they are taken out with their fringe and
     what lay under them is rebuilt: the shading is filled side by side, and the dark outlines that enter a mark are joined to the ones
-    that leave it, so rings and dividers run on through; a mark sitting on a junction of several lines may need a touch-up with the
-    Clone stamp), despeckle, flatten ink to one colour, join dashed lines (smooth strokes that follow the dashes), eraser brush (drag on the image; white, black, a picked colour or transparent; one stroke = one undo step)
+    that leave it, so rings, dividers and corners run on through; a line that runs along a mark rather than into it may need a touch-up
+    with the Clone stamp), despeckle, flatten ink to one colour, join dashed lines (smooth strokes that follow the dashes), eraser brush (drag on the image; white, black, a picked colour or transparent; one stroke = one undo step)
 
 Geometry tools change the whole image and ignore the selection; all other tools, the eraser brush included, are limited to it.
 The selection takes the place of SpectrumDigitizer's working area (which could also be rotated: not ported).

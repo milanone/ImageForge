@@ -909,6 +909,26 @@ class RemoveMarksTests(unittest.TestCase):
         self.assertGreater(dark(out), 0.7 * dark(clean))
         self.assertLess(abs(int(out[96, 70, 0]) - int(clean[96, 70, 0])), 40)                  # the fill inside is the shaded one
 
+    def test_corner_hidden_under_a_mark_is_restored(self):
+        import cv2
+        img = np.full((120, 160, 3), 255, np.uint8)
+        pts = np.array([[20, 20], [80, 60], [20, 100]], np.int32)                               # a sharp tip pointing right at (80, 60)
+        cv2.polylines(img, [pts], False, (30, 30, 30), 4, cv2.LINE_AA)
+        clean = img.copy()
+        cv2.circle(img, (76, 60), 13, self.RED, -1, cv2.LINE_AA)
+        out = self.run_tool(img)
+        dark = lambda im: int((im[50:71, 66:90].max(axis=2) < 110).sum())
+        self.assertGreater(dark(out), 0.7 * dark(clean))
+
+    def test_a_line_that_only_touches_the_mark_is_not_joined_through_clean_pixels(self):
+        import cv2
+        img = np.full((120, 160, 3), 220, np.uint8)
+        cv2.line(img, (10, 100), (40, 100), (30, 30, 30), 4)                                    # two unrelated strokes either side of
+        cv2.line(img, (120, 20), (150, 20), (30, 30, 30), 4)                                    # a hollow mark
+        cv2.circle(img, (80, 60), 22, self.RED, 5, cv2.LINE_AA)
+        out = self.run_tool(img)
+        self.assertGreater(int((out[40:80, 60:100].min(axis=2) > 150).sum()), 1500)             # the inside stays plain, no dark bar drawn
+
     def test_bigger_shapes_are_left_alone(self):
         clean, marked = self.figure()
         marked = marked.copy()
