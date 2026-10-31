@@ -380,6 +380,197 @@ def _picked_rgb(color):
     return cols[0] if cols else (255, 255, 255)
 
 
+def _stubs(roi, ink, hole, others, reach):
+    """Dark strokes (stubs) that run into `hole` (one component): list of dicts with the entry point on its rim, the unit
+    direction pointing into the hole, the width and the colour. One stub per place where the ink crosses the rim; its direction
+    comes from the ink within `reach` px of that crossing, so a second line that joins it further out (a T junction) does
+    not bend it. Blobs (letters, round dots) are not elongated and are ignored."""
+    near = cv2.distanceTransform((~hole).astype(np.uint8), cv2.DIST_L2, 3)
+    free = ~others
+    rim = (near <= 3.5) & ~hole & free
+    zone = (near <= reach) & ~hole & free
+    nr, lab_r = cv2.connectedComponents((ink & rim).astype(np.uint8), connectivity=8)
+    nz, lab_z = cv2.connectedComponents((ink & zone).astype(np.uint8), connectivity=8)
+    out = []
+    for i in range(1, nr):
+        cross = lab_r == i
+        if cross.sum() < 3:
+            continue
+        ey, ex = [float(v.mean()) for v in np.nonzero(cross)]
+        mem = lab_z == lab_z[cross][0]
+        yy, xx = np.nonzero(mem)
+        keep = np.hypot(xx - ex, yy - ey) <= reach * 0.8
+        yy, xx = yy[keep], xx[keep]
+        if len(yy) < 6:
+            continue
+        pts = np.stack([xx, yy], 1).astype(np.float32)
+        c = pts.mean(0)
+        evals, evecs = np.linalg.eigh(np.cov((pts - c).T) + 1e-6 * np.eye(2))
+        if evals[1] < 1.8 * evals[0]:
+            continue                                        # not a line
+        d = evecs[:, 1]
+        if np.dot(d, [ex - c[0], ey - c[1]]) < 0:           # from the body of the stub towards its entry into the hole
+            d = -d
+        proj = (pts - [ex, ey]) @ d
+        width = max(1.0, len(pts) / max(float(proj.max() - proj.min()) + 1.0, 1.0))
+        px = roi[yy, xx]
+        dark = px[px.max(axis=1) <= np.percentile(px.max(axis=1), 60)]
+        out.append(dict(p=np.array([ex, ey]), d=d, w=width, color=dark.mean(axis=0)))
+    return out
+
+
+def _link_stubs(stubs, diag):
+    """Pairs (a, b) of stubs that are the two halves of one line: facing each other, close enough, roughly in line.
+    Best first (shorter and straighter), each stub used once."""
+    cand = []
+    for i in range(len(stubs)):
+        for j in range(i + 1, len(stubs)):
+            a, b = stubs[i], stubs[j]
+            v = b['p'] - a['p']
+            dist = float(np.hypot(*v))
+            if dist < 1 or dist > diag * 1.6 + 6:
+                continue
+            u = v / dist
+            ca, cb = float(np.dot(a['d'], u)), float(np.dot(b['d'], -u))
+            if ca < 0.55 or cb < 0.55 or abs(a['w'] - b['w']) > 0.5 * max(a['w'], b['w']) + 1.5:
+                continue
+            cand.append((dist * (3.0 - ca - cb), i, j))
+    used, pairs = set(), []
+    for _, i, j in sorted(cand):
+        if i not in used and j not in used:
+            used |= {i, j}
+            pairs.append((stubs[i], stubs[j]))
+    return pairs
+
+
+def rebuild_under(img, hole, ink_below=100, reach=12):
+    """Rebuild the `hole` pixels (bool mask) of a drawing made of fills and dark outlines, so what lay under a mark comes back:
+    the COLOUR is inpainted from the fills around the hole with the outlines left out of it (no black smear into a shaded
+    region), and every outline that enters the hole on one side is LINKED to the one that leaves on the other side with a
+    smooth curve of the same width and colour, drawn on top. An outline that ends in the hole stays ended. Returns `img`
+    itself when there is nothing to fill."""
+    if not hole.any() or hole.all():
+        return img
+    h, w = hole.shape
+    out = np.ascontiguousarray(img).copy()
+    n, labels = cv2.connectedComponents(hole.astype(np.uint8), connectivity=8)
+    ell = lambda r: cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1,) * 2)
+    for comp in range(1, n):
+        cur = labels == comp
+        ys, xs = np.nonzero(cur)
+        m = reach + 8
+        y0, y1, x0, x1 = max(0, ys.min() - m), min(h, ys.max() + m + 1), max(0, xs.min() - m), min(w, xs.max() + m + 1)
+        roi = out[y0:y1, x0:x1].copy()
+        hc = cur[y0:y1, x0:x1]
+        others = hole[y0:y1, x0:x1] & ~hc
+        ink = (roi.max(axis=2) < ink_below) & ~hc & ~others
+        inkd = cv2.dilate(ink.astype(np.uint8), ell(1)) > 0
+        colour = cv2.inpaint(roi, ((inkd | hc | others).astype(np.uint8)) * 255, 3, cv2.INPAINT_TELEA)
+        stubs = _stubs(roi, ink, hc, others, reach)
+        diag = float(np.hypot(ys.max() - ys.min() + 1, xs.max() - xs.min() + 1))
+        alpha = np.zeros(hc.shape, np.float32)
+        paint = np.zeros(roi.shape, np.float32)
+        ss = 4
+        for a, b in _link_stubs(stubs, diag):
+            dist = float(np.hypot(*(b['p'] - a['p'])))
+            p0, p3 = a['p'] - a['d'] * 2, b['p'] - b['d'] * 2           # start a little outside the hole: no gap at the rim
+            p1, p2 = a['p'] + a['d'] * dist / 3, b['p'] + b['d'] * dist / 3
+            t = np.linspace(0, 1, 40)[:, None]
+            curve = (1 - t) ** 3 * p0 + 3 * (1 - t) ** 2 * t * p1 + 3 * (1 - t) * t ** 2 * p2 + t ** 3 * p3
+            layer = np.zeros((hc.shape[0] * ss, hc.shape[1] * ss), np.uint8)
+            cv2.polylines(layer, [np.round((curve + 0.5) * ss - 0.5).astype(np.int32)], False, 255,
+                          max(1, int(round((a['w'] + b['w']) / 2 * ss))), cv2.LINE_AA)
+            lay = cv2.resize(layer, (hc.shape[1], hc.shape[0]), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
+            col = (a['color'] + b['color']) / 2
+            paint = np.where((lay > alpha)[..., None], col, paint)
+            alpha = np.maximum(alpha, lay)
+        # a stub with no partner that runs into one of the lines just drawn (a divider meeting a ring): extend it up to that line
+        linked = [id(x) for pr in _link_stubs(stubs, diag) for x in pr]
+        for a in stubs:
+            if id(a) in linked or alpha.max() < 0.3:
+                continue
+            entered = False
+            for step in range(2, int(diag * 1.2) + 14):
+                q = a['p'] + a['d'] * step
+                xi, yi = int(round(q[0])), int(round(q[1]))
+                inside = 0 <= yi < hc.shape[0] and 0 <= xi < hc.shape[1] and hc[yi, xi]
+                if not inside:
+                    if entered:
+                        break
+                    continue
+                entered = True
+                if alpha[yi, xi] > 0.3:
+                    layer = np.zeros((hc.shape[0] * ss, hc.shape[1] * ss), np.uint8)
+                    pa, pb = (a['p'] - a['d'] * 2 + 0.5) * ss - 0.5, (q + 0.5) * ss - 0.5
+                    cv2.line(layer, tuple(np.round(pa).astype(int)), tuple(np.round(pb).astype(int)), 255, max(1, int(round(a['w'] * ss))), cv2.LINE_AA)
+                    lay = cv2.resize(layer, (hc.shape[1], hc.shape[0]), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
+                    paint = np.where((lay > alpha)[..., None], a['color'], paint)
+                    alpha = np.maximum(alpha, lay)
+                    break
+        barrier = cv2.dilate((alpha > 0.05).astype(np.uint8), ell(1)) > 0
+        if barrier.any():
+            # each side of a drawn outline is filled only from its own side (a mark that straddles a border would otherwise
+            # tint the one side with the colour of the other): the other side and the line are held back as unknown
+            walk = ((hc & ~barrier) | (~hc & ~inkd & ~others)).astype(np.uint8)     # fills, cut along the outlines
+            nreg, reg = cv2.connectedComponents(walk, connectivity=4)
+            sides = {int(v) for v in np.unique(reg[hc & ~barrier]) if v}
+            if len(sides) > 1:
+                colour = colour.copy()
+                for sid in sides:
+                    known_here = (reg == sid) & ~hc
+                    if not known_here.any():
+                        continue
+                    sep = cv2.inpaint(roi, ((~known_here).astype(np.uint8)) * 255, 3, cv2.INPAINT_TELEA)
+                    mine = (reg == sid) & hc
+                    colour[mine] = sep[mine]
+            # under the outline itself (and its soft edge) take the colour of the nearest side, not the blend of both
+            seam = hc & barrier
+            if seam.any() and (~seam).any():
+                _, near_lab = cv2.distanceTransformWithLabels((seam).astype(np.uint8), cv2.DIST_L2, 3, labelType=cv2.DIST_LABEL_PIXEL)
+                src_idx = np.flatnonzero(~seam.ravel())
+                colour = colour.copy()
+                colour[seam] = colour.reshape(-1, 3)[src_idx[near_lab[seam] - 1]]
+        res = colour.astype(np.float32) * (1 - alpha[..., None]) + paint * alpha[..., None]
+        res = np.clip(res + 0.5, 0, 255).astype(np.uint8)
+        out[y0:y1, x0:x1][hc] = res[hc]
+    return out
+
+
+@tool("Remove marks", "Clean", [
+    Param('colors', "Colour of the marks (click Pick on one)", 'colors', '', pick='color'),
+    Param('tolerance', "Tolerance (RGB distance)", 'int', 35, 1, 441, slider=True),
+    Param('grow', "Widen each mark by (px)", 'int', 3, 0, 20),
+    Param('max_area', "Ignore shapes larger than (px)", 'int', 1500, 10, 1000000, slider=True, progressive=True),
+    Param('method', "Rebuild with", 'choice', 'colour + outlines', choices=('colour + outlines', 'inpaint'))],
+    doc="Removes small marks of one colour (the red stars of a figure, a stamp, a dot) and rebuilds what was under them. "
+        "Pick the colour on a mark (Pick, then click it); every shape of that colour no bigger than the limit is taken out "
+        "together with its anti-aliased fringe ('Widen'), so a larger object of a similar colour is left alone. 'colour + "
+        "outlines' fills the shading from the fills around, side by side, and joins the dark outlines that enter the mark "
+        "with the ones that leave it, so rings, dividers and shapes run on through it; 'inpaint' just smears the surroundings "
+        "in (fine over flat colour only). A mark right on a corner or a junction of several lines may leave a small gap: "
+        "touch it up with the Clone stamp. Use the working area to restrict it.")
+def remove_marks(img, colors, tolerance, grow, max_area, method):
+    cols = parse_colors(colors)
+    if not cols:
+        return img
+    near = np.zeros(img.shape[:2], bool)
+    for c in cols:
+        near |= _distance_from(img, c) < tolerance
+    if not near.any():
+        return img
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(near.astype(np.uint8), connectivity=8)
+    keep = stats[:, cv2.CC_STAT_AREA] <= max_area
+    keep[0] = False
+    hit = keep[labels]
+    if not hit.any():
+        return img
+    if grow > 0:
+        hit = cv2.dilate(hit.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * grow + 1,) * 2)) > 0
+    if method == 'inpaint':
+        return inpaint_mask(img, hit, max(3, grow))
+    return rebuild_under(img, hit)
+
+
 def erase_rect(img, rect, fill='white', radius=3, color=None):
     """Paint the rectangle (x0, y0, x1, y1) of an RGB image: a flat 'white' / 'black' / 'picked colour' (the first colour
     of `color`, '#rrggbb'; 'transparent' is white here, there is no alpha) or 'inpaint' (rebuilt from the surroundings).

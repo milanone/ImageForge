@@ -51,7 +51,10 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
   - Clean (ported from SpectrumDigitizer): erase / keep colours (**Pick** colours on the image, with tolerance and an
     optional widening of the area; paint with white, black, a **picked colour** (Pick it from the picture, or choose it), transparent or **inpaint**, which rebuilds the erased pixels from
     their surroundings so a line over a gradient or a photo fades into it - keep the area narrow, a wide hole gets smeared),
-    despeckle, flatten ink to one colour, join dashed lines (smooth strokes that follow the dashes), eraser brush (drag on the image; white, black, a picked colour or transparent; one stroke = one undo step)
+    **Remove marks** (pick the colour of small marks such as the red stars on a scheme: they are taken out with their fringe and
+    what lay under them is rebuilt: the shading is filled side by side, and the dark outlines that enter a mark are joined to the ones
+    that leave it, so rings and dividers run on through; a mark sitting on a junction of several lines may need a touch-up with the
+    Clone stamp), despeckle, flatten ink to one colour, join dashed lines (smooth strokes that follow the dashes), eraser brush (drag on the image; white, black, a picked colour or transparent; one stroke = one undo step)
 
 Geometry tools change the whole image and ignore the selection; all other tools, the eraser brush included, are limited to it.
 The selection takes the place of SpectrumDigitizer's working area (which could also be rotated: not ported).

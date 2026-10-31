@@ -866,6 +866,69 @@ class RetouchTests(unittest.TestCase):
         self.assertTrue(((mask > 0).sum()) > 30)
 
 
+class RemoveMarksTests(unittest.TestCase):
+    """'Remove marks': red stars over a shaded disc with a black outline and a divider line; what lay under them must come back."""
+
+    RED = (237, 28, 36)
+
+    def figure(self):
+        import cv2
+        h, w = 140, 200
+        yy, xx = np.mgrid[0:h, 0:w]
+        img = np.full((h, w, 3), 255, np.uint8)
+        disc = (xx - 100) ** 2 + (yy - 70) ** 2 < 55 ** 2
+        shade = np.clip(120 + (xx - 45) * 0.9, 0, 255).astype(np.uint8)          # horizontal gradient inside the disc
+        img[disc] = np.stack([shade, shade, np.full_like(shade, 230)], -1)[disc]
+        clean = img.copy()
+        cv2.circle(clean, (100, 70), 55, (30, 30, 30), 3, cv2.LINE_AA)
+        cv2.line(clean, (100, 15), (100, 125), (30, 30, 30), 3, cv2.LINE_AA)
+        marked = clean.copy()
+        for c in ((100, 40), (62, 100)):                                           # one on the divider, one on the outline
+            cv2.circle(marked, c, 9, self.RED, -1, cv2.LINE_AA)
+        return clean, marked
+
+    def run_tool(self, img, **kw):
+        p = dict(colors='#%02x%02x%02x' % self.RED, tolerance=35, grow=3, max_area=1500, method='colour + outlines')
+        p.update(kw)
+        return il.apply_tool("Remove marks", img, p, None)
+
+    def test_marks_gone_and_lines_continue(self):
+        clean, marked = self.figure()
+        out = self.run_tool(marked)
+        self.assertFalse((np.abs(out.astype(int) - np.array(self.RED)).sum(axis=2) < 120).any())   # no red left, fringe included
+        for (x, y) in ((100, 40), (100, 36), (100, 44)):                                       # the divider is still dark through the star
+            self.assertLess(int(out[y, x].max()), 110, (x, y))
+        err = np.abs(out.astype(int) - clean.astype(int)).mean(axis=2)
+        self.assertLess(float(err[25:115, 80:120].mean()), 12.0)                            # close to the unmarked figure
+
+    def test_outline_stays_between_the_two_sides(self):
+        clean, marked = self.figure()
+        out = self.run_tool(marked)
+        win = (slice(96, 112), slice(48, 66))                                                 # the ring passes under the second star
+        dark = lambda im: int((im[win].max(axis=2) < 110).sum())
+        self.assertGreater(dark(out), 0.7 * dark(clean))
+        self.assertLess(abs(int(out[96, 70, 0]) - int(clean[96, 70, 0])), 40)                  # the fill inside is the shaded one
+
+    def test_bigger_shapes_are_left_alone(self):
+        clean, marked = self.figure()
+        marked = marked.copy()
+        marked[10:40, 150:190] = self.RED                                                      # a large red block: not a mark
+        out = self.run_tool(marked, max_area=200)
+        self.assertTrue((out[10:40, 150:190] == np.array(self.RED)).all())
+
+    def test_no_colour_or_no_match_is_no_change(self):
+        clean, marked = self.figure()
+        self.assertIs(self.run_tool(marked, colors=''), marked)
+        self.assertIs(self.run_tool(clean), clean)
+
+    def test_inpaint_method_and_input_untouched(self):
+        clean, marked = self.figure()
+        before = marked.copy()
+        out = self.run_tool(marked, method='inpaint')
+        self.assertTrue(np.array_equal(marked, before))
+        self.assertFalse((np.abs(out.astype(int) - np.array(self.RED)).sum(axis=2) < 120).any())
+
+
 class PickedColourFillTests(unittest.TestCase):
     def test_erase_colours_can_paint_with_a_picked_colour(self):
         img = np.full((20, 40, 3), 235, np.uint8)

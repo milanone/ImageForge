@@ -202,6 +202,27 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
 - **Progressive slider** (`Param(progressive=True)`): slider position t in 0..1 maps to `lo + (hi-lo)*t^2`, so low values have fine steps and
   high ones coarse; the number box and the slider follow each other. Used by the Diameter of Clone stamp, Clean brush and Eraser brush (default 10).
 
+- **Remove marks** (`remove_marks`, `rebuild_under`, `_stubs`, `_link_stubs`; group Clean): for stars/stamps/dots of one colour over a
+  drawing made of fills and dark outlines (Francesco's `synechocystis.png`, a cartoon scheme with 16 red stars; the file is not in the
+  repo, it is a published figure). Mask = pixels within the tolerance of the picked colours, connected shapes up to `max_area`
+  (a large object of a similar colour, such as a pink box, is left alone: the default tolerance is tight, 35), dilated by `grow`.
+  `rebuild_under` works per hole in a small ROI: (1) the COLOUR layer is Telea-inpainted with the near-black ink (`max(rgb) < 100`,
+  dilated 1) and the holes treated as unknown, so no black is smeared into a shaded fill; (2) `_stubs`: every place where ink crosses
+  the rim of the hole (`near <= 3.5`) gives a stub (entry point, direction from a PCA of the ink within 0.8 x `reach` of the
+  crossing, width = area / length, colour); blobs fail the elongation test (`evals[1] < 1.8 * evals[0]`; an additive term made
+  5 px lines fail); (3) `_link_stubs` pairs stubs that face each other (cosines >= 0.55, similar width, distance limit), best
+  `dist * (3 - ca - cb)` first, each once; each pair is a cubic Bezier drawn 4x supersampled with `cv2.polylines` and composited
+  into the hole only; an unpaired stub that runs into a line already drawn (a divider meeting a ring) is extended to it;
+  (4) the colour under the strokes is filled SIDE BY SIDE: the fills are cut along the strokes and the ink (4-connected components of
+  `hole & ~barrier` plus the free known pixels), and each side is inpainted from the known pixels of its own side only, and the
+  barrier/seam pixels take the colour of the nearest side (`distanceTransformWithLabels`), otherwise a mark straddling a border
+  tints one side with the other's colour (a grey patch under a star on a circle's outline).
+  Tried and dropped: exemplar-based inpainting (Criminisi, patches matched on colour + ink layers; cost ~3 s for 16 stars, but
+  it pasted black specks and wrong-colour blobs into flat fills; the Telea guess as a weak template did not cure it), and
+  the stub detection in a band 4..12 px away from the hole (it lost arcs where lines are close together). Known limit: a mark
+  right on a corner or a junction of three or more lines can leave a gap or a small blotch (the left-edge star of a six-sector disc,
+  the corner of the cone): Clone stamp. Tests: `RemoveMarksTests`; real window: `examples/remove_marks_session.py` (synthetic figure).
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a
