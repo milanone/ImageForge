@@ -58,10 +58,12 @@ class Param:
     'angle' (two clicks on a line that should be level) or 'point' (one click sets this int and the one named `<key>` with
     x/y swapped: used by the clone source, src_x / src_y)."""
 
-    def __init__(self, key, label, kind, default, lo=None, hi=None, step=1, choices=(), slider=False, pick=None):
+    def __init__(self, key, label, kind, default, lo=None, hi=None, step=1, choices=(), slider=False, pick=None,
+                 progressive=False):
         self.key, self.label, self.kind, self.default = key, label, kind, default
         self.lo, self.hi, self.step, self.choices, self.slider = lo, hi, step, tuple(choices), slider
         self.pick = pick
+        self.progressive = progressive      # slider position -> value is quadratic: fine steps at the low end, coarse at the high end
 
     @property
     def decimals(self):
@@ -461,7 +463,7 @@ def stamp_clone(dst, src, cx, cy, ox, oy, size, hardness=100, opacity=100, regio
 
 
 @tool("Clone stamp", "Retouch", [
-    Param('size', "Diameter (px)", 'int', 30, 1, 400, slider=True),
+    Param('size', "Diameter (px)", 'int', 10, 1, 400, slider=True, progressive=True),
     Param('hardness', "Hardness (%)", 'int', 60, 0, 100, slider=True),
     Param('opacity', "Opacity (%)", 'int', 100, 1, 100, slider=True),
     Param('aligned', "Aligned (keep the offset between strokes)", 'bool', True),
@@ -477,7 +479,7 @@ def clone_stamp(img, size, hardness, opacity, aligned, src_x, src_y):
 
 
 @tool("Clean brush", "Retouch", [
-    Param('size', "Diameter (px)", 'int', 15, 1, 300, slider=True),
+    Param('size', "Diameter (px)", 'int', 10, 1, 300, slider=True, progressive=True),
     Param('radius', "Inpaint radius (px)", 'int', 3, 1, 30, slider=True)],
     preview=False, interactive='clean',
     doc="Paint over a spot, a scratch or a stray mark (it shows red): when you let go it is rebuilt from what is around it. "
@@ -1541,7 +1543,25 @@ class ImageForge:
                 r.pack(fill=tk.X)
                 lo = p.lo if p.lo is not None else -1e9
                 hi = p.hi if p.hi is not None else 1e9
-                if p.slider and p.lo is not None and p.hi is not None:
+                if p.slider and p.progressive and p.lo is not None and p.hi is not None:
+                    span = float(hi - lo)
+                    pos = tk.DoubleVar(value=math.sqrt(max(0.0, (p.default - lo) / span)))
+
+                    def _slide(v, p=p, var=var, lo=lo, span=span):
+                        var.set(p.coerce(round(lo + span * float(v) ** 2, p.decimals)))
+
+                    def _follow(*a, var=var, pos=pos, lo=lo, span=span):
+                        try:
+                            t = math.sqrt(min(1.0, max(0.0, (float(var.get()) - lo) / span)))
+                        except (tk.TclError, ValueError):
+                            return                      # mid-typing
+                        if abs(pos.get() - t) > 1e-6:
+                            pos.set(t)
+
+                    var.trace_add('write', _follow)
+                    ttk.Scale(r, from_=0.0, to=1.0, variable=pos, orient='horizontal', command=_slide
+                              ).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 6))
+                elif p.slider and p.lo is not None and p.hi is not None:
                     ttk.Scale(r, from_=lo, to=hi, variable=var, orient='horizontal',
                               command=lambda v, p=p, var=var: var.set(p.coerce(round(float(v), p.decimals)))
                               ).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 6))

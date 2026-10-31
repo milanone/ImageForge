@@ -199,6 +199,9 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
 - Panel space is tight: the checkbox row and hint were shortened and the default window is 1250 x 900 so that the tool list
   (divider at 400 px) and the parameters both show.
 
+- **Progressive slider** (`Param(progressive=True)`): slider position t in 0..1 maps to `lo + (hi-lo)*t^2`, so low values have fine steps and
+  high ones coarse; the number box and the slider follow each other. Used by the Diameter of Clone stamp and Clean brush (default 10).
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a
