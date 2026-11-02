@@ -22,10 +22,10 @@ def drag(p, q, n=4, b='1', state=0x100):
 def centred():
     cw, ch = c.winfo_width(), c.winfo_height(); h, w = a._shown().shape[:2]
     return abs(a.ox + w * a.zoom / 2 - cw / 2) < 1 and abs(a.oy + h * a.zoom / 2 - ch / 2) < 1
-btn = {w.cget('text'): w for w in c.master.winfo_children()[0].winfo_children() if w.winfo_class() == 'Button'}
+btn = {w.cget('text'): w for w in c.master.master.winfo_children()[0].winfo_children() if w.winfo_class() == 'Button'}      # the bar is above the toolbox + canvas frame
 print("buttons:", sorted(btn))
 root.update(); root.after(700, root.quit); root.mainloop(); root.update()
-print("tool list: about", round(a.tree.winfo_height() / 20), "rows visible (was 7) | divider can be dragged:", a.tools_pane.sashpos(0))
+print("tool list: about", round(a.ops.winfo_height() / 20), "rows visible | divider can be dragged:", a.tools_pane.sashpos(0))
 print("start centred:", centred(), "zoom", round(a.zoom, 2))
 # left drag normally makes a selection, not a pan
 o = (a.ox, a.oy); drag((300, 300), (400, 380)); print("plain left drag selects:", a.sel is not None, "| view unchanged:", (a.ox, a.oy) == o); a.sel = None

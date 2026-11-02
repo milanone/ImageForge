@@ -63,12 +63,13 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
   *Edit > Paste* (Ctrl+V: a picture on the clipboard becomes a layer, or opens as the picture when nothing is open). The window
   size and place, the last folders and the recent files are remembered in `%APPDATA%\ImageForge\settings.json` (written when you
   close the program).
-- **Where things are**: the tool list (and the *Tools* and *Image* menus) follows the usual split. *Tools* are the ones you use with the mouse:
-  **Draw** (Pencil, Paintbrush, Eraser brush, Fill bucket, Gradient), **Retouch** (Clone stamp, Clean brush, Erase rectangle, Move area),
-  **Annotate** (Add text, Shapes, Scale bar, Measure), **Layers** (Move layer). *Image* holds the one-shot operations with a preview and an
-  Apply button: **Size and orientation** (Resize, Canvas size, Crop, Rotate, Flip, Auto straighten, Perspective, Lens), **Adjustments**
-  (Levels, Curves, Hue / saturation, White balance, Grayscale, Invert ...), **Filters** (Sharpen, Blur, Reduce noise, Morphology, Find
-  edges) and **Clean-up** (Erase / keep colours, Remove marks, Despeckle, Flatten ink, Join dashed lines). A plug-in's group comes after these.
+- **Where things are**: the mouse tools are in the **toolbox** at the left of the picture, as icon buttons in groups of two columns (hover for the
+  name): **Draw** (Pencil, Paintbrush, Eraser brush, Fill bucket, Gradient), **Retouch** (Clone stamp, Clean brush, Erase rectangle, Move area),
+  **Annotate** (Add text, Shapes, Scale bar, Measure), **Layers** (Move layer), and **Select** (Magic wand, Lasso, Hand). The one-shot
+  operations with a preview and an Apply button are in the *Tools* tab of the panel: four buttons choose the group (**Size** = size and
+  orientation, **Adjust**, **Filters**, **Clean-up**) and the list under them shows its tools; the box above them **finds a tool** by typing
+  part of its name or group (Ctrl+K; Enter picks the first match; it finds the mouse tools too). The *Tools* and *Image* menus hold the same
+  tools. A plug-in's group gets its own button after these.
 - **Selection**: drag a rectangle; tools then act only inside it (a click outside it clears it). Drag inside it to move it,
   drag a handle (corners, edge midpoints) to resize it, arrow keys nudge it by 1 px (Shift: 10) once the image has been
   clicked. *Crop to selection*.

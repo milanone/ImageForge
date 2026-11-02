@@ -131,6 +131,122 @@ def tool(name, group, params=(), geometry=False, preview=True, doc="", interacti
     return deco
 
 
+# the toolbox: the mouse tools as icon buttons (a group per line of two), then the selection commands and the Hand
+TOOLBOX = [
+    ("Draw", ["Pencil", "Paintbrush", "Eraser brush", "Fill bucket", "Gradient"]),
+    ("Retouch", ["Clone stamp", "Clean brush", "Erase rectangle", "Move area"]),
+    ("Annotate", ["Add text", "Shapes", "Scale bar", "Measure"]),
+    ("Layers", ["Move layer"]),
+    ("Select", ["Magic wand", "Lasso", "Hand"]),
+]
+GROUP_SHORT = {"Size and orientation": "Size", "Adjustments": "Adjust", "Clean-up": "Clean-up", "Filters": "Filters"}
+
+
+def search_tools(query, tools=None):
+    """Names of the tools that match `query` (every word of it is somewhere in the tool's name or group, without regard to case), the
+    ones whose name starts with the first word first, then in the order of the list. An empty query matches nothing."""
+    words = query.lower().split()
+    if not words:
+        return []
+    tools = TOOLS if tools is None else tools
+    hits = [t for t in tools.values() if all(w in (t.name + " " + t.group).lower() for w in words)]
+    hits.sort(key=lambda t: (not t.name.lower().startswith(words[0]), 0))
+    return [t.name for t in hits]
+
+
+def tool_icon(name, size=26):
+    """A small RGBA picture for a toolbox button, drawn here (no image files): a pencil, a brush, a bucket ... 4 x larger, then shrunk,
+    so the lines are smooth. An unknown name gets a rounded square with its first letters."""
+    S = size * 4
+    u = S / 26.0
+    im = Image.new('RGBA', (S, S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    ink, acc, soft = (44, 52, 66, 255), (31, 111, 235, 255), (170, 180, 196, 255)
+    w = max(2, int(round(2.0 * u)))
+    P = lambda *xy: [v * u for v in xy]
+    line = lambda xy, col=ink, wd=None: d.line(P(*xy), fill=col, width=wd or w)
+    poly = lambda xy, fill=None, outline=ink: d.polygon(P(*xy), fill=fill, outline=outline)
+    box = lambda xy, fill=None, outline=ink, wd=None: d.rectangle(P(*xy), fill=fill, outline=outline, width=wd or w)
+    dash = lambda a, b: [line((a[0] + (b[0] - a[0]) * t / 8.0, a[1] + (b[1] - a[1]) * t / 8.0,
+                               a[0] + (b[0] - a[0]) * (t + 0.55) / 8.0, a[1] + (b[1] - a[1]) * (t + 0.55) / 8.0)) for t in range(8)]
+    if name == "Pencil":
+        line((7, 19, 20, 6), ink, int(4.5 * u))
+        poly((4, 23, 6, 17, 9, 20), acc, acc)
+    elif name in ("Paintbrush", "Clean brush"):
+        line((22, 3, 12, 13), ink, int(3 * u))
+        d.ellipse(P(4, 13, 14, 23), fill=acc)
+        if name == "Clean brush":
+            for cx, cy in ((19, 16), (22, 11), (16, 21)):
+                line((cx - 1.5, cy, cx + 1.5, cy), acc, int(1.6 * u))
+                line((cx, cy - 1.5, cx, cy + 1.5), acc, int(1.6 * u))
+    elif name == "Eraser brush":
+        poly((4, 16, 13, 7, 22, 14, 12, 23), None, ink)
+        poly((4, 16, 8.5, 11.5, 17.5, 18.5, 12, 23), acc, acc)
+        line((4, 16, 13, 7, 22, 14, 12, 23, 4, 16))
+    elif name == "Fill bucket":
+        poly((4, 11, 13, 3, 20, 11, 12, 19), soft, ink)
+        line((4, 11, 13, 3, 20, 11, 12, 19, 4, 11))
+        d.ellipse(P(20, 16, 24, 22), fill=acc)
+        poly((22, 12, 20, 17, 24, 17), acc, acc)
+    elif name == "Gradient":
+        for i in range(12):
+            g = int(40 + i * 17)
+            d.rectangle(P(3 + i * 20 / 12.0, 5, 3 + (i + 1) * 20 / 12.0, 21), fill=(g, g, g, 255))
+        box((3, 5, 23, 21), None, ink)
+    elif name == "Clone stamp":
+        d.ellipse(P(8.5, 3, 17.5, 12), fill=ink)
+        box((11, 11, 15, 16), ink, ink)
+        box((5, 16, 21, 21), acc, acc)
+    elif name == "Erase rectangle":
+        for a, b in (((4, 5), (22, 5)), ((22, 5), (22, 21)), ((22, 21), (4, 21)), ((4, 21), (4, 5))):
+            dash(a, b)
+        line((9, 10, 17, 17), acc)
+        line((17, 10, 9, 17), acc)
+    elif name == "Move area":
+        for a, b in (((3, 4), (16, 4)), ((16, 4), (16, 17)), ((16, 17), (3, 17)), ((3, 17), (3, 4))):
+            dash(a, b)
+        line((12, 12, 22, 22), acc)
+        poly((23, 23, 23, 17, 17, 23), acc, acc)
+    elif name == "Add text":
+        line((5, 5.5, 21, 5.5), ink, int(2.6 * u))
+        line((13, 5.5, 13, 22), ink, int(2.6 * u))
+        line((9.5, 22, 16.5, 22), ink, int(2.2 * u))
+    elif name == "Shapes":
+        box((3, 11, 14, 22), soft, ink)
+        d.ellipse(P(10, 3, 23, 16), outline=acc, width=w)
+    elif name == "Scale bar":
+        line((3, 15, 23, 15), ink, int(3 * u))
+        line((3, 10, 3, 20))
+        line((23, 10, 23, 20))
+        for x in (9, 13, 17):
+            line((x, 8, x, 12), acc, int(1.6 * u))
+    elif name == "Measure":
+        poly((3, 18, 17, 4, 23, 10, 9, 24), soft, ink)
+        line((3, 18, 17, 4, 23, 10, 9, 24, 3, 18))
+        for tick in ((6, 15, 8, 17), (9, 12, 11, 14), (12, 9, 14, 11)):
+            line(tick, acc, int(1.5 * u))
+    elif name == "Move layer":
+        box((3, 9, 15, 21), soft, ink)
+        box((10, 3, 22, 15), None, acc)
+    elif name == "Magic wand":
+        line((4, 22, 15, 11), ink, int(3 * u))
+        for a in ((19, 2, 19, 12), (14, 7, 24, 7), (15.5, 3.5, 22.5, 10.5), (22.5, 3.5, 15.5, 10.5)):
+            line(a, acc, int(1.7 * u))
+    elif name == "Lasso":
+        d.ellipse(P(3, 3, 22, 15), outline=acc, width=w)
+        line((8, 15, 6, 20, 10, 23), ink)
+        d.ellipse(P(9, 21, 13, 25), fill=ink)
+    elif name == "Hand":
+        for x0, top in ((6, 6), (10, 3.5), (14, 4.5), (18, 7.5)):
+            d.rounded_rectangle(P(x0, top, x0 + 3.6, 15), radius=1.8 * u, fill=soft, outline=ink, width=int(1.4 * u))
+        d.rounded_rectangle(P(5, 12, 22, 23), radius=4 * u, fill=soft, outline=ink, width=int(1.4 * u))
+        line((5.5, 17, 2, 13.5), ink)
+    else:
+        d.rounded_rectangle(P(3, 3, 23, 23), radius=4 * u, outline=ink, width=w)
+        d.text((S / 2, S / 2), "".join(x[0] for x in name.split()[:2]).upper(), fill=ink, anchor='mm', font=ImageFont.load_default(int(11 * u)))
+    return im.resize((size, size), Image.LANCZOS)
+
+
 # (section, keys, what it does, how it compares with other programs): the table of Help > Keyboard shortcuts and mouse
 SHORTCUTS = [
     ("Files", "Ctrl+O", "Open a picture or a project", "standard"),
@@ -143,6 +259,7 @@ SHORTCUTS = [
     ("Undo and selection", "Ctrl+J / Ctrl+Shift+J", "Copy / cut the selection to a new layer", "like Photoshop"),
     ("Undo and selection", "Ctrl+Shift+X", "Crop to the selection", "ours"),
     ("Undo and selection", "Ctrl+Enter", "Apply the tool", "ours"),
+    ("Undo and selection", "Ctrl+K", "Find a tool by typing part of its name", "like the command palette of many editors"),
     ("Undo and selection", "Esc", "Cancel what is in progress (pick, lasso, measure, gradient); otherwise deselect", "standard"),
     ("Undo and selection", "Arrow keys / Shift+arrows", "Move the rectangle selection by 1 / 10 px (click the picture first)", "like Photoshop"),
     ("View", "Ctrl+0 / Ctrl+1", "Fit to window / actual size (100 %)", "like Photoshop"),
@@ -3078,8 +3195,12 @@ class ImageForge:
         self.b_fg.pack(side=tk.RIGHT, padx=2, pady=2)
         tk.Label(bar, text="Colours", bg='#e8e8e8', font=('Arial', 8)).pack(side=tk.RIGHT, padx=(8, 0))
         self._draw_swatches()
-        self.canvas = tk.Canvas(left, bg='#3a3a3a', highlightthickness=0, cursor='crosshair')
-        self.canvas.pack(fill=tk.BOTH, expand=True)
+        body = tk.Frame(left)
+        body.pack(fill=tk.BOTH, expand=True)
+        self.toolbox = tk.Frame(body, bg='#e8e8e8', width=74)
+        self.toolbox.pack(side=tk.LEFT, fill=tk.Y)
+        self.canvas = tk.Canvas(body, bg='#3a3a3a', highlightthickness=0, cursor='crosshair')
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         panel = tk.Frame(paned, bg='#f0f4f7', width=330)
         panel.pack_propagate(False)
         paned.add(panel, stretch='never')
@@ -3176,15 +3297,36 @@ class ImageForge:
         self._build_history_tab(tab_hist, bg)
         self._build_layers_tab(tab_layers, bg)
         tf = tk.Frame(self.tools_pane, bg=bg)
-        self.tools_pane.add(tf, weight=1)
+        self.tools_pane.add(tf, weight=0)
         outer, tab = self._scrollable(self.tools_pane, bg)
         self.tools_pane.add(outer, weight=1)
-        self.tree = ttk.Treeview(tf, show='tree', selectmode='browse', height=8)
-        sb = ttk.Scrollbar(tf, orient='vertical', command=self.tree.yview)
-        self.tree.configure(yscrollcommand=sb.set)
-        sb.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 4), pady=2)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0), pady=2)
+        # The model of the tool list (every tool by group). It is never shown: the toolbox, the chips and the search below are its faces,
+        # and everything else (menus, keys, scripts) selects a tool by selecting it here.
+        self.tree = ttk.Treeview(tk.Frame(self.root), show='tree', selectmode='browse')
         self.tree.bind('<<TreeviewSelect>>', lambda e: self._on_tree_select())
+        self.v_find = tk.StringVar()
+        self.e_find = ttk.Entry(tf, textvariable=self.v_find)
+        self.e_find.pack(fill=tk.X, padx=8, pady=(6, 2))
+        self.v_find.trace_add('write', lambda *a: self._refill_ops())
+        self.l_ph = tk.Label(self.e_find, text="Find a tool (Ctrl+K)", fg='#999999', bg='white', font=('Arial', 9))
+        self.l_ph.place(x=3, rely=0.5, anchor='w')
+        self.l_ph.bind('<Button-1>', lambda e: self.e_find.focus_set())
+        self.v_find.trace_add('write', lambda *a: self.l_ph.place_forget() if self.v_find.get() else self.l_ph.place(x=3, rely=0.5, anchor='w'))
+        self.e_find.bind('<Return>', lambda e: self._pick_first_op())
+        self.e_find.bind('<Down>', lambda e: (self.ops.focus_set(), self._focus_first_op()))
+        self.e_find.bind('<Escape>', lambda e: (self.v_find.set(""), self.canvas.focus_set(), "break")[-1])
+        self.f_chips = tk.Frame(tf, bg=bg)
+        self.f_chips.pack(fill=tk.X, padx=8)
+        self.v_group = tk.StringVar()
+        of = tk.Frame(tf, bg=bg)
+        of.pack(fill=tk.BOTH, expand=True, padx=8, pady=(2, 4))
+        self.ops = ttk.Treeview(of, show='tree', selectmode='browse', height=8)
+        osb = ttk.Scrollbar(of, orient='vertical', command=self.ops.yview)
+        self.ops.configure(yscrollcommand=osb.set)
+        osb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.ops.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.ops.bind('<<TreeviewSelect>>', lambda e: self._on_ops_select())
+        self._ops_sync = False
         self.root.after(500, self._set_tools_divider)
 
         self.l_doc = tk.Label(tab, text="", bg=bg, fg='#555555', font=('Arial', 8), wraplength=270, justify='left',
@@ -3229,7 +3371,7 @@ class ImageForge:
                         ("<Control-S>", self.save_as), ("<Control-z>", self.undo), ("<Control-y>", self.redo),
                         ("<Control-a>", self.select_all), ("<Control-d>", self.deselect), ("<Control-i>", self.invert_sel),
                         ("<Control-e>", self.export_dialog), ("<Control-v>", self.paste_clipboard),
-                        ("<Control-h>", self.show_histogram), ("<F1>", self.show_shortcuts), ("<Control-Z>", self.redo),
+                        ("<Control-h>", self.show_histogram), ("<F1>", self.show_shortcuts), ("<Control-k>", self.focus_find), ("<Control-Z>", self.redo),
                         ("<Control-X>", self.crop_to_selection), ("<Control-j>", lambda: self.selection_to_layer(False)),
                         ("<Control-J>", lambda: self.selection_to_layer(True)), ("<Control-0>", self.fit_view),
                         ("<Control-1>", self.actual_size), ("<Control-plus>", lambda: self._zoom_step(1.25)),
@@ -3347,9 +3489,133 @@ class ImageForge:
             for t in ts:
                 self.tree.insert('g:' + g, tk.END, iid=t.name, text=t.name)
                 sub.add_command(label=t.name, command=lambda n=t.name: self.tree.selection_set(n))
+        self._build_toolbox()
+        self._build_chips(order)
+
+    def _tip(self, widget, text):
+        """A hint under `widget` after half a second of hovering."""
+        state = {'after': None, 'win': None}
+
+        def show():
+            w = tk.Toplevel(widget)
+            w.wm_overrideredirect(True)
+            w.wm_geometry("+%d+%d" % (widget.winfo_rootx() + widget.winfo_width() + 4, widget.winfo_rooty() + 4))
+            tk.Label(w, text=text, bg='#fff8c6', relief=tk.SOLID, borderwidth=1, font=('Arial', 9), padx=4).pack()
+            state['win'] = w
+
+        def hide(_=None):
+            if state['after']:
+                widget.after_cancel(state['after'])
+                state['after'] = None
+            if state['win']:
+                state['win'].destroy()
+                state['win'] = None
+        widget.bind('<Enter>', lambda e: state.update(after=widget.after(500, show)), add='+')
+        widget.bind('<Leave>', hide, add='+')
+        widget.bind('<ButtonPress>', hide, add='+')
+
+    def _build_toolbox(self):
+        """The mouse tools as icon buttons, a group after the other, two to a line: one click selects the tool."""
+        for w in self.toolbox.winfo_children():
+            w.destroy()
+        self._icons = {}
+        self.v_toolsel = tk.StringVar(value="")
+        self.b_modes = {}
+        for gi, (group, names) in enumerate(TOOLBOX):
+            tk.Label(self.toolbox, text=group, bg='#e8e8e8', fg='#666666', font=('Arial', 7)).pack(anchor='w', padx=4, pady=(6 if gi else 3, 0))
+            grid = tk.Frame(self.toolbox, bg='#e8e8e8')
+            grid.pack(padx=3)
+            col = 0
+            for name in names:
+                if name in TOOLS or name in ("Magic wand", "Lasso", "Hand"):
+                    img = ImageTk.PhotoImage(tool_icon(name))
+                    self._icons[name] = img
+                    common = dict(image=img, width=30, height=30, bg='#f4f4f4', activebackground='#dfeaff', bd=1)
+                    if name in TOOLS:
+                        b = tk.Radiobutton(grid, variable=self.v_toolsel, value=name, indicatoron=False, selectcolor='#bcd6ff',
+                                           command=lambda n=name: self.tree.selection_set(n), **common)
+                        hint = "%s  (%s)" % (name, TOOLS[name].group)
+                    elif name == "Hand":
+                        b = tk.Checkbutton(grid, variable=self.v_hand, indicatoron=False, selectcolor='#bcd6ff', command=self._hand_changed, **common)
+                        hint = "Hand: the left button moves the picture  (H, or hold Space)"
+                    else:
+                        b = tk.Button(grid, command=self.start_wand if name == "Magic wand" else self.start_lasso, **common)
+                        self.b_modes[name] = b
+                        hint = {"Magic wand": "Magic wand: click a colour to select it  (Shift adds, Ctrl removes)",
+                                "Lasso": "Lasso: draw around what to select  (double-click closes)"}[name]
+                    b.grid(row=col // 2, column=col % 2, padx=1, pady=1)
+                    self._tip(b, hint)
+                    col += 1
+        self._sync_toolbox()
+
+    def _sync_toolbox(self):
+        """The toolbox follows the tool in use (a one-shot operation leaves it unselected) and the wand / lasso modes."""
+        if getattr(self, 'v_toolsel', None) is None:
+            return
+        name = self.tool.name if self.tool is not None else ""
+        self.v_toolsel.set(name if any(name in names for _, names in TOOLBOX) else "")
+        for n, b in getattr(self, 'b_modes', {}).items():
+            b.config(relief=tk.SUNKEN if self.mode == ('wand' if n == "Magic wand" else 'lasso') else tk.RAISED,
+                     bg='#bcd6ff' if self.mode == ('wand' if n == "Magic wand" else 'lasso') else '#f4f4f4')
+
+    def _build_chips(self, order):
+        """One chip per group of one-shot operations; the list under them shows the chosen group (or the search result)."""
+        for w in self.f_chips.winfo_children():
+            w.destroy()
+        self._chip_groups = [g for g in order if not any(t.interactive or t.layer for t in TOOLS.values() if t.group == g)]
+        for g in self._chip_groups:
+            b = tk.Radiobutton(self.f_chips, text=GROUP_SHORT.get(g, g), variable=self.v_group, value=g, indicatoron=False,
+                               selectcolor='#bcd6ff', bg='#f4f4f4', font=('Arial', 8), padx=5, command=self._refill_ops)
+            b.pack(side=tk.LEFT, padx=(0, 2))
+            self._tip(b, g)
+        if self._chip_groups and self.v_group.get() not in self._chip_groups:
+            self.v_group.set(self._chip_groups[0])
+        self._refill_ops()
+
+    def _refill_ops(self):
+        """The list under the chips: the tools of the chosen group, or what the search box finds (any tool, with its group)."""
+        self._ops_sync = True
+        try:
+            self.ops.delete(*self.ops.get_children())
+            q = self.v_find.get().strip()
+            if q:
+                for n in search_tools(q):
+                    self.ops.insert('', tk.END, iid=n, text="%s   (%s)" % (n, TOOLS[n].group))
+            else:
+                g = self.v_group.get()
+                for t in sorted((t for t in TOOLS.values() if t.group == g), key=lambda t: (TOOL_LAYOUT.get(g, []) + [t.name]).index(t.name)):
+                    self.ops.insert('', tk.END, iid=t.name, text=t.name)
+            if self.tool is not None and self.ops.exists(self.tool.name):
+                self.ops.selection_set(self.tool.name)
+        finally:
+            self._ops_sync = False
+
+    def _on_ops_select(self):
+        if self._ops_sync:
+            return
+        sel = self.ops.selection()
+        if sel and (self.tool is None or sel[0] != self.tool.name):
+            self.tree.selection_set(sel[0])
+
+    def _focus_first_op(self):
+        kids = self.ops.get_children()
+        if kids:
+            self.ops.selection_set(kids[0])
+            self.ops.focus(kids[0])
+
+    def _pick_first_op(self):
+        kids = self.ops.get_children()
+        if kids:
+            self.tree.selection_set(kids[0])
+            self.canvas.focus_set()
+
+    def focus_find(self):
+        self.nbk.select(0)
+        self.e_find.focus_set()
+        self.e_find.select_range(0, tk.END)
 
     # ---- tools and parameters --------------------------------------------------------------------------
-    def _set_tools_divider(self, y=400):
+    def _set_tools_divider(self, y=275):
         """Start with a tall tool list (about three times the first version); the divider can be dragged."""
         try:
             self.tools_pane.sashpos(0, y)
@@ -3365,6 +3631,14 @@ class ImageForge:
         self.cancel_mode()
         self._measure_cancel()
         self.tool = TOOLS[name]
+        self._sync_toolbox()
+        if not self.v_find.get().strip() and self.tool.group in getattr(self, '_chip_groups', []) and self.v_group.get() != self.tool.group:
+            self.v_group.set(self.tool.group)
+            self._refill_ops()
+        elif self.ops.exists(name) and self.ops.selection() != (name,):
+            self._ops_sync = True
+            self.ops.selection_set(name)
+            self._ops_sync = False
         self.canvas.delete('brush')
         self.canvas.delete('clone')
         self.l_doc.config(text=self.tool.doc + self._quick_pick_hint(self.tool))
@@ -4755,6 +5029,7 @@ class ImageForge:
             return
         self.cancel_mode()
         self.mode = 'wand'
+        self._sync_toolbox()
         self.canvas.config(cursor='tcross')
         self._status("Magic wand: click a colour on the picture (Shift adds to the selection, Ctrl removes, Esc ends).")
 
@@ -4778,6 +5053,7 @@ class ImageForge:
             return
         self.cancel_mode()
         self.mode = 'lasso'
+        self._sync_toolbox()
         self.canvas.config(cursor='tcross')
         self.canvas.focus_set()
         self._status("Lasso: click the corners (or drag freehand); double-click or Enter closes it, Esc clears. "
@@ -4914,6 +5190,7 @@ class ImageForge:
             self._draw_selection()
         self.canvas.delete('pick')
         self.canvas.delete('lasso')
+        self._sync_toolbox()
         self._lasso, self._lasso_down = [], False
         self.canvas.config(cursor='crosshair')
 

@@ -370,12 +370,21 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   (`_on_wheel`). Beware when testing: `widget.event_generate('<KeyPress-x>', state=0)` is NOT delivered on Windows, leave `state` out.
   Known gaps against the usual editors: no single-key tool shortcuts (B, E, ...), no Ctrl+N / Ctrl+W. Check: `examples/keys_session.py`.
 
-- **Tool list layout** (`TOOL_LAYOUT`, `_fill_tool_tree`): the order of the groups and of the tools inside them is the table, not the order
-  of registration; a tool or group that is not in it (a plug-in) comes after, in registration order. A group that holds any `interactive` or
-  `layer` tool goes under the *Tools* menu, every other under *Image*. The `@tool(name, group, ...)` group and the table must agree
-  (a test checks that and that no built-in tool is missing from the table): when you add a tool, give it a group AND a line in `TOOL_LAYOUT`.
-  Groups: Draw, Retouch, Annotate, Layers (mouse tools); Size and orientation, Adjustments, Filters, Clean-up (one-shot operations).
-  Check: `examples/menus_session.py`.
+- **Tool list layout, toolbox, search** (`TOOL_LAYOUT`, `TOOLBOX`, `tool_icon`, `search_tools`, `_fill_tool_tree`, `_build_toolbox`, `_build_chips`,
+  `_refill_ops`): the order of the groups and of the tools inside them is the table `TOOL_LAYOUT`, not the order of registration (a test checks the
+  decorators agree with it and that no built-in tool is missing; a tool or group of a plug-in comes after, in registration order). A group
+  holding any `interactive` or `layer` tool goes under the *Tools* menu, every other under *Image*. Groups: Draw, Retouch, Annotate, Layers
+  (mouse tools); Size and orientation, Adjustments, Filters, Clean-up (one-shot operations). The UI has THREE faces of one model: `self.tree` is the
+  model (a ttk.Treeview in a never-packed frame: `selection_set(name)` still fires `<<TreeviewSelect>>` there, which `_on_tree_select` turns into
+  `select_tool`; menus, keys and every scripted session select tools through it), the toolbox (`TOOLBOX`: icon Radiobuttons sharing `v_toolsel`,
+  plus the wand / lasso buttons (sunken while their mode is on, `_sync_toolbox`) and the Hand Checkbutton), and the panel's search box + chips
+  + `self.ops` list (the chosen group, or `search_tools(query)`: every word in the name or group, names starting with the first word first).
+  `select_tool` keeps the faces in step (toolbox selection, chip, highlighted row) with the `_ops_sync` guard against echo. Icons are drawn
+  with PIL at 4x and shrunk (`tool_icon`; one branch per tool, an unknown name gets its initials; a test checks every toolbox tool has a distinct,
+  non-empty icon); `_tip` is the hover hint. Adding a tool: its group, a line in `TOOL_LAYOUT`, and for a mouse tool a line in `TOOLBOX` and a
+  drawing in `tool_icon` (the tests fail otherwise). The old tall tree was dropped because 48 tools could not be seen without scrolling
+  and the parameters sat below the fold. Ctrl+K = `focus_find`. Key events generated with `event_generate` go to the FOCUS widget: focus the
+  entry first. Checks: `examples/toolbox_session.py`, `examples/menus_session.py`.
 
 ## Adding a tool
 

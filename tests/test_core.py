@@ -1796,6 +1796,28 @@ class DrawingTests(unittest.TestCase):
         mouse = {g for g, names in il.TOOL_LAYOUT.items() if any(il.TOOLS[n].interactive or il.TOOLS[n].layer for n in names if n in il.TOOLS)}
         self.assertEqual(mouse, {"Draw", "Retouch", "Annotate", "Layers"})                    # the groups of mouse tools, and only those
 
+    def test_toolbox_icons_and_search(self):
+        names = [n for _, ns in il.TOOLBOX for n in ns]
+        self.assertEqual(len(names), len(set(names)))
+        for n in names:
+            if n not in ("Magic wand", "Lasso", "Hand"):
+                self.assertIn(n, il.TOOLS)                                                   # every toolbox button is a real tool
+                self.assertTrue(il.TOOLS[n].interactive or il.TOOLS[n].layer, n)               # and a mouse tool, not a one-shot operation
+        mouse = {t.name for t in il.TOOLS.values() if t.interactive or t.layer}
+        self.assertEqual(mouse, {n for n in names if n in il.TOOLS})                           # every mouse tool has its button
+        icons = {n: il.tool_icon(n) for n in names}
+        for n, im in icons.items():
+            self.assertEqual(im.size, (26, 26))
+            self.assertGreater(int(np.asarray(im)[..., 3].astype(int).sum()), 26 * 8, n)       # something is drawn
+        self.assertEqual(len({im.tobytes() for im in icons.values()}), len(icons))             # all different
+        self.assertEqual(il.tool_icon("No such tool", 32).size, (32, 32))
+        self.assertEqual(il.search_tools(""), [])
+        self.assertEqual(il.search_tools("curv"), ["Curves"])
+        self.assertEqual(il.search_tools("ROTATE"), ["Rotate 90 / 180", "Rotate (any angle)"])
+        self.assertIn("Pencil", il.search_tools("draw pen"))                                   # words may come from the group
+        self.assertEqual(il.search_tools("zzzz"), [])
+        self.assertEqual(il.search_tools("blur")[0], "Blur (Gaussian)")
+
     def test_tools_are_registered_as_interactive(self):
         for name in ("Pencil", "Paintbrush", "Fill bucket", "Gradient"):
             self.assertTrue(il.TOOLS[name].interactive, name)
