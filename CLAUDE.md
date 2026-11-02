@@ -268,6 +268,33 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   99.7th percentile of the counts so a spike at 0 or 255 does not flatten the rest. Tests: `ToneColourTests`; real window:
   `examples/tone_session.py`. Not done: a curve editor widget, per-colour-range hue/saturation, 16-bit histograms.
 
+- **Vector layers: text, shapes, scale bars** (`LAYER_KINDS`, `_text_layer` / `_shape_layer` / `_scalebar_layer` and their `*_boxes`,
+  `render_shape`, `render_scalebar`): every layer kind that is not 'image' is a `Layer` with `params` and `rgba=None`, drawn on demand
+  by `LAYER_KINDS[kind]['render'](**params)` (lru_cached renderers). A kind is one dict: `render`, `keys` (parameter names and types the
+  project file keeps), `build(boxes, old layer, scale)` (the boxes of its tool -> a Layer, or None when there is nothing to draw, with
+  `empty` as the message), `boxes(layer, scale)` (a layer -> the values to put back into the boxes), `tag` (list label) and `tool`.
+  The app code is generic: `_layer_from_params`, `_load_layer_into_tool`, `_apply_layer_tool`, `_on_layer_double`, the project IO and
+  `_tool_target` (still returns 'text' for any such layer: the name means 'not pixels') all go through it. Adding a layer kind = a
+  renderer, a builder, a boxes function, a dict entry and a `@tool(..., layer='kind')`.
+  *Shapes*: the layer is the tight box around the drawing (pad = half the width + the head + 2 px); its points are stored RELATIVE
+  to that box, so moving the layer moves the shape, and the boxes show canvas coordinates (`x0..y1` = relative + layer position).
+  Drawn 4 x larger with cv2 and shrunk (INTER_AREA); the stroke stops inside an arrow head; dashes are walked along the polyline
+  (`_dash_runs`); stroke and fill alpha are composed with the usual 'over' formula. `Tool.place == 'segment'` (Shapes) makes a press set
+  both ends, a drag the second, and, with the shape's layer selected, a press within 10 px of an end grabs that end (`_seg_start`,
+  `_seg_end`); `_draw_shape_handles` marks the ends. *Scale bar*: px_len = length / units-per-pixel, stored in the layer with the
+  resolved label (`text`) and the unit, so a project file draws the same bar without the scale; editing recomputes it from the
+  current scale (or from the box 'units per pixel', which overrides it). No scale -> `empty` message, nothing added.
+  *Scale and measurements*: `self.scale` = (units per pixel, unit) in `.ifl` manifest key `scale` (`save_project(..., scale)`,
+  `project_scale(path)`; `load_project` keeps its 3-tuple); `set_scale` / `calibrate` (from the selected length of the Measurements
+  window) / `scale_by_hand` / `scale_from_dpi` (25.4 / dpi mm). The Measure tool (`interactive='measure'`) keeps the points in
+  `_mpts` (distance: a drag or two clicks, `_mdrag`; path / area: clicks, double-click via `_mlast_t`, Enter, or the first point;
+  angle: three clicks), results in `self.measures` (kind 'length' / 'angle' / 'area', value in px / deg / px2), drawn by
+  `_draw_measures` as canvas items (never in the pixels) and listed in the Measurements window (`measurement_table` = TSV).
+  `polyline_length`, `polygon_area` (shoelace), `angle_between`, `format_measure` are pure. Tests: `ShapeLayerTests`; real window:
+  `examples/shapes_session.py` (answers the two dialogs by replacing `simpledialog.askfloat / askstring`). Not done: measurements in
+  the project, a profile line (intensity along a line), counting tools, a text label on shapes, polygon / freehand shapes,
+  rotating handles, a ruler along the picture's edges.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a
@@ -302,9 +329,9 @@ Nothing here is promised; Francesco adds tools as he needs them. Ordered roughly
   bilateral, non-local means), morphological operations (open/close, dilate/erode), edge detection.
 - Perspective correction (four clicked corners), automatic deskew (Hough / projection profile), lens distortion.
 - Crop with a fixed aspect ratio or to a size in cm at a dpi; canvas size (add borders); rulers, grid, guides, snapping;
-  measuring tools and a scale bar drawn from a calibration (useful for microscopy / lab figures).
-- Text: alignment, outline, shadow, background box, bold/italic as flags, several fonts per text; shapes (line, arrow,
-  rectangle, ellipse) as editable layers, like the text layer.
+  an intensity profile along a line, counting / marking tool (cells, colonies), measurements saved in the project.
+- Text: alignment, outline, shadow, background box, bold/italic as flags, several fonts per text; polygon / freehand shapes,
+  a text label on a shape, rounded rectangles, rotation handles.
 - Clone / heal brush, smudge, fill bucket with tolerance, gradient fill.
 
 **Files and use**

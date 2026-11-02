@@ -26,7 +26,7 @@ import cv2
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageTk
 
 import tkinter as tk
-from tkinter import colorchooser, filedialog, messagebox, ttk
+from tkinter import colorchooser, filedialog, messagebox, simpledialog, ttk
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -233,6 +233,43 @@ def invert(img):
 
 # ---- tone and colour ------------------------------------------------------------------------------------------
 CHANNELS = ('RGB', 'Red', 'Green', 'Blue')
+
+
+def polyline_length(pts):
+    """Length of the path through `pts` ((x, y) pairs), in the units of the points."""
+    p = np.asarray(pts, np.float64)
+    return float(np.hypot(*np.diff(p, axis=0).T).sum()) if len(p) > 1 else 0.0
+
+
+def polygon_area(pts):
+    """Area of the polygon through `pts` (shoelace formula; the sign of the orientation is dropped)."""
+    p = np.asarray(pts, np.float64)
+    if len(p) < 3:
+        return 0.0
+    x, y = p[:, 0], p[:, 1]
+    return float(abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))) / 2.0)
+
+
+def angle_between(a, vertex, b):
+    """The angle at `vertex` between the points a and b, in degrees (0..180); 0 when a point coincides with the vertex."""
+    u, v = np.asarray(a, np.float64) - vertex, np.asarray(b, np.float64) - vertex
+    n = float(np.hypot(*u) * np.hypot(*v))
+    if n == 0:
+        return 0.0
+    return float(math.degrees(math.acos(max(-1.0, min(1.0, float(np.dot(u, v)) / n)))))
+
+
+def format_measure(value, kind, scale=None):
+    """Text of a measurement: `value` is in pixels (a length), square pixels (an area) or degrees (an angle). With a scale
+    (units per pixel, unit) a length or an area is given in those units as well."""
+    if kind == 'angle':
+        return "%.1f deg" % value
+    sq = kind == 'area'
+    base = "%.1f %s" % (value, "px2" if sq else "px")
+    if not scale:
+        return base
+    v = value * scale[0] ** (2 if sq else 1)
+    return "%s = %.4g %s%s" % (base, v, scale[1], "2" if sq else "")
 
 
 def apply_lut(img, lut, channel='RGB'):
@@ -1300,7 +1337,8 @@ def add_text(img, text, size, font, color, x, y, angle, opacity):
 @dataclasses.dataclass(frozen=True, eq=False)
 class Layer:
     """A picture over the background. kind 'image': pixels with alpha (`rgba`, (H, W, 4) uint8, never modified in place);
-    kind 'text': the keyword arguments of render_text in `params`, rasterised on demand so the text stays editable.
+    kind 'text' / 'shape' / 'scalebar': the keyword arguments of its renderer in `params` (see LAYER_KINDS), rasterised on
+    demand so the text, the shape or the scale bar stays editable.
     (x, y) is the top-left corner on the canvas (may be outside it), `opacity` 0..100. Frozen: change one with replace()
     and put the new object in the history."""
     kind: str
@@ -1317,8 +1355,8 @@ class Layer:
 
     def raster(self):
         """The RGBA pixels of the layer (None for an empty text)."""
-        if self.kind == 'text':
-            return render_text(**self.params)
+        if self.kind in LAYER_KINDS:
+            return LAYER_KINDS[self.kind]['render'](**self.params)
         return self.rgba
 
     @property
@@ -1339,6 +1377,293 @@ def composite(base, layers):
             out = base.copy()
         blend_rgba(out, rgba, L.x, L.y, L.opacity / 100.0)
     return base if out is None else out
+
+
+# ---- shapes (line, arrow, rectangle, ellipse) and the scale bar: layers drawn from parameters --------------------
+SHAPES = ('line', 'arrow', 'double arrow', 'rectangle', 'ellipse')
+DASHES = ('solid', 'dashed', 'dotted')
+_SS = 4                                                      # shapes are drawn 4 x larger and shrunk: smooth edges
+
+
+def _dash_runs(pts, closed, on, off):
+    """Pieces [(p, q), ...] of the polyline `pts` (N x 2 array): `on` long, then a gap `off` long, along its whole length."""
+    pts = np.asarray(pts, np.float64)
+    if closed:
+        pts = np.vstack([pts, pts[:1]])
+    runs, pos, drawing, left = [], pts[0], True, on
+    for a, b in zip(pts[:-1], pts[1:]):
+        seg = float(np.hypot(*(b - a)))
+        if seg == 0:
+            continue
+        u, t = (b - a) / seg, 0.0
+        while seg - t > 1e-9:
+            step = min(left, seg - t)
+            if drawing:
+                runs.append((a + u * t, a + u * (t + step)))
+            t += step
+            left -= step
+            if left <= 1e-9:
+                drawing = not drawing
+                left = on if drawing else off
+    return runs
+
+
+@functools.lru_cache(maxsize=128)
+def _render_shape_cached(shape, x0, y0, x1, y1, stroke, width, filled, fill, dash, head, opacity):
+    if opacity <= 0:
+        return None
+    arrow = shape in ('arrow', 'double arrow')
+    pad = int(math.ceil(width / 2.0 + (head if arrow else 0) + 2))
+    W, H = int(math.ceil(max(x0, x1) + pad)), int(math.ceil(max(y0, y1) + pad))
+    ss = _SS
+    sa, fa = np.zeros((H * ss, W * ss), np.uint8), np.zeros((H * ss, W * ss), np.uint8)
+    thick = max(1, int(round(width * ss)))
+    P = lambda x, y: (int(round(x * ss)), int(round(y * ss)))
+    on, off = {'solid': (0, 0), 'dashed': (max(6.0, 4 * width) * ss, max(4.0, 3 * width) * ss),
+               'dotted': (max(1.0, width) * ss, max(3.0, 2 * width) * ss)}[dash]
+
+    def stroke_path(pts, closed):
+        pts = np.asarray(pts, np.float64)
+        if on == 0:
+            cv2.polylines(sa, [np.round(pts * ss).astype(np.int32)], closed, 255, thick, cv2.LINE_AA)
+        else:
+            for a, b in _dash_runs(pts * ss, closed, on, off):
+                cv2.line(sa, P(*(a / ss)), P(*(b / ss)), 255, thick, cv2.LINE_AA)
+
+    if shape in ('line', 'arrow', 'double arrow'):
+        a, b = np.array([x0, y0], np.float64), np.array([x1, y1], np.float64)
+        d = b - a
+        n = float(np.hypot(*d)) or 1.0
+        u = d / n
+        ha = min(head, n * 0.5) if shape == 'double arrow' else min(head, n)
+        start = a + u * ha * 0.8 if shape == 'double arrow' else a
+        end = b - u * ha * 0.8 if arrow else b                # the stroke stops inside the head, no blunt end poking out
+        stroke_path([start, end], False)
+        for tip, direction in ((b, u), (a, -u)) if shape == 'double arrow' else (((b, u),) if shape == 'arrow' else ()):
+            base = tip - direction * ha
+            side = np.array([-direction[1], direction[0]]) * ha * 0.45
+            cv2.fillPoly(sa, [np.round(np.array([tip, base + side, base - side]) * ss).astype(np.int32)], 255, cv2.LINE_AA)
+    elif shape == 'rectangle':
+        corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+        if filled:
+            cv2.fillPoly(fa, [np.round(np.array(corners) * ss).astype(np.int32)], 255, cv2.LINE_AA)
+        stroke_path(corners, True)
+    else:                                                    # ellipse inscribed in the box
+        cx, cy, rx, ry = (x0 + x1) / 2.0, (y0 + y1) / 2.0, abs(x1 - x0) / 2.0, abs(y1 - y0) / 2.0
+        if filled:
+            cv2.ellipse(fa, P(cx, cy), (int(round(rx * ss)), int(round(ry * ss))), 0, 0, 360, 255, -1, cv2.LINE_AA)
+        n = max(48, int(math.pi * (rx + ry) / 2))
+        ang = np.linspace(0, 2 * math.pi, n, endpoint=False)
+        stroke_path(np.stack([cx + rx * np.cos(ang), cy + ry * np.sin(ang)], 1), True)
+    sa = cv2.resize(sa, (W, H), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
+    fa = cv2.resize(fa, (W, H), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
+    s_rgb = np.asarray((parse_colors(stroke) or [(0, 0, 0)])[0], np.float32)
+    f_rgb = np.asarray((parse_colors(fill) or [(255, 255, 255)])[0], np.float32)
+    alpha = sa + fa * (1.0 - sa)
+    num = s_rgb * sa[..., None] + f_rgb * (fa * (1.0 - sa))[..., None]
+    out = np.empty((H, W, 4), np.uint8)
+    out[..., :3] = _to_u8(num / np.maximum(alpha, 1e-6)[..., None])
+    out[..., 3] = _to_u8(alpha * 255.0 * (opacity / 100.0))
+    out.flags.writeable = False
+    return out
+
+
+def render_shape(shape, x0, y0, x1, y1, stroke='#000000', width=3.0, filled=False, fill='#ffffff', dash='solid', head=14.0,
+                 opacity=100):
+    """RGBA array (straight alpha) of a shape drawn between (x0, y0) and (x1, y1), in coordinates of the array itself (so they
+    must be >= the margin the stroke needs: `shape_layer` takes care of that). Anti-aliased; a dashed or dotted outline;
+    arrow heads of `head` px. None when nothing would show."""
+    return _render_shape_cached(str(shape), float(x0), float(y0), float(x1), float(y1), str(stroke), float(width), bool(filled),
+                                str(fill), str(dash), float(head), int(opacity))
+
+
+@functools.lru_cache(maxsize=64)
+def _render_scalebar_cached(px_len, thickness, color, text, size, font, label_pos, opacity):
+    if opacity <= 0:
+        return None
+    rgb = (parse_colors(color) or [(0, 0, 0)])[0]
+    bar_w, thick = max(1, int(round(px_len))), max(1, int(thickness))
+    f = load_font(font, size)
+    show = bool(text) and label_pos != 'none'
+    if show:
+        probe = ImageDraw.Draw(Image.new('L', (1, 1)))
+        l, t, r, b = probe.textbbox((0, 0), text, font=f)
+        tw, th = r - l, b - t
+    else:
+        tw = th = l = t = 0
+    gap, pad = max(2, size // 4), 1
+    W = max(bar_w, tw) + 2 * pad
+    H = thick + (th + gap if show else 0) + 2 * pad
+    mask = Image.new('L', (W, H), 0)
+    d = ImageDraw.Draw(mask)
+    bar_y = pad + (th + gap if show and label_pos == 'above' else 0)
+    bx = (W - bar_w) // 2
+    d.rectangle([bx, bar_y, bx + bar_w - 1, bar_y + thick - 1], fill=255)
+    if show:
+        ty = pad - t if label_pos == 'above' else pad + thick + gap - t
+        d.text(((W - tw) // 2 - l, ty), text, font=f, fill=255)
+    out = np.empty((H, W, 4), np.uint8)
+    out[..., :3] = rgb
+    out[..., 3] = _to_u8(np.asarray(mask, np.float32) * (opacity / 100.0))
+    out.flags.writeable = False
+    return out
+
+
+def render_scalebar(px_len, thickness=6, color='#000000', text='', size=24, font='default', label_pos='above', opacity=100, **_):
+    """RGBA array of a scale bar `px_len` pixels long (a crisp rectangle `thickness` thick) with `text` centred above or below
+    it ('none' = no label). Other keywords (length, unit, label ...) are kept in the layer only for editing."""
+    return _render_scalebar_cached(float(px_len), int(thickness), str(color), str(text), int(size), str(font), str(label_pos),
+                                   int(opacity))
+
+
+def _text_layer(p, old, scale):
+    """Layer from the boxes of Add text (x, y and the render_text keywords), or None for an empty text."""
+    p = dict(p)
+    x, y = p.pop('x'), p.pop('y')
+    if render_text(**p) is None:
+        return None
+    first = p['text'].replace("\\n", "\n").strip().split("\n")[0][:24]
+    if old is None:
+        return Layer('text', "Text: " + first, x, y, params=p)
+    name = "Text: " + first if old.name.startswith("Text: ") else old.name
+    return old.replace(x=x, y=y, params=p, name=name)
+
+
+def _text_boxes(L, scale):
+    return dict(L.params, x=L.x, y=L.y)
+
+
+def _shape_layer(p, old, scale):
+    """Layer from the boxes of Shapes: x0, y0, x1, y1 are CANVAS coordinates; the layer is the tight box round the drawing, with the
+    points kept relative to it (so moving the layer moves the shape). None when the shape has no extent."""
+    p = dict(p)
+    x0, y0, x1, y1 = (float(p.pop(k)) for k in ('x0', 'y0', 'x1', 'y1'))
+    flat = p['shape'] in ('line', 'arrow', 'double arrow')
+    if (flat and x0 == x1 and y0 == y1) or (not flat and (x0 == x1 or y0 == y1)):
+        return None
+    arrow = p['shape'] in ('arrow', 'double arrow')
+    pad = int(math.ceil(float(p['width']) / 2.0 + (float(p['head']) if arrow else 0) + 2))
+    ox, oy = int(math.floor(min(x0, x1))) - pad, int(math.floor(min(y0, y1))) - pad
+    params = dict(p, x0=x0 - ox, y0=y0 - oy, x1=x1 - ox, y1=y1 - oy)
+    name = "Shape: " + p['shape']
+    if old is None:
+        return Layer('shape', name, ox, oy, params=params)
+    return old.replace(x=ox, y=oy, params=params, name=name if old.name.startswith("Shape: ") else old.name)
+
+
+def _shape_boxes(L, scale):
+    q = dict(L.params)
+    q.update(x0=int(round(q['x0'] + L.x)), y0=int(round(q['y0'] + L.y)), x1=int(round(q['x1'] + L.x)), y1=int(round(q['y1'] + L.y)))
+    return q
+
+
+def _scalebar_layer(p, old, scale):
+    """Layer from the boxes of Scale bar. `scale` = (units per pixel, unit) of the picture; the box 'Scale: units per pixel' overrides
+    it. None while there is no scale."""
+    p = dict(p)
+    x, y = p.pop('x'), p.pop('y')
+    upp = float(p.pop('units_per_px', 0.0)) or (scale[0] if scale else 0.0)
+    unit = scale[1] if scale else ""
+    if upp <= 0:
+        return None
+    length = float(p['length'])
+    p['unit'] = unit
+    p['px_len'] = length / upp
+    p['text'] = p['label'].strip() or ("%g %s" % (length, unit)).strip()
+    if render_scalebar(**p) is None:
+        return None
+    name = "Scale bar: " + p['text']
+    if old is None:
+        return Layer('scalebar', name, x, y, params=p)
+    return old.replace(x=x, y=y, params=p, name=name if old.name.startswith("Scale bar: ") else old.name)
+
+
+def _scalebar_boxes(L, scale):
+    q = {k: v for k, v in L.params.items() if k not in ('px_len', 'text', 'unit')}
+    return dict(q, x=L.x, y=L.y)
+
+
+TEXT_KEYS = {'text': str, 'size': int, 'font': str, 'color': str, 'angle': float, 'opacity': int}
+SHAPE_KEYS = {'shape': str, 'x0': float, 'y0': float, 'x1': float, 'y1': float, 'stroke': str, 'width': float, 'filled': bool,
+              'fill': str, 'dash': str, 'head': float, 'opacity': int}
+SCALEBAR_KEYS = {'length': float, 'unit': str, 'label': str, 'text': str, 'px_len': float, 'thickness': int, 'color': str,
+                 'size': int, 'font': str, 'label_pos': str, 'opacity': int}
+# what each non-image layer kind is: how it is drawn, which parameters the project file keeps (and their types), how the boxes of
+# its tool become a layer (`build(boxes, old layer or None, scale)`), and how a layer fills those boxes again (`boxes`)
+LAYER_KINDS = {
+    'text': dict(render=render_text, keys=TEXT_KEYS, build=_text_layer, boxes=_text_boxes, tag="text", tool="Add text",
+                 empty="The text is empty: nothing to add."),
+    'shape': dict(render=render_shape, keys=SHAPE_KEYS, build=_shape_layer, boxes=_shape_boxes, tag="shape", tool="Shapes",
+                  empty="The shape has no size yet: drag on the image from where it starts to where it ends."),
+    'scalebar': dict(render=render_scalebar, keys=SCALEBAR_KEYS, build=_scalebar_layer, boxes=_scalebar_boxes, tag="scale bar",
+                     tool="Scale bar", empty="There is no scale yet: calibrate it (Measure menu) or type the units per pixel in the box."),
+}
+
+
+@tool("Measure", "Measure", [
+    Param('what', "Measure", 'choice', 'distance', choices=('distance', 'path length', 'angle', 'area'))],
+    preview=False, interactive='measure',
+    doc="distance: drag from one point to the other (or click both). path length: click the points, double-click or Enter ends. "
+        "angle: click three points, the second is the corner. area: click the corners of a polygon, double-click, Enter or a click "
+        "on the first point closes it. Results are listed in Measure > Measurements, where one distance can calibrate the scale "
+        "(then lengths and areas are also given in real units). Esc cancels the one in progress.")
+def measure(img, what):
+    return img
+
+
+@tool("Shapes", "Draw", [
+    Param('shape', "Shape", 'choice', 'arrow', choices=SHAPES),
+    Param('stroke', "Line colour", 'colors', '#e02020', pick='color1'),
+    Param('width', "Line width (px)", 'float', 3.0, 0.5, 100.0, step=0.5, slider=True, progressive=True),
+    Param('dash', "Line style", 'choice', 'solid', choices=DASHES),
+    Param('head', "Arrow head size (px)", 'int', 16, 4, 300, slider=True),
+    Param('filled', "Fill (rectangle, ellipse)", 'bool', False),
+    Param('fill', "Fill colour", 'colors', '#ffffff', pick='color1'),
+    Param('opacity', "Opacity (%)", 'int', 100, 0, 100, slider=True),
+    Param('x0', "Start X (px)", 'int', 40, -100000, 100000),
+    Param('y0', "Start Y (px)", 'int', 40, -100000, 100000),
+    Param('x1', "End X (px)", 'int', 140, -100000, 100000),
+    Param('y1', "End Y (px)", 'int', 100, -100000, 100000)],
+    place='segment', layer='shape',
+    doc="Drag on the image from the start to the end of the line (or the two corners of a rectangle / ellipse), then press the "
+        "button: the shape becomes a layer you can restyle, move or reshape later. With the shape's layer selected, drag one "
+        "end to move only that end, or drag elsewhere to draw it again.")
+def shapes(img, shape, stroke, width, dash, head, filled, fill, opacity, x0, y0, x1, y1):
+    """Paint the shape into the pixels (the app makes a layer instead and bakes it only on Flatten)."""
+    L = _shape_layer(dict(shape=shape, stroke=stroke, width=width, dash=dash, head=head, filled=filled, fill=fill,
+                          opacity=opacity, x0=x0, y0=y0, x1=x1, y1=y1), None, None)
+    rgba = L.raster() if L is not None else None
+    if rgba is None:
+        return img
+    out = img.copy()
+    return out if blend_rgba(out, rgba, L.x, L.y) else img
+
+
+@tool("Scale bar", "Draw", [
+    Param('length', "Length of the bar (in the picture's units)", 'float', 10.0, 0.0001, 1000000.0, step=1.0),
+    Param('label', "Label (empty = length and unit)", 'text', ""),
+    Param('label_pos', "Label", 'choice', 'above', choices=('above', 'below', 'none')),
+    Param('thickness', "Thickness (px)", 'int', 6, 1, 200, slider=True),
+    Param('color', "Colour", 'colors', '#000000', pick='color1'),
+    Param('size', "Label size (px)", 'int', 24, 4, 600, slider=True),
+    Param('font', "Font", 'choice', FONT_CHOICES[0], choices=FONT_CHOICES),
+    Param('opacity', "Opacity (%)", 'int', 100, 0, 100, slider=True),
+    Param('units_per_px', "Scale: units per pixel (0 = the calibrated one)", 'float', 0.0, 0.0, 1000000.0, step=0.001),
+    Param('x', "X of the top-left corner (px)", 'int', 20, -100000, 100000),
+    Param('y', "Y of the top-left corner (px)", 'int', 20, -100000, 100000)],
+    place=True, layer='scalebar',
+    doc="A scale bar of the length you give, drawn with the picture's scale (set it first: Measure > Calibrate from a measured length, or type "
+        "the units per pixel below). Click on the image to place it, then press the button: it is a layer, so the length, label, "
+        "colour and place can be changed later.")
+def scale_bar(img, length, label, label_pos, thickness, color, size, font, opacity, units_per_px, x, y):
+    """Paint the bar into the pixels (needs 'units per pixel' here: the app uses the picture's calibration and makes a layer)."""
+    L = _scalebar_layer(dict(length=length, label=label, label_pos=label_pos, thickness=thickness, color=color, size=size,
+                             font=font, opacity=opacity, units_per_px=units_per_px, x=x, y=y), None, None)
+    rgba = L.raster() if L is not None else None
+    if rgba is None:
+        return img
+    out = img.copy()
+    return out if blend_rgba(out, rgba, L.x, L.y) else img
 
 
 def shift_layers(layers, dx, dy):
@@ -1710,21 +2035,22 @@ def _png_bytes(arr):
     return buf.getvalue()
 
 
-def save_project(path, base, layers, dpi=None):
+def save_project(path, base, layers, dpi=None, scale=None):
     """Write a project: a zip with manifest.json (version, size, dpi, one entry per layer: kind, name, position,
     visibility, opacity and, for text, its parameters), background.png and one RGBA layer_N.png per image layer.
     Written to a temporary file first, so a failure never destroys the previous project."""
     entries, files = [], {}
     for i, L in enumerate(layers):
         e = dict(kind=L.kind, name=L.name, x=int(L.x), y=int(L.y), visible=bool(L.visible), opacity=int(L.opacity))
-        if L.kind == 'text':
+        if L.kind in LAYER_KINDS:
             e['params'] = L.params
         else:
             e['file'] = "layer_%d.png" % i
             files[e['file']] = _png_bytes(L.rgba)
         entries.append(e)
     manifest = dict(format="ImageForge project", version=PROJECT_VERSION, width=int(base.shape[1]),
-                    height=int(base.shape[0]), dpi=list(dpi) if dpi else None, layers=entries)
+                    height=int(base.shape[0]), dpi=list(dpi) if dpi else None, layers=entries,
+                    scale=dict(units_per_px=float(scale[0]), unit=str(scale[1])) if scale else None)
     tmp = path + ".tmp"
     try:
         with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_STORED) as zf:          # PNG is already compressed
@@ -1736,9 +2062,6 @@ def save_project(path, base, layers, dpi=None):
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
-
-
-TEXT_KEYS = {'text': str, 'size': int, 'font': str, 'color': str, 'angle': float, 'opacity': int}
 
 
 def load_project(path):
@@ -1758,9 +2081,9 @@ def load_project(path):
             for e in manifest["layers"]:
                 common = dict(name=str(e["name"]), x=int(e["x"]), y=int(e["y"]), visible=bool(e["visible"]),
                               opacity=max(0, min(100, int(e["opacity"]))))
-                if e["kind"] == 'text':
-                    params = {k: t(e["params"][k]) for k, t in TEXT_KEYS.items()}
-                    layers.append(Layer('text', params=params, **common))
+                if e["kind"] in LAYER_KINDS:
+                    params = {k: t(e["params"][k]) for k, t in LAYER_KINDS[e["kind"]]['keys'].items()}
+                    layers.append(Layer(e["kind"], params=params, **common))
                 elif e["kind"] == 'image':
                     rgba = np.array(Image.open(io.BytesIO(zf.read(e["file"]))).convert('RGBA'))
                     layers.append(Layer('image', rgba=rgba, **common))
@@ -1770,6 +2093,16 @@ def load_project(path):
         raise ValueError("not a valid ImageForge project (%s: %s)" % (type(ex).__name__, ex))
     dpi = manifest.get("dpi")
     return base, tuple(layers), (float(dpi[0]), float(dpi[1])) if dpi else None
+
+
+def project_scale(path):
+    """(units per pixel, unit) recorded in a project file, or None (no scale, or a file that cannot be read)."""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            sc = json.loads(zf.read("manifest.json")).get("scale")
+        return (float(sc["units_per_px"]), str(sc["unit"])) if sc else None
+    except (zipfile.BadZipFile, KeyError, ValueError, TypeError, OSError):
+        return None
 
 
 def save_image(img, path, dpi=None, jpeg_quality=95):
@@ -1828,6 +2161,10 @@ class ImageForge:
         self._placing = False            # a click/drag is setting the x, y of a 'place' tool
         self._grab = None                # (handle, press point in image pixels, selection at press) while dragging it
         self._hist_win, self._hist_pending, self._hist_key = None, False, None      # the Histogram window
+        self.scale = None                # (units per pixel, unit) of the picture, or None until it is calibrated
+        self.measures = []               # finished measurements: dicts kind / pts (image px) / value / text
+        self._mpts, self._mdrag, self._mwin, self._seg_end = [], False, None, 'p1'
+        self._mlast_t = 0.0
         self._lasso = []                 # image points of the lasso being drawn, and the modifier of its first press
         self._lasso_mod, self._lasso_down, self._lasso_t = 'replace', False, 0.0
         self._outline = (None, [])       # (mask, polylines): the outline of a mask selection, computed once per mask
@@ -1882,11 +2219,23 @@ class ImageForge:
         self.m_file, self.m_edit, self.m_view = tk.Menu(mb, tearoff=0), tk.Menu(mb, tearoff=0), tk.Menu(mb, tearoff=0)
         self.m_image = tk.Menu(mb, tearoff=0)
         self.m_layer = tk.Menu(mb, tearoff=0)
+        self.m_measure = tk.Menu(mb, tearoff=0)
         mb.add_cascade(label="File", menu=self.m_file)
         mb.add_cascade(label="Edit", menu=self.m_edit)
         mb.add_cascade(label="View", menu=self.m_view)
         mb.add_cascade(label="Image", menu=self.m_image)
+        mb.add_cascade(label="Measure", menu=self.m_measure)
         mb.add_cascade(label="Layer", menu=self.m_layer)
+        ms = self.m_measure
+        ms.add_command(label="Measure tool", command=lambda: self.tree.selection_set("Measure"))
+        ms.add_command(label="Measurements...", command=self.show_measurements)
+        ms.add_separator()
+        ms.add_command(label="Calibrate from a measured length...", command=self.calibrate)
+        ms.add_command(label="Set the scale by hand...", command=self.scale_by_hand)
+        ms.add_command(label="Scale from the picture's dpi", command=self.scale_from_dpi)
+        ms.add_command(label="Clear the scale", command=self.clear_scale)
+        ms.add_separator()
+        ms.add_command(label="Add a scale bar...", command=lambda: self.tree.selection_set("Scale bar"))
         f = self.m_file
         f.add_command(label="Open...", accelerator="Ctrl+O", command=self.open_dialog)
         f.add_command(label="Open as layer...", command=self.open_layer_dialog)
@@ -2057,7 +2406,7 @@ class ImageForge:
             c.bind('<%s>' % key, lambda e, dx=dx, dy=dy: self.nudge(dx, dy))
             c.bind('<Shift-%s>' % key, lambda e, dx=dx, dy=dy: self.nudge(dx * 10, dy * 10))
         c.bind('<Motion>', self._on_motion)
-        c.bind('<Return>', lambda e: self._lasso_close() if self.mode == 'lasso' else None)
+        c.bind('<Return>', lambda e: (self._lasso_close() if self.mode == 'lasso' else None, self._measure_enter()))
         c.bind('<Leave>', lambda e: (self._set_info(""), c.delete('brush')))
         if HAS_DND:
             for w in (self.canvas, panel):
@@ -2131,6 +2480,7 @@ class ImageForge:
 
     def select_tool(self, name):
         self.cancel_mode()
+        self._measure_cancel()
         self.tool = TOOLS[name]
         self.canvas.delete('brush')
         self.canvas.delete('clone')
@@ -2230,6 +2580,7 @@ class ImageForge:
         if not self._params_ready or self.tool is None:
             return
         self._hist_schedule()
+        self._draw_shape_handles()
         self._clone_off = None if self._clone_source() != self._clone_last else self._clone_off
         self._draw_clone_marker()
         if self._after is not None:
@@ -2423,6 +2774,8 @@ class ImageForge:
             messagebox.showerror(APP_NAME, "Cannot open %s:\n%s" % (path, ex))
             return False
         self.hist, self.path, self.dpi = History(img, layers=layers), path, dpi
+        self.scale = project_scale(path) if project else None
+        self.measures, self._mpts, self._mdrag = [], [], False
         self.save_path = path if project else None             # a project is saved back to itself, an image never
         self.sel, self.preview, self.dirty = None, None, False
         self.active, self.lprev, self._comp = None, None, None
@@ -2467,7 +2820,7 @@ class ImageForge:
         project = path.lower().endswith(PROJECT_EXT)
         try:
             if project:
-                save_project(path, self.hist.current, self.hist.layers, self.dpi)
+                save_project(path, self.hist.current, self.hist.layers, self.dpi, self.scale)
             else:
                 save_image(self._flat(), path, self.dpi)
         except Exception as ex:
@@ -2516,7 +2869,10 @@ class ImageForge:
 
     def escape(self):
         """Esc: end a pick in progress, else drop the selection."""
-        if self.mode == 'lasso' and self._lasso:
+        if self._mpts:
+            self._measure_cancel()
+            self._status("Measurement cancelled.")
+        elif self.mode == 'lasso' and self._lasso:
             self._lasso = []
             self.canvas.delete('lasso')
             self._status("Lasso cleared. Click to start again, Esc to leave the lasso.")
@@ -2626,15 +2982,15 @@ class ImageForge:
     def _cur_layers(self):
         return self.hist.layers if self.hist else ()
 
-    _TEXT_LAYER_MSG = ("A text layer is not made of pixels: select the Background or an image layer, or merge the "
-                       "text down first. (Its text, font and colour are edited with Add text.)")
+    _TEXT_LAYER_MSG = ("A text, shape or scale-bar layer is not made of pixels: select the Background or an image layer, or "
+                       "merge it down first. (It is edited with its own tool: Add text, Shapes, Scale bar.)")
 
     def _tool_target(self):
         """What an ordinary tool works on: ('base', None), ('layer', image layer) or ('text', text layer)."""
         L = self._active_layer()
         if L is None:
             return 'base', None
-        return ('text' if L.kind == 'text' else 'layer'), L
+        return ('text' if L.kind in LAYER_KINDS else 'layer'), L          # 'text' = any layer drawn from parameters
 
     def _active_layer(self):
         layers = self._cur_layers()
@@ -2651,7 +3007,7 @@ class ImageForge:
             for i in range(len(layers) - 1, -1, -1):
                 L = layers[i]
                 self.ltree.insert('', tk.END, iid='L%d' % i,
-                                  text=("\u25cf " if L.visible else "\u25cb ") + L.name + ("  [text]" if L.kind == 'text' else ""))
+                                  text=("\u25cf " if L.visible else "\u25cb ") + L.name + ("  [%s]" % LAYER_KINDS[L.kind]['tag'] if L.kind in LAYER_KINDS else ""))
             self.ltree.insert('', tk.END, iid='BG', text="Background")
             self.ltree.selection_set('BG' if self.active is None else 'L%d' % self.active)
             L = self._active_layer()
@@ -2685,7 +3041,7 @@ class ImageForge:
         L = self._active_layer()
         if L is None:
             return
-        name = "Add text" if L.kind == 'text' else "Move layer"
+        name = LAYER_KINDS[L.kind]['tool'] if L.kind in LAYER_KINDS else "Move layer"
         self.nbk.select(0)
         if self.tree.selection() != (name,):
             self.tree.selection_set(name)
@@ -2835,41 +3191,34 @@ class ImageForge:
         return None
 
     def _load_layer_into_tool(self, L):
-        """Put the settings of a text layer into the parameter boxes of the Add text tool."""
+        """Put the settings of a text / shape / scale-bar layer into the boxes of its tool."""
         self._params_ready = False
-        for key, val in dict(L.params, x=L.x, y=L.y).items():
+        for key, val in LAYER_KINDS[L.kind]['boxes'](L, self.scale).items():
             if key in self.pvars:
                 self.pvars[key].set(val)
         self._params_ready = True
         self._params_changed()
 
     def _layer_from_params(self, params, old=None):
-        p = dict(params)
-        x, y = p.pop('x'), p.pop('y')
-        if render_text(**p) is None:
-            return None
-        first = p['text'].replace("\\n", "\n").strip().split("\n")[0][:24]
-        if old is None:
-            return Layer('text', "Text: " + first, x, y, params=p)
-        name = "Text: " + first if old.name.startswith("Text: ") else old.name
-        return old.replace(x=x, y=y, params=p, name=name)
+        return LAYER_KINDS[self.tool.layer]['build'](params, old, self.scale)
 
     def _apply_layer_tool(self, params):
         ei = self._edit_index()
         old = self.hist.layers[ei] if ei is not None else None
         new = self._layer_from_params(params, old)
+        kind = LAYER_KINDS[self.tool.layer]
         if new is None:
-            self._status("The text is empty: nothing to add.")
+            self._status(kind['empty'])
             return
         layers = list(self.hist.layers)
         if ei is not None:
             layers[ei] = new
-            self._commit_layers("Edit text layer", layers)
-            self._status("Text layer updated. Select 'Background' in the Layers tab to add another text.", ok=True)
+            self._commit_layers("Edit %s layer" % kind['tag'], layers)
+            self._status("The %s layer is updated. Select 'Background' in the Layers tab to add another one." % kind['tag'], ok=True)
         else:
             layers.append(new)
-            self._commit_layers("Add text layer", layers, len(layers) - 1)
-            self._status("Text added as a layer: change the boxes and press Update layer to edit it.", ok=True)
+            self._commit_layers("Add %s layer" % kind['tag'], layers, len(layers) - 1)
+            self._status("Added as a %s layer: change the boxes and press Update layer to edit it." % kind['tag'], ok=True)
 
     # ---- moving a layer with the mouse --------------------------------------------------------------------
     def _lmove_start(self, e):
@@ -2987,6 +3336,8 @@ class ImageForge:
         self._draw_selection()
         self._draw_clone_marker()
         self._set_info()
+        self._draw_measures()
+        self._draw_shape_handles()
         self._hist_schedule()
 
     def _draw_selection(self, rect=None):
@@ -3517,6 +3868,12 @@ class ImageForge:
         elif self.tool is not None and self.tool.interactive == 'layer':
             self._press = None
             self._lmove_start(e)
+        elif self.tool is not None and self.tool.interactive == 'measure':
+            self._press = None
+            self._measure_press(e)
+        elif self.tool is not None and self.tool.place == 'segment' and 'x0' in self.pvars:
+            self._press, self._placing = None, True
+            self._seg_start(e)
         elif self.tool is not None and self.tool.place and 'x' in self.pvars:
             self._press, self._placing = None, True
             self._place_at(e)
@@ -3532,8 +3889,14 @@ class ImageForge:
                 self._press, self._drag_sel = (e.x, e.y), None
 
     def _place_at(self, e):
-        """A 'place' tool (text): the pixel under the pointer becomes its x, y."""
+        """A 'place' tool (text, scale bar): the pixel under the pointer becomes its x, y; for a 'segment' tool (Shapes) it becomes
+        the end that is being dragged."""
         x, y = self._img_xy(e.x, e.y)
+        if self.tool.place == 'segment':
+            kx, ky = ('x1', 'y1') if self._seg_end == 'p1' else ('x0', 'y0')
+            self.pvars[kx].set(int(math.floor(x)))
+            self.pvars[ky].set(int(math.floor(y)))
+            return
         self.pvars['x'].set(int(math.floor(x)))
         self.pvars['y'].set(int(math.floor(y)))
 
@@ -3664,7 +4027,7 @@ class ImageForge:
         if self.tool is not None and self.tool.interactive == 'layer':
             self.canvas.config(cursor='fleur')
             return
-        if self.tool is not None and self.tool.place:
+        if self.tool is not None and (self.tool.place or self.tool.interactive == 'measure'):
             self.canvas.config(cursor='crosshair')
             return
         grab = hit_handle(self.sel, self.zoom, self.ox, self.oy, e.x, e.y) if self._rect_sel() else None
@@ -3676,6 +4039,9 @@ class ImageForge:
     def _on_drag(self, e):
         if self._pan_left:
             self._on_pan(e)
+            return
+        if self._mdrag and self._mpts:
+            self._draw_measure_draft(e)
             return
         if self._lasso_down:
             self._lasso_add(e, freehand=True)
@@ -3724,6 +4090,9 @@ class ImageForge:
     def _on_release(self, e):
         if self._pan_left:
             self._pan_left = False
+            return
+        if self._mdrag:
+            self._measure_release(e)
             return
         if self._lasso_down:
             self._lasso_down = False
@@ -3783,6 +4152,8 @@ class ImageForge:
         self._draw_brush_circle(e)
         if self.mode == 'lasso' and self._lasso:
             self._draw_lasso(e)
+        if self._mpts and not self._mdrag:
+            self._draw_measure_draft(e)
         if self.hist is None or self._press is not None:
             return
         self._update_cursor(e)
@@ -3796,6 +4167,291 @@ class ImageForge:
             self._set_info()
 
     # ---- status ----------------------------------------------------------------------------------------
+    # ---- shapes: the two ends drawn on the picture ------------------------------------------------------------------
+    def _seg_start(self, e):
+        """Press with the Shapes tool: near an end of the shape being edited it grabs that end; elsewhere it starts a new one."""
+        x, y = self._img_xy(e.x, e.y)
+        ix, iy = int(math.floor(x)), int(math.floor(y))
+        if self._edit_index() is not None:
+            try:
+                ends = {'p0': (float(self.pvars['x0'].get()), float(self.pvars['y0'].get())),
+                        'p1': (float(self.pvars['x1'].get()), float(self.pvars['y1'].get()))}
+            except (tk.TclError, ValueError):
+                ends = {}
+            for end, (ex, ey) in ends.items():
+                if math.hypot(ex * self.zoom + self.ox - e.x, ey * self.zoom + self.oy - e.y) <= 10:
+                    self._seg_end = end
+                    return
+        self._seg_end = 'p1'
+        for kx, ky in (('x0', 'y0'), ('x1', 'y1')):
+            self.pvars[kx].set(ix)
+            self.pvars[ky].set(iy)
+
+    def _draw_shape_handles(self):
+        """Small squares on the two ends of the shape the Shapes tool is about to make (or is editing)."""
+        c = self.canvas
+        c.delete('shapeh')
+        if self.hist is None or self.tool is None or self.tool.place != 'segment' or 'x0' not in self.pvars:
+            return
+        try:
+            pts = [(float(self.pvars['x0'].get()), float(self.pvars['y0'].get())),
+                   (float(self.pvars['x1'].get()), float(self.pvars['y1'].get()))]
+        except (tk.TclError, ValueError):
+            return
+        if pts[0] == pts[1]:
+            return
+        for x, y in pts:
+            sx, sy = x * self.zoom + self.ox, y * self.zoom + self.oy
+            c.create_rectangle(sx - 4, sy - 4, sx + 4, sy + 4, fill='#ffe28a', outline='black', tags='shapeh')
+
+    # ---- scale and measurements -----------------------------------------------------------------------------------------
+    def set_scale(self, upp, unit):
+        self.scale = (float(upp), str(unit).strip() or "units")
+        self.dirty = True
+        self._update_state()
+        self._refresh_measures()
+        self._draw_measures()
+        self._status("Scale set: 1 px = %.4g %s. Scale bars and measurements now use it (it is saved in a .ifl project)." % self.scale, ok=True)
+
+    def clear_scale(self):
+        if self.scale is not None:
+            self.scale = None
+            self.dirty = True
+            self._update_state()
+            self._refresh_measures()
+            self._draw_measures()
+            self._status("Scale cleared.", ok=True)
+
+    def scale_by_hand(self):
+        if not self._need_image():
+            return
+        upp = simpledialog.askfloat(APP_NAME, "Units per pixel (for example 0.5 if one pixel is half a micrometre):",
+                                    parent=self.root, minvalue=1e-9, initialvalue=self.scale[0] if self.scale else None)
+        if not upp:
+            return
+        unit = simpledialog.askstring(APP_NAME, "Unit name (um, mm, cm ...):", parent=self.root,
+                                      initialvalue=self.scale[1] if self.scale else "um")
+        if unit:
+            self.set_scale(upp, unit)
+
+    def scale_from_dpi(self):
+        if not self._need_image():
+            return
+        if not self.dpi or not self.dpi[0]:
+            self._status("This picture has no dpi recorded: calibrate with a measured length, or set the scale by hand.")
+            return
+        self.set_scale(25.4 / self.dpi[0], "mm")
+
+    def calibrate(self):
+        """Set the scale from a measured length: the selected row of the Measurements window, else the last length measured."""
+        if not self._need_image():
+            return
+        rows = [i for i, m in enumerate(self.measures) if m['kind'] == 'length']
+        if not rows:
+            self._status("Measure a length of known size first (Measure tool, distance), then calibrate.")
+            self.tree.selection_set("Measure")
+            return
+        pick = rows[-1]
+        if self._mwin is not None and self._mwin.winfo_exists():
+            sel = [int(i) for i in self.m_tree.selection()]
+            sel = [i for i in sel if i in rows]
+            if sel:
+                pick = sel[0]
+        m = self.measures[pick]
+        real = simpledialog.askfloat(APP_NAME, "The measured length (%.1f px, measurement #%d) is really:" % (m['value'], pick + 1),
+                                     parent=self.root, minvalue=1e-9)
+        if not real:
+            return
+        unit = simpledialog.askstring(APP_NAME, "Unit name (um, mm, cm ...):", parent=self.root,
+                                      initialvalue=self.scale[1] if self.scale else "um")
+        if unit:
+            self.set_scale(real / m['value'], unit)
+
+    def _measure_cancel(self):
+        self._mpts, self._mdrag = [], False
+        self.canvas.delete('mdraft')
+
+    def _measure_press(self, e):
+        x, y = self._img_xy(e.x, e.y)
+        what = self.pvars['what'].get()
+        self.canvas.focus_set()
+        now = time.time()
+        quick = bool(self._mpts) and now - self._mlast_t < 0.45 and \
+            math.hypot(x - self._mpts[-1][0], y - self._mpts[-1][1]) * self.zoom < 6
+        self._mlast_t = now
+        if what == 'distance':
+            if not self._mpts:
+                self._mpts, self._mdrag = [(x, y)], True
+            else:
+                self._mpts.append((x, y))
+                self._measure_finish(what)
+            return
+        if what in ('path length', 'area') and self._mpts:
+            if quick and len(self._mpts) >= (3 if what == 'area' else 2):
+                self._measure_finish(what)
+                return
+            if what == 'area' and len(self._mpts) >= 3 and math.hypot(x - self._mpts[0][0], y - self._mpts[0][1]) * self.zoom < 6:
+                self._measure_finish(what)
+                return
+        self._mpts.append((x, y))
+        if what == 'angle' and len(self._mpts) == 3:
+            self._measure_finish(what)
+        else:
+            self._draw_measure_draft(e)
+
+    def _measure_release(self, e):
+        self._mdrag = False
+        if len(self._mpts) == 1:
+            x, y = self._img_xy(e.x, e.y)
+            if math.hypot(x - self._mpts[0][0], y - self._mpts[0][1]) * self.zoom >= 4:        # a drag: the release is the 2nd point
+                self._mpts.append((x, y))
+                self._measure_finish('distance')
+
+    def _measure_enter(self):
+        if self.tool is not None and self.tool.interactive == 'measure' and self._mpts:
+            what = self.pvars['what'].get()
+            if len(self._mpts) >= (3 if what == 'area' else 2) and what in ('path length', 'area'):
+                self._measure_finish(what)
+
+    def _measure_finish(self, what):
+        pts = self._mpts
+        self._measure_cancel()
+        if what == 'angle':
+            kind, value = 'angle', angle_between(pts[0], pts[1], pts[2])
+        elif what == 'area':
+            kind, value = 'area', polygon_area(pts)
+        else:
+            kind, value = 'length', polyline_length(pts)
+        m = dict(kind=kind, what=what, pts=[(float(a), float(b)) for a, b in pts], value=float(value))
+        self.measures.append(m)
+        self._refresh_measures()
+        self._draw_measures()
+        self._status("#%d %s: %s" % (len(self.measures), what, format_measure(value, kind, self.scale)), ok=True)
+
+    def _measure_text(self, m):
+        return format_measure(m['value'], m['kind'], self.scale)
+
+    def _draw_measure_draft(self, e):
+        c = self.canvas
+        c.delete('mdraft')
+        if not self._mpts:
+            return
+        pts = [v for x, y in self._mpts for v in (x * self.zoom + self.ox, y * self.zoom + self.oy)] + [e.x, e.y]
+        c.create_line(*pts, fill='#00e5ff', width=2, dash=(4, 3), tags='mdraft')
+        what = self.pvars['what'].get() if 'what' in self.pvars else 'distance'
+        cur = self._img_xy(e.x, e.y)
+        allp = self._mpts + [cur]
+        if what == 'distance' and len(allp) == 2:
+            txt = format_measure(polyline_length(allp), 'length', self.scale)
+        elif what == 'path length' and len(allp) >= 2:
+            txt = format_measure(polyline_length(allp), 'length', self.scale)
+        elif what == 'area' and len(allp) >= 3:
+            txt = format_measure(polygon_area(allp), 'area', self.scale)
+            c.create_line(e.x, e.y, pts[0], pts[1], fill='#00e5ff', dash=(2, 4), tags='mdraft')
+        elif what == 'angle' and len(allp) == 3:
+            txt = format_measure(angle_between(allp[0], allp[1], allp[2]), 'angle')
+        else:
+            txt = ""
+        if txt:
+            c.create_text(e.x + 12, e.y - 12, text=txt, fill='#00e5ff', anchor='sw', font=('Arial', 9, 'bold'), tags='mdraft')
+
+    def _draw_measures(self):
+        """The finished measurements, drawn over the picture (not part of it): lines, end points and a label each."""
+        c = self.canvas
+        c.delete('measure')
+        if self.hist is None:
+            return
+        z = self.zoom
+        for i, m in enumerate(self.measures):
+            pts = [(x * z + self.ox, y * z + self.oy) for x, y in m['pts']]
+            flat = [v for p in pts for v in p]
+            if m['kind'] == 'area':
+                c.create_polygon(*flat, outline='#ffd400', fill='', width=2, tags='measure')
+                lx, ly = np.mean([p[0] for p in pts]), np.mean([p[1] for p in pts])
+            else:
+                c.create_line(*flat, fill='#ffd400', width=2, tags='measure')
+                lx, ly = (pts[1] if m['kind'] == 'angle' else ((pts[0][0] + pts[-1][0]) / 2, (pts[0][1] + pts[-1][1]) / 2))
+            for px, py in pts:
+                c.create_oval(px - 3, py - 3, px + 3, py + 3, fill='#ffd400', outline='black', tags='measure')
+            label = c.create_text(lx + 6, ly - 6, text="%d: %s" % (i + 1, self._measure_text(m).split(" = ")[-1]), fill='black',
+                                  anchor='sw', font=('Arial', 9, 'bold'), tags='measure')
+            bb = c.bbox(label)
+            if bb:
+                bg = c.create_rectangle(bb[0] - 2, bb[1] - 1, bb[2] + 2, bb[3] + 1, fill='#fff3a0', outline='#999999', tags='measure')
+                c.tag_lower(bg, label)
+
+    def show_measurements(self):
+        """Measure > Measurements: the list of what has been measured, to copy, to calibrate the scale from, or to clear."""
+        if not self._need_image():
+            return
+        if self._mwin is not None and self._mwin.winfo_exists():
+            self._mwin.lift()
+            self._refresh_measures()
+            return
+        w = tk.Toplevel(self.root)
+        w.title("Measurements - " + APP_NAME)
+        self._mwin = w
+        self.m_tree = ttk.Treeview(w, columns=('what', 'value'), show='headings', height=9, selectmode='browse')
+        self.m_tree.heading('what', text="Measurement")
+        self.m_tree.heading('value', text="Result")
+        self.m_tree.column('what', width=130)
+        self.m_tree.column('value', width=270)
+        self.m_tree.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        row = tk.Frame(w)
+        row.pack(fill=tk.X, padx=6, pady=(0, 6))
+        for text, cmd in (("Copy", self.copy_measurements), ("Calibrate from selected...", self.calibrate),
+                          ("Delete", self.delete_measure), ("Clear all", self.clear_measures)):
+            tk.Button(row, text=text, command=cmd).pack(side=tk.LEFT, padx=2)
+        self.l_mscale = tk.Label(w, text="", anchor='w', fg='#555555', font=('Arial', 8))
+        self.l_mscale.pack(fill=tk.X, padx=8, pady=(0, 6))
+        w.protocol('WM_DELETE_WINDOW', self._mwin_close)
+        self._refresh_measures()
+
+    def _mwin_close(self):
+        if self._mwin is not None:
+            self._mwin.destroy()
+        self._mwin = None
+
+    def _refresh_measures(self):
+        if self._mwin is None or not self._mwin.winfo_exists():
+            return
+        self.m_tree.delete(*self.m_tree.get_children())
+        for i, m in enumerate(self.measures):
+            self.m_tree.insert('', tk.END, iid=str(i), values=("%d  %s" % (i + 1, m['what']), self._measure_text(m)))
+        self.l_mscale.config(text=("Scale: 1 px = %.4g %s" % self.scale) if self.scale else
+                             "No scale yet: measure a known length, then 'Calibrate from selected...'.")
+
+    def measurement_table(self):
+        """Tab-separated text of the measurements: number, kind, value in pixels (or degrees), value in units, unit."""
+        lines = ["#\tkind\tvalue (px, px2 or deg)\tvalue (units)\tunit"]
+        for i, m in enumerate(self.measures):
+            cal, unit = "", ""
+            if self.scale and m['kind'] != 'angle':
+                k = 2 if m['kind'] == 'area' else 1
+                cal, unit = "%.6g" % (m['value'] * self.scale[0] ** k), self.scale[1] + ("2" if k == 2 else "")
+            lines.append("%d\t%s\t%.4f\t%s\t%s" % (i + 1, m['what'], m['value'], cal, unit))
+        return "\n".join(lines)
+
+    def copy_measurements(self):
+        if not self.measures:
+            self._status("Nothing measured yet.")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.measurement_table())
+        self._status("The table of measurements is on the clipboard (paste it into a spreadsheet).", ok=True)
+
+    def delete_measure(self):
+        sel = self.m_tree.selection() if self._mwin is not None and self._mwin.winfo_exists() else ()
+        if sel:
+            del self.measures[int(sel[0])]
+            self._refresh_measures()
+            self._draw_measures()
+
+    def clear_measures(self):
+        self.measures = []
+        self._refresh_measures()
+        self._draw_measures()
+
     # ---- histogram window ------------------------------------------------------------------------------
     HIST_W, HIST_H = 512, 200
 
@@ -3909,6 +4565,8 @@ class ImageForge:
             else:
                 h, w = self._shown().shape[:2]
                 text = "%d x %d px   zoom %d%%" % (w, h, round(self.zoom * 100))
+                if self.scale:
+                    text += "   1 px = %.4g %s" % self.scale
                 if self.sel:
                     x0, y0, x1, y1 = self.sel
                     text += "   selection %d x %d" % (x1 - x0, y1 - y0)

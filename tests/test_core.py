@@ -1182,6 +1182,131 @@ class ToneColourTests(unittest.TestCase):
         self.assertEqual(int(il.histogram_counts(img, np.zeros((10, 10), bool)).sum()), 0)
 
 
+class ShapeLayerTests(unittest.TestCase):
+    """Shapes and the scale bar as editable layers, the project file with them, and the measuring functions."""
+
+    def shape_params(self, **kw):
+        p = dict(shape='line', stroke='#ff0000', width=4, dash='solid', head=16, filled=False, fill='#ffffff', opacity=100,
+                 x0=20, y0=30, x1=120, y1=30)
+        p.update(kw)
+        return p
+
+    def test_line_is_a_layer_with_points_relative_to_its_box(self):
+        L = il._shape_layer(self.shape_params(), None, None)
+        self.assertEqual(L.kind, 'shape')
+        rgba = L.raster()
+        self.assertTrue((rgba[..., 3] > 0).any())
+        ys, xs = np.nonzero(rgba[..., 3] > 128)
+        self.assertEqual((int(xs.min()) + L.x, int(xs.max()) + L.x + 1), (18, 122))          # 20..120 plus the round ends (half the width)
+        self.assertLessEqual(abs(int(ys.mean()) + L.y - 30), 1)
+        self.assertTrue((rgba[ys[0], xs[0], :3] == (255, 0, 0)).all())
+        boxes = il._shape_boxes(L, None)
+        self.assertEqual((boxes['x0'], boxes['y0'], boxes['x1'], boxes['y1']), (20, 30, 120, 30))
+        moved = L.replace(x=L.x + 50, y=L.y + 10)
+        b2 = il._shape_boxes(moved, None)
+        self.assertEqual((b2['x0'], b2['y0'], b2['x1'], b2['y1']), (70, 40, 170, 40))          # moving the layer moves the boxes
+        again = il._shape_layer({k: v for k, v in b2.items()}, moved, None)
+        self.assertEqual((again.x, again.y), (moved.x, moved.y))
+
+    def test_degenerate_shapes_are_refused(self):
+        self.assertIsNone(il._shape_layer(self.shape_params(x1=20, y1=30), None, None))
+        self.assertIsNone(il._shape_layer(self.shape_params(shape='rectangle', y1=30), None, None))
+        self.assertIsNone(il.render_shape('line', 5, 5, 50, 5, opacity=0))
+
+    def test_arrow_has_a_head_wider_than_the_line(self):
+        plain = il._shape_layer(self.shape_params(), None, None).raster()
+        arrow = il._shape_layer(self.shape_params(shape='arrow'), None, None).raster()
+        thick = lambda r: int((r[..., 3] > 128).sum(axis=0).max())
+        self.assertGreater(thick(arrow), thick(plain) + 6)
+        both = il._shape_layer(self.shape_params(shape='double arrow'), None, None).raster()
+        cols = (both[..., 3] > 128).sum(axis=0)
+        xs = np.nonzero(cols)[0]
+        self.assertTrue(cols[xs.min():xs.min() + 16].max() > 8 and cols[xs.max() - 15:xs.max() + 1].max() > 8)     # a head at each end
+
+    def test_rectangle_and_ellipse_fill_and_outline(self):
+        r = il._shape_layer(self.shape_params(shape='rectangle', y1=90, filled=True, fill='#00ff00'), None, None)
+        rgba = r.raster()
+        cy, cx = rgba.shape[0] // 2, rgba.shape[1] // 2
+        self.assertTrue((rgba[cy, cx, :3] == (0, 255, 0)).all() and rgba[cy, cx, 3] == 255)
+        hollow = il._shape_layer(self.shape_params(shape='rectangle', y1=90), None, None).raster()
+        self.assertEqual(int(hollow[hollow.shape[0] // 2, hollow.shape[1] // 2, 3]), 0)
+        e = il._shape_layer(self.shape_params(shape='ellipse', y1=90, filled=True), None, None).raster()
+        self.assertEqual(int(e[2, 2, 3]), 0)                                                 # the corner of the box is outside the ellipse
+        self.assertEqual(int(e[e.shape[0] // 2, e.shape[1] // 2, 3]), 255)
+
+    def test_dashed_line_has_gaps(self):
+        solid = il._shape_layer(self.shape_params(x1=220), None, None).raster()
+        dashed = il._shape_layer(self.shape_params(x1=220, dash='dashed'), None, None).raster()
+        row = lambda r: (r[r.shape[0] // 2, :, 3] > 128)
+        self.assertTrue(row(solid)[8:-8].all())
+        self.assertGreater(int((~row(dashed)[8:-8]).sum()), 20)
+
+    def test_opacity_and_composite(self):
+        L = il._shape_layer(self.shape_params(opacity=50), None, None)
+        base = np.full((80, 160, 3), 255, np.uint8)
+        out = il.composite(base, (L,))
+        self.assertTrue(120 < int(out[30, 70, 1]) < 140 and int(out[30, 70, 0]) == 255)         # half red over white
+
+    def scale_params(self, **kw):
+        p = dict(length=10.0, label='', label_pos='above', thickness=6, color='#000000', size=20, font='default', opacity=100,
+                 units_per_px=0.0, x=30, y=40)
+        p.update(kw)
+        return p
+
+    def test_scale_bar_uses_the_calibration(self):
+        self.assertIsNone(il._scalebar_layer(self.scale_params(), None, None))                # no scale: nothing to draw
+        L = il._scalebar_layer(self.scale_params(), None, (0.5, "um"))
+        self.assertEqual(L.kind, 'scalebar')
+        self.assertAlmostEqual(L.params['px_len'], 20.0)                                        # 10 um at 0.5 um / px
+        self.assertEqual(L.params['text'], "10 um")
+        bar_rows = (L.raster()[..., 3] > 200).sum(axis=1)
+        self.assertEqual(int(bar_rows.max()), 20)                                               # the bar itself is 20 px wide
+        own = il._scalebar_layer(self.scale_params(units_per_px=0.25, label='scale'), None, (0.5, "um"))
+        self.assertAlmostEqual(own.params['px_len'], 40.0)
+        self.assertEqual(own.params['text'], "scale")
+        none = il._scalebar_layer(self.scale_params(label_pos='none'), None, (1.0, "mm"))
+        self.assertEqual(none.raster().shape[0], 6 + 2)
+        below = il._scalebar_layer(self.scale_params(label_pos='below'), None, (1.0, "mm"))
+        above = il._scalebar_layer(self.scale_params(label_pos='above'), None, (1.0, "mm"))
+        self.assertEqual(below.raster().shape, above.raster().shape)
+        self.assertFalse(np.array_equal(below.raster(), above.raster()))
+        edited = il._scalebar_layer(self.scale_params(length=20.0), L, (0.5, "um"))
+        self.assertAlmostEqual(edited.params['px_len'], 40.0)
+        self.assertEqual(il._scalebar_boxes(edited, (0.5, "um"))['length'], 20.0)
+
+    def test_project_keeps_shapes_scale_bars_and_the_scale(self):
+        base = np.full((120, 200, 3), 200, np.uint8)
+        shape = il._shape_layer(self.shape_params(shape='ellipse', y1=90, filled=True, dash='dotted'), None, None)
+        bar = il._scalebar_layer(self.scale_params(), None, (0.5, "um"))
+        path = os.path.join(tempfile.mkdtemp(), "p.ifl")
+        il.save_project(path, base, (shape, bar), None, (0.5, "um"))
+        b2, layers, dpi = il.load_project(path)
+        self.assertEqual([L.kind for L in layers], ['shape', 'scalebar'])
+        self.assertTrue(np.array_equal(il.composite(b2, layers), il.composite(base, (shape, bar))))
+        self.assertEqual(layers[0].params['dash'], 'dotted')
+        self.assertEqual(il.project_scale(path), (0.5, "um"))
+        il.save_project(path, base, (), None, None)
+        self.assertIsNone(il.project_scale(path))
+        self.assertIsNone(il.project_scale(os.path.join(os.path.dirname(path), "missing.ifl")))
+
+    def test_vector_layers_hold_no_pixels(self):
+        self.assertEqual(il.Layer('shape', "s", 0, 0, params={}).nbytes, 0)
+
+    def test_measurements(self):
+        self.assertAlmostEqual(il.polyline_length([(0, 0), (3, 4), (3, 10)]), 11.0)
+        self.assertEqual(il.polyline_length([(1, 1)]), 0.0)
+        self.assertAlmostEqual(il.polygon_area([(0, 0), (10, 0), (10, 5), (0, 5)]), 50.0)
+        self.assertAlmostEqual(il.polygon_area([(0, 5), (10, 5), (10, 0), (0, 0)]), 50.0)
+        self.assertEqual(il.polygon_area([(0, 0), (1, 1)]), 0.0)
+        self.assertAlmostEqual(il.angle_between((10, 0), (0, 0), (0, 10)), 90.0)
+        self.assertAlmostEqual(il.angle_between((10, 0), (0, 0), (-10, 0)), 180.0)
+        self.assertEqual(il.angle_between((0, 0), (0, 0), (1, 1)), 0.0)
+        self.assertEqual(il.format_measure(100, 'length'), "100.0 px")
+        self.assertEqual(il.format_measure(100, 'length', (0.5, "um")), "100.0 px = 50 um")
+        self.assertEqual(il.format_measure(100, 'area', (0.5, "um")), "100.0 px2 = 25 um2")
+        self.assertEqual(il.format_measure(45, 'angle', (0.5, "um")), "45.0 deg")
+
+
 class PickedColourFillTests(unittest.TestCase):
     def test_erase_colours_can_paint_with_a_picked_colour(self):
         img = np.full((20, 40, 3), 235, np.uint8)

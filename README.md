@@ -34,6 +34,15 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
   blend instead of cutting). The shape is the working area: every tool, brush, clone, Erase rectangle and layer respects it, the
   *Copy / Cut to layer* commands use it as the layer's transparency, and an outline of marching dashes shows it. Handles, nudging
   and *Move area* exist only for rectangles; *Crop to selection* uses the box around the shape.
+- **Shapes and scale bars** (group Draw): *Shapes* draws a line, arrow, double arrow, rectangle or ellipse (colour, width, dashed or
+  dotted, arrow head size, optional fill, opacity): drag on the image, press the button, and it is a **layer**, so you can restyle it,
+  move it, or drag one of its two ends later (select its layer first). *Scale bar* draws a bar of a given length in the picture's
+  units, with its label, as a layer too. The Background must be selected to add a second shape.
+- **Scale and measurements** (menu *Measure*): the **Measure** tool measures a distance (drag), a path length (click the points,
+  double-click or Enter ends), an angle (three clicks) or an area (polygon); the results are drawn on the picture (not part of it)
+  and listed in *Measure > Measurements*, which can copy the table for a spreadsheet. **Calibrate from a measured length** (a known
+  object or a ruler) gives the scale, which can also be typed or taken from the picture's dpi; then lengths and areas are given in
+  real units, scale bars are the right size, and the scale is saved in a `.ifl` project. Measurements themselves are not saved.
 - **Selection**: drag a rectangle; tools then act only inside it (a click outside it clears it). Drag inside it to move it,
   drag a handle (corners, edge midpoints) to resize it, arrow keys nudge it by 1 px (Shift: 10) once the image has been
   clicked. *Crop to selection*.
