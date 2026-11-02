@@ -29,7 +29,7 @@ def find_button(text):
         w = stack.pop()
         if w.winfo_class() == 'Button' and w.cget('text') == text: return w
         stack.extend(w.winfo_children())
-btn_define, btn_whole = find_button("Define working area"), find_button("Whole image")
+btn_define, btn_whole = a.b_modes["Rectangle"], find_button("Whole image (no area)")
 print("bar present:", btn_define is not None and btn_whole is not None, "| label:", a.l_area.cget('text'))
 
 # 1. the awkward case: a painting tool is ALREADY selected, then the area is defined

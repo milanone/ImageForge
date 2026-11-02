@@ -35,7 +35,7 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   (otherwise the already-applied effect would show twice). `preview=False` for tools where it makes no sense (Resize).
 - **Canvas**: image point -> screen is `x*zoom + ox`; only the visible part is cropped and resized per redraw
   (NEAREST above 100 %, BILINEAR below). Left drag = selection (a click clears it), right/middle drag = pan; the view bar (`center_view`, `fit_view`, `actual_size`,
-  Hand toggle `v_hand`) sits above the canvas inside the left pane frame. Left-button pan (`_pan_left`: Hand on, or `_space`
+  Hand toggle `v_hand`, now a button in the toolbox (the variable lives in the bar's setup)) sits above the canvas inside the left pane frame. Left-button pan (`_pan_left`: Hand on, or `_space`
   held) takes priority over every tool in `_on_press`; Space is ignored while the focus is in an entry / spinbox / combobox /
   tree, so typing a space in a text box never pans. Check: `examples/view_session.py`.
   The wheel factor is clamped: `event_generate` delivers an inflated delta in scripted tests.
@@ -187,7 +187,7 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   switches 'Paint with' by itself. `_picked_rgb` gives the first colour of the text (white if none). On a layer the brush paints it
   opaque, and Erase / keep colours keeps the alpha (generic path of `apply_tool_to_layer`). Tests: `PickedColourFillTests`.
 
-- **Working area** (`start_area`, `clear_area`, `_sync_area_box`, `_apply_area_box`, mode `'area'`): the bar at the top of the panel is a
+- **Working area** (`start_area`, `clear_area`, `_sync_area_box`, `_apply_area_box`, mode `'area'`): the box at the top of the panel (Whole image, Invert, X/Y/W/H, tolerance, Grow / Shrink / Feather; the buttons that START the area, the wand and the lasso live in the toolbox only, `b_modes`: one place per function, the panel and the bar used to repeat them) is a
   front door to `self.sel`, i.e. the working area IS the selection (one rectangle, no second concept: Move area, Crop, handles and
   nudge keep using it). Why: before, the rectangle could only be drawn with a non-interactive tool; with a brush / clone / layer /
   rectangle tool selected the drag belonged to the tool and the area could not be set ("I cannot use it"). `mode == 'area'` is

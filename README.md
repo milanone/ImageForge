@@ -23,12 +23,12 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
 - **Add text** (group Annotate): type the text (`\n` = new line), pick font, size, colour (type, **Pick** from the image or
   the colour dialog), rotation and opacity; click or drag on the image to place it, then *Add as layer*. The text stays
   editable: select its layer, change the boxes, press *Update layer* (select *Background* to add a second text).
-- **Working area** (the box at the top of the right panel): press **Define working area** *before* choosing any tool, drag a
-  rectangle on the picture, and every tool, brush and rectangle tool acts only inside it (a coloured label shows its size and
-  place; X / Y / W / H can be typed; **Whole image** removes it, Esc cancels a definition in progress). It works with any tool
-  already selected, which the plain drag does not (a brush or a layer tool uses the drag for itself). It is the same rectangle
-  as the selection below: you can still move or resize it with the handles, and Move area / Crop use it.
-- **Shape selections** (same box): **Magic wand** (click a colour; *Tolerance* and *Contiguous* in the box; Shift adds, Ctrl removes,
+- **Working area** (the box at the top of the right panel, drawn with the **Select** buttons at the top of the toolbox): press **Rectangle**
+  *before* choosing any tool, drag a rectangle on the picture, and every tool, brush and rectangle tool acts only inside it (a coloured label
+  shows its size and place; X / Y / W / H can be typed; **Whole image** removes it, Esc cancels a definition in progress). It works with any
+  tool already selected, which the plain drag does not (a brush or a layer tool uses the drag for itself). It is the same rectangle as the
+  selection below: you can still move or resize it with the handles, and Move area / Crop use it.
+- **Shape selections** (same box; the **Magic wand** and **Lasso** buttons are in the toolbox): **Magic wand** (click a colour; *Tolerance* and *Contiguous* in the box; Shift adds, Ctrl removes,
   Shift+Ctrl keeps the overlap; Esc ends), **Lasso** (click the corners, or drag freehand; double-click, Enter or a click on the first
   point closes it; Shift adds, Ctrl removes), **Invert** (Ctrl+I), **Grow / Shrink** by N px and **Feather** (soft edge: tools then
   blend instead of cutting). The shape is the working area: every tool, brush, clone, Erase rectangle and layer respects it, the

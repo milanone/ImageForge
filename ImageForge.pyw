@@ -275,7 +275,7 @@ SHORTCUTS = [
     ("View", "H", "Hand on / off (the left button moves the picture)", "standard"),
     ("View", "Space + drag", "Move the picture, with any tool (not while typing in a box)", "standard"),
     ("View", "Right or middle button + drag", "Move the picture", "standard"),
-    ("View", "Hand button above the picture", "The left button moves the picture", "standard (tool)"),
+    ("View", "Hand button in the toolbox", "The left button moves the picture", "standard (tool)"),
     ("View", "Ctrl+H", "Histogram window", "ours"),
     ("Selections with the mouse", "Drag", "Draw a rectangle; drag inside it to move it, drag a handle to resize", "standard"),
     ("Selections with the mouse", "Shift + click", "Magic wand and Lasso: add to the selection", "standard"),
@@ -3188,11 +3188,9 @@ class ImageForge:
             b.pack(side=tk.LEFT, padx=(4, 0), pady=2)
             if text == "Fit":
                 self.b_fit = b
-        self.v_hand = tk.BooleanVar(value=False)
-        tk.Checkbutton(bar, text="Hand: drag moves the picture", variable=self.v_hand, indicatoron=False, padx=8,
-                       command=self._hand_changed).pack(side=tk.LEFT, padx=(10, 0), pady=2)
-        tk.Label(bar, text="(or hold Space, or drag with the right button)", bg='#e8e8e8', fg='#666666',
-                 font=('Arial', 8)).pack(side=tk.LEFT, padx=6)
+        self.v_hand = tk.BooleanVar(value=False)                      # the Hand button is in the toolbox (and the H key)
+        tk.Label(bar, text="Move the picture: hold Space and drag, or drag with the right button (the Hand in the toolbox: H)",
+                 bg='#e8e8e8', fg='#666666', font=('Arial', 8)).pack(side=tk.LEFT, padx=10)
         # the colours of the drawing tools: foreground, background, swap (X), black and white (D)
         tk.Button(bar, text="swap (X)", command=self.swap_colours, font=('Arial', 8)).pack(side=tk.RIGHT, padx=(2, 6), pady=2)
         self.b_bg = tk.Button(bar, width=3, relief=tk.SUNKEN, command=lambda: self.choose_colour('bg'))
@@ -3239,13 +3237,13 @@ class ImageForge:
         self.b_crop.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
 
         # The working area: set it first, before choosing any tool; every tool then acts only inside it.
-        wa = tk.LabelFrame(panel, text="Working area: every tool acts only inside it", bg=bg, font=('Arial', 8))
+        wa = tk.LabelFrame(panel, text="Working area: every tool acts only inside it (draw it with the Select tools, top left)",
+                           bg=bg, font=('Arial', 8))
         wa.pack(fill=tk.X, padx=8, pady=(6, 0))
         row = tk.Frame(wa, bg=bg)
         row.pack(fill=tk.X)
-        tk.Button(row, text="Define working area", command=self.start_area, bg='#ffe28a',
-                  font=('Arial', 9, 'bold')).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(4, 2), pady=3)
-        tk.Button(row, text="Whole image", command=self.clear_area).pack(side=tk.LEFT, padx=(2, 4), pady=3)
+        tk.Button(row, text="Whole image (no area)", command=self.clear_area).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(4, 2), pady=3)
+        tk.Button(row, text="Invert", command=self.invert_sel).pack(side=tk.LEFT, padx=(2, 4), pady=3)
         row = tk.Frame(wa, bg=bg)
         row.pack(fill=tk.X, padx=4)
         self.area_vars = {k: tk.StringVar() for k in 'XYWH'}
@@ -3258,12 +3256,7 @@ class ImageForge:
             sp.bind('<FocusOut>', lambda ev: self._apply_area_box())
         self.l_area = tk.Label(wa, text="Whole image", bg=bg, fg='#555555', font=('Arial', 8), anchor='w')
         self.l_area.pack(fill=tk.X, padx=6, pady=(0, 2))
-        # Selections that are not rectangles: they are the working area too (every tool, brush and layer respects the shape)
-        row = tk.Frame(wa, bg=bg)
-        row.pack(fill=tk.X, padx=4, pady=(2, 0))
-        tk.Button(row, text="Magic wand", command=self.start_wand, bg='#cdeefc').pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
-        tk.Button(row, text="Lasso", command=self.start_lasso, bg='#cdeefc').pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
-        tk.Button(row, text="Invert", command=self.invert_sel).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
+        # The settings of the shape selections (the wand and the lasso start from the toolbox) and the commands that change a selection
         row = tk.Frame(wa, bg=bg)
         row.pack(fill=tk.X, padx=4, pady=(2, 0))
         tk.Label(row, text="Tolerance", bg=bg, font=('Arial', 8)).pack(side=tk.LEFT, padx=(2, 1))

@@ -34,7 +34,7 @@ orig = a.hist.current
 SHIFT, CTRL = 0x1, 0x4
 
 # 1. magic wand: contiguous, then add the other (similar) square, then remove with Ctrl
-a.v_wand_tol.set(30); button("Magic wand").invoke(); print("mode:", a.mode)
+a.v_wand_tol.set(30); a.b_modes["Magic wand"].invoke(); print("mode:", a.mode)
 click((90, 80)); print("wand on the red square:", tuple(a.sel), "| shape:", m.region_mask(a.sel, orig.shape) is not None, "| mode stays:", a.mode, "| label:", a.l_area.cget('text'))
 click((290, 80), SHIFT); print("Shift+click adds the other square:", tuple(a.sel), "| selected px:", int((a.sel.mask > 0.5).sum()), "(two squares = %d)" % (2 * 121 * 101))
 click((290, 80), CTRL); print("Ctrl+click removes it again:", tuple(a.sel))
@@ -54,7 +54,7 @@ print("brush crosses the red square without touching it:", np.array_equal(cur[60
 a.undo()
 
 # 4. lasso: a triangle over the blue circle, closed with Enter; grow, shrink, feather
-a.deselect(); button("Lasso").invoke()
+a.deselect(); a.b_modes["Lasso"].invoke()
 click((30, 160)); click((60, 160)); click((60, 190)); click((60, 190)); print("double click closes a lasso:", a.sel is not None and a._lasso == [])
 a.deselect(); a.mode = 'lasso'
 click((60, 170)); click((190, 170)); click((120, 270)); print("lasso points so far:", len(a._lasso))
@@ -77,7 +77,7 @@ print("Erase rectangle inside the triangle only:", bool((cur[200, 120] == 255).a
 a.undo()
 
 # 6. a rectangle still works as before, and replaces the shape
-button("Define working area").invoke(); drag((20, 20), (200, 140))
+a.b_modes["Rectangle"].invoke(); drag((20, 20), (200, 140))
 print("rectangle after a shape:", a.sel, "| plain tuple:", m.region_mask(a.sel, orig.shape) is None, "| handles drawn:", any(c.type(i) == 'rectangle' for i in c.find_withtag('sel')))
 root.after(300, root.quit); root.mainloop()
 x, y = root.winfo_rootx(), root.winfo_rooty(); ImageGrab.grab((x, y, x + root.winfo_width(), y + root.winfo_height())).save(os.path.join(tempfile.gettempdir(), 'selection_ui.png'))
