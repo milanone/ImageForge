@@ -1356,6 +1356,185 @@ def paint_segment(img, p0, p1, size, color, region=None):
             sub[:] = np.clip(np.rint(keep + (sub.astype(np.float32) - keep) * wgt), 0, 255).astype(np.uint8)
 
 
+# ---- drawing: pencil, paintbrush, fill bucket, gradient ---------------------------------------------------------------------------
+def region_weight_box(region, shape, box):
+    """The weight (0..1) the working area gives to the pixels of `box` (x0, y0, x1, y1) of an array of `shape`: None when there is
+    no area (everything counts), else a (h, w) float array: 1 inside a rectangle, the mask value inside a shape, 0 outside."""
+    if region is None:
+        return None
+    x0, y0, x1, y1 = box
+    w = np.zeros((y1 - y0, x1 - x0), np.float32)
+    ix0, iy0, ix1, iy1 = max(x0, region[0]), max(y0, region[1]), min(x1, region[2]), min(y1, region[3])
+    if ix1 > ix0 and iy1 > iy0:
+        m = region_mask(region, shape)
+        w[iy0 - y0:iy1 - y0, ix0 - x0:ix1 - x0] = 1.0 if m is None else m[iy0:iy1, ix0:ix1]
+    return w
+
+
+def stamp_cover(cover, p0, p1, size, hardness=100, square=False, aliased=False):
+    """Add a round (or square) stroke of diameter `size` from p0 to p1 (pixels) to `cover`, a float (h, w) array of how much each pixel
+    has been painted so far in this stroke (0..1): stamps are spaced along the segment and the larger weight wins, so overlapping
+    stamps do not build up. `aliased` gives hard, jagged pixels (the pencil); otherwise the edge fades over (100 - hardness) % of the
+    radius. Returns the box (x0, y0, x1, y1) that was touched, or None."""
+    h, w = cover.shape
+    r = max(0.5, size / 2.0)
+    dist = math.hypot(p1[0] - p0[0], p1[1] - p0[1])
+    step = max(0.5, size * (0.15 if aliased else 0.1))
+    n = max(1, int(math.ceil(dist / step)))
+    soft = max(r * (1.0 - hardness / 100.0), 1e-6)
+    touched = None
+    for i in range(n + 1):
+        cx, cy = p0[0] + (p1[0] - p0[0]) * i / n, p0[1] + (p1[1] - p0[1]) * i / n
+        x0, y0 = max(0, int(math.floor(cx - r)) - 1), max(0, int(math.floor(cy - r)) - 1)
+        x1, y1 = min(w, int(math.ceil(cx + r)) + 2), min(h, int(math.ceil(cy + r)) + 2)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        ys, xs = np.mgrid[y0:y1, x0:x1]
+        if square:
+            d = np.maximum(np.abs(xs - cx), np.abs(ys - cy))
+        else:
+            d = np.hypot(xs - cx, ys - cy)
+        wgt = (d <= r).astype(np.float32) if aliased else np.clip((r - d) / soft, 0.0, 1.0).astype(np.float32)
+        sub = cover[y0:y1, x0:x1]
+        np.maximum(sub, wgt, out=sub)
+        touched = (x0, y0, x1, y1) if touched is None else (min(touched[0], x0), min(touched[1], y0), max(touched[2], x1), max(touched[3], y1))
+    return touched
+
+
+def paint_over(orig, color, weight):
+    """`orig` ((h, w, 3) RGB or (h, w, 4) RGBA, straight alpha) with `color` ((3,) or (h, w, 3)) painted over it with `weight` (h, w,
+    0..1) as its opacity. On RGBA the alpha grows too (paint over a see-through pixel makes it opaque). Returns a new array."""
+    w = np.clip(np.asarray(weight, np.float32), 0.0, 1.0)[..., None]
+    c = np.asarray(color, np.float32)
+    f = orig.astype(np.float32)
+    if orig.shape[2] == 3:
+        return _to_u8(f + (c - f) * w)
+    a0 = f[..., 3:4] / 255.0
+    ao = a0 + w * (1.0 - a0)
+    rgb = np.where(ao > 1e-6, (f[..., :3] * a0 * (1.0 - w) + c * w) / np.maximum(ao, 1e-6), c)
+    return np.concatenate([_to_u8(rgb), _to_u8(ao * 255.0)], axis=2)
+
+
+def flood_fill(img, x, y, color, tolerance=32, contiguous=True, opacity=100, grow=1, region=None):
+    """Paint `color` where the picture looks like the pixel at (x, y): within `tolerance` (distance of the colours, alpha included on
+    RGBA), joined to it unless `contiguous` is off. `grow` widens the filled area by that many pixels so the pale fringe of a line is
+    covered too. Only inside `region`. Returns `img` itself when nothing changes."""
+    h, w = img.shape[:2]
+    if not (0 <= x < w and 0 <= y < h):
+        return img
+    seed = np.median(img[max(0, y - 1):y + 2, max(0, x - 1):x + 2].reshape(-1, img.shape[2]), axis=0)
+    near = _distance_from(img, seed) <= tolerance
+    if contiguous:
+        if not near[y, x]:
+            return img
+        n, lab = cv2.connectedComponents(near.astype(np.uint8), connectivity=8)
+        near = lab == lab[y, x]
+    mask = near.astype(np.uint8)
+    if grow > 0:
+        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * int(grow) + 1,) * 2))
+    weight = mask.astype(np.float32) * (opacity / 100.0)
+    rw = region_weight_box(region, img.shape, (0, 0, w, h))
+    if rw is not None:
+        weight = weight * rw
+    if not weight.any():
+        return img
+    out = paint_over(img, color, weight)
+    return img if np.array_equal(out, img) else out
+
+
+GRADIENT_KINDS = ('linear', 'radial', 'reflected', 'angle')
+GRADIENT_COLOURS = ('foreground to background', 'foreground to transparent', 'background to foreground')
+
+
+def gradient_t(shape, p0, p1, kind='linear'):
+    """The position (0..1) of every pixel along a gradient from p0 to p1: along the line (linear), by distance from p0 (radial), along
+    the line and back (reflected, p0 is the middle) or round p0 starting at the direction of p1 (angle)."""
+    h, w = shape
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+    n2 = max(dx * dx + dy * dy, 1e-6)
+    if kind == 'radial':
+        t = np.hypot(xs - p0[0], ys - p0[1]) / math.sqrt(n2)
+    elif kind == 'reflected':
+        t = np.abs((xs - p0[0]) * dx + (ys - p0[1]) * dy) / n2
+    elif kind == 'angle':
+        t = ((np.arctan2(ys - p0[1], xs - p0[0]) - math.atan2(dy, dx)) / (2 * math.pi)) % 1.0
+    else:
+        t = ((xs - p0[0]) * dx + (ys - p0[1]) * dy) / n2
+    return np.clip(t, 0.0, 1.0).astype(np.float32)
+
+
+def gradient_fill(img, p0, p1, fg, bg, kind='linear', colours='foreground to background', opacity=100, region=None):
+    """`img` with a gradient painted over it from p0 to p1 (pixel coordinates of `img`): foreground to background, foreground fading
+    to transparent, or background to foreground; only inside `region`. Returns `img` itself when the two points are the same."""
+    if math.hypot(p1[0] - p0[0], p1[1] - p0[1]) < 1.0:
+        return img
+    t = gradient_t(img.shape[:2], p0, p1, kind)[..., None]
+    fg, bg = np.asarray(fg, np.float32), np.asarray(bg, np.float32)
+    if colours == 'foreground to transparent':
+        colour, weight = np.broadcast_to(fg, t.shape[:2] + (3,)), (1.0 - t[..., 0])
+    else:
+        a, b = (bg, fg) if colours == 'background to foreground' else (fg, bg)
+        colour, weight = a + (b - a) * t, np.ones(t.shape[:2], np.float32)
+    weight = weight * (opacity / 100.0)
+    h, w = img.shape[:2]
+    rw = region_weight_box(region, img.shape, (0, 0, w, h))
+    if rw is not None:
+        weight = weight * rw
+    out = paint_over(img, colour, weight)
+    return img if np.array_equal(out, img) else out
+
+
+@tool("Pencil", "Draw", [
+    Param('size', "Size (px)", 'int', 3, 1, 100, slider=True, progressive=True),
+    Param('shape', "Tip", 'choice', 'round', choices=('round', 'square')),
+    Param('opacity', "Opacity (%)", 'int', 100, 1, 100, slider=True)],
+    preview=False, interactive='paint',
+    doc="Drag to draw with hard, jagged pixels in the foreground colour (the two squares above the picture; Ctrl+click on the picture "
+        "picks it, Ctrl+Shift+click the background colour, X swaps them). Shift+click draws a straight line from where the last "
+        "stroke ended. Limited to the selection if there is one; on an image layer it draws in that layer. One stroke is one Undo step.")
+def pencil(img, size, shape, opacity):
+    return img
+
+
+@tool("Paintbrush", "Draw", [
+    Param('size', "Size (px)", 'int', 20, 1, 500, slider=True, progressive=True),
+    Param('hardness', "Hardness (%)", 'int', 60, 0, 100, slider=True),
+    Param('opacity', "Opacity (%)", 'int', 100, 1, 100, slider=True)],
+    preview=False, interactive='paint',
+    doc="Drag to paint with a soft round brush in the foreground colour (the two squares above the picture; Ctrl+click on the picture "
+        "picks it, Ctrl+Shift+click the background colour, X swaps them). A stroke never gets darker where it crosses itself: the "
+        "opacity is that of the whole stroke. Shift+click draws a straight line from where the last stroke ended.")
+def paintbrush(img, size, hardness, opacity):
+    return img
+
+
+@tool("Fill bucket", "Draw", [
+    Param('tolerance', "Tolerance (colour distance)", 'int', 32, 0, 441, slider=True),
+    Param('contiguous', "Only the area joined to the click", 'bool', True),
+    Param('grow', "Widen the fill by (px)", 'int', 1, 0, 20),
+    Param('opacity', "Opacity (%)", 'int', 100, 1, 100, slider=True),
+    Param('use', "Fill with", 'choice', 'foreground', choices=('foreground', 'background'))],
+    preview=False, interactive='fill',
+    doc="Click on the picture: the area of that colour is filled with the foreground (or background) colour. Widen by a pixel or two so "
+        "the pale edge of a line is covered; raise the tolerance for shaded or noisy areas. On an image layer it works on the layer's "
+        "own pixels, transparency included. Limited to the selection if there is one.")
+def fill_bucket(img, tolerance, contiguous, grow, opacity, use):
+    return img
+
+
+@tool("Gradient", "Draw", [
+    Param('kind', "Shape", 'choice', 'linear', choices=GRADIENT_KINDS),
+    Param('colours', "Colours", 'choice', GRADIENT_COLOURS[0], choices=GRADIENT_COLOURS),
+    Param('opacity', "Opacity (%)", 'int', 100, 1, 100, slider=True)],
+    preview=False, interactive='gradient',
+    doc="Drag from where the gradient starts to where it ends (the picture shows it while you drag, Esc cancels): foreground to "
+        "background, foreground fading to transparent, or the other way round. Linear, radial, reflected (the start is the middle) or "
+        "angle (round the start). Limited to the selection if there is one.")
+def gradient_tool(img, kind, colours, opacity):
+    return img
+
+
 HANDLE_CURSORS = {'nw': 'size_nw_se', 'se': 'size_nw_se', 'ne': 'size_ne_sw', 'sw': 'size_ne_sw',
                   'n': 'size_ns', 's': 'size_ns', 'e': 'size_we', 'w': 'size_we', 'move': 'fleur'}
 
@@ -2661,6 +2840,9 @@ class ImageForge:
         self._grab = None                # (handle, press point in image pixels, selection at press) while dragging it
         self._hist_win, self._hist_pending, self._hist_key = None, False, None      # the Histogram window
         self.settings = load_settings()  # recent files, last folders, window: written back when the program is closed
+        self.fg = self._saved_rgb('fg', (0, 0, 0))                   # foreground / background colours of the drawing tools
+        self.bg = self._saved_rgb('bg', (255, 255, 255))
+        self._cover, self._paint_prev, self._grad = None, None, None
         self.scale = None                # (units per pixel, unit) of the picture, or None until it is calibrated
         self.measures = []               # finished measurements: dicts kind / pts (image px) / value / text
         self._mpts, self._mdrag, self._mwin, self._seg_end = [], False, None, 'p1'
@@ -2719,7 +2901,7 @@ class ImageForge:
         if sys.stderr:
             print(text, file=sys.stderr)
         self._status("Internal error: %s  (details in %s)" % (val, ERROR_LOG))
-        self._stroke = self._stroke_layer = self._stroke_orig = self._stroke_mask = None    # never stay half-way in a drag
+        self._stroke = self._stroke_layer = self._stroke_orig = self._stroke_mask = self._cover = self._grad = None    # never stay half-way in a drag
         self._mv = self._lmove = self._grab = self._rect_start = None
         self._pan_left = self._placing = False
 
@@ -2805,6 +2987,14 @@ class ImageForge:
                        command=self._hand_changed).pack(side=tk.LEFT, padx=(10, 0), pady=2)
         tk.Label(bar, text="(or hold Space, or drag with the right button)", bg='#e8e8e8', fg='#666666',
                  font=('Arial', 8)).pack(side=tk.LEFT, padx=6)
+        # the colours of the drawing tools: foreground, background, swap (X), black and white (D)
+        tk.Button(bar, text="swap (X)", command=self.swap_colours, font=('Arial', 8)).pack(side=tk.RIGHT, padx=(2, 6), pady=2)
+        self.b_bg = tk.Button(bar, width=3, relief=tk.SUNKEN, command=lambda: self.choose_colour('bg'))
+        self.b_bg.pack(side=tk.RIGHT, padx=2, pady=2)
+        self.b_fg = tk.Button(bar, width=3, relief=tk.SUNKEN, command=lambda: self.choose_colour('fg'))
+        self.b_fg.pack(side=tk.RIGHT, padx=2, pady=2)
+        tk.Label(bar, text="Colours", bg='#e8e8e8', font=('Arial', 8)).pack(side=tk.RIGHT, padx=(8, 0))
+        self._draw_swatches()
         self.canvas = tk.Canvas(left, bg='#3a3a3a', highlightthickness=0, cursor='crosshair')
         self.canvas.pack(fill=tk.BOTH, expand=True)
         panel = tk.Frame(paned, bg='#f0f4f7', width=330)
@@ -2933,6 +3123,8 @@ class ImageForge:
             c.bind('<%s>' % key, lambda e, dx=dx, dy=dy: self.nudge(dx, dy))
             c.bind('<Shift-%s>' % key, lambda e, dx=dx, dy=dy: self.nudge(dx * 10, dy * 10))
         c.bind('<Motion>', self._on_motion)
+        c.bind('<x>', lambda e: self.swap_colours())
+        c.bind('<d>', lambda e: self.reset_colours())
         c.bind('<Return>', lambda e: (self._lasso_close() if self.mode == 'lasso' else None, self._measure_enter()))
         c.bind('<Leave>', lambda e: (self._set_info(""), c.delete('brush')))
         if HAS_DND:
@@ -3120,7 +3312,7 @@ class ImageForge:
 
     def _update_preview(self):
         self._after = None
-        if (self.hist is None or self.tool is None or self._stroke is not None or self._mv is not None
+        if (self.hist is None or self.tool is None or self._stroke is not None or self._mv is not None or self._grad is not None
                 or self._lmove is not None):
             return
         if self.tool.layer:
@@ -3305,6 +3497,40 @@ class ImageForge:
             return not self.dirty
         return True
 
+    def _saved_rgb(self, key, default):
+        v = self.settings.get(key)
+        try:
+            return tuple(max(0, min(255, int(c))) for c in v)[:3] if isinstance(v, (list, tuple)) and len(v) == 3 else default
+        except (TypeError, ValueError):
+            return default
+
+    def _draw_swatches(self):
+        if getattr(self, 'b_fg', None) is not None:
+            self.b_fg.config(bg="#%02x%02x%02x" % self.fg, activebackground="#%02x%02x%02x" % self.fg)
+            self.b_bg.config(bg="#%02x%02x%02x" % self.bg, activebackground="#%02x%02x%02x" % self.bg)
+
+    def set_colour(self, which, rgb):
+        if which == 'fg':
+            self.fg = tuple(int(v) for v in rgb)
+        else:
+            self.bg = tuple(int(v) for v in rgb)
+        self._draw_swatches()
+
+    def choose_colour(self, which):
+        cur = self.fg if which == 'fg' else self.bg
+        _, hexv = colorchooser.askcolor(color="#%02x%02x%02x" % cur, parent=self.root,
+                                        title="Foreground colour" if which == 'fg' else "Background colour")
+        if hexv:
+            self.set_colour(which, parse_colors(hexv)[0])
+
+    def swap_colours(self):
+        self.fg, self.bg = self.bg, self.fg
+        self._draw_swatches()
+
+    def reset_colours(self):
+        self.fg, self.bg = (0, 0, 0), (255, 255, 255)
+        self._draw_swatches()
+
     def _dir_for(self, key='dir'):
         d = self.settings.get(key)
         return d if isinstance(d, str) and os.path.isdir(d) else None
@@ -3420,6 +3646,7 @@ class ImageForge:
                     self.settings['geometry'] = self.root.geometry()
             except tk.TclError:
                 pass
+            self.settings.update(fg=list(self.fg), bg=list(self.bg))
             save_settings(self.settings)
             self.root.destroy()
 
@@ -3453,7 +3680,11 @@ class ImageForge:
 
     def escape(self):
         """Esc: end a pick in progress, else drop the selection."""
-        if self._mpts:
+        if self._grad is not None:
+            self._grad = self.preview = self.lprev = None
+            self._redraw()
+            self._status("Gradient cancelled.")
+        elif self._mpts:
             self._measure_cancel()
             self._status("Measurement cancelled.")
         elif self.mode == 'lasso' and self._lasso:
@@ -4526,6 +4757,17 @@ class ImageForge:
         both). Returns True when the click was used."""
         if self.tool is None or not (e.state & 0x4):
             return False
+        if self.tool.interactive in ('paint', 'fill', 'gradient'):         # the drawing tools use the two colours above the picture
+            x, y = self._img_xy(e.x, e.y)
+            img = self._flat()
+            ix, iy = int(math.floor(x)), int(math.floor(y))
+            if 0 <= ix < img.shape[1] and 0 <= iy < img.shape[0]:
+                patch = img[max(0, iy - 1):iy + 2, max(0, ix - 1):ix + 2].reshape(-1, 3)
+                rgb = tuple(int(v) for v in np.median(patch, axis=0))
+                which = 'bg' if (e.state & 0x1) else 'fg'
+                self.set_colour(which, rgb)
+                self._status("%s colour #%02x%02x%02x picked." % ("Background" if which == 'bg' else "Foreground", *rgb), ok=True)
+            return True
         params = [q for q in self.tool.params if q.pick in ('point', 'color', 'color1')]
         if not params:
             return False
@@ -4618,7 +4860,7 @@ class ImageForge:
 
     def _is_brush(self):
         """Eraser brush, Clone stamp and Clean brush: tools that paint with strokes."""
-        return self.tool is not None and self.tool.interactive in ('brush', 'clone', 'clean')
+        return self.tool is not None and self.tool.interactive in ('brush', 'clone', 'clean', 'paint')
 
     def _brush_params(self):
         p = self._read_params() or {}
@@ -4653,10 +4895,13 @@ class ImageForge:
         self._stroke_orig = L.rgba if L is not None else self.hist.current
         self._stroke = self._stroke_orig.copy()
         self._stroke_mask = np.zeros(self._stroke.shape[:2], np.uint8) if mode == 'clean' else None
+        self._cover = np.zeros(self._stroke.shape[:2], np.float32) if mode == 'paint' else None
         self._last = None
         where = self._brush_scope(L)
         if where:                                      # the two silent traps: a forgotten selection, a selected layer
             self._status("%s (press 'Whole image' to remove the area; click Background in the Layers tab to paint the picture)." % where)
+        if mode == 'paint' and (e.state & 0x1) and self._paint_prev is not None:            # Shift+click: a straight line from the last end
+            self._last = self._paint_prev
         self._brush_to(e)
 
     def _brush_to(self, e):
@@ -4686,6 +4931,15 @@ class ImageForge:
                 cx, cy = lp[0] + (tp[0] - lp[0]) * i / n, lp[1] + (tp[1] - lp[1]) * i / n
                 stamp_clone(self._stroke, self._stroke_orig, cx, cy, ofx, ofy, size, int(p.get('hardness', 60)),
                             int(p.get('opacity', 100)), region)
+        elif mode == 'paint':
+            aliased = 'shape' in p                              # the pencil: hard, jagged pixels
+            box = stamp_cover(self._cover, lp, tp, size, 100 if aliased else int(p.get('hardness', 60)), p.get('shape') == 'square', aliased)
+            if box is not None:
+                weight = self._cover[box[1]:box[3], box[0]:box[2]] * (int(p.get('opacity', 100)) / 100.0)
+                rw = region_weight_box(region, self._stroke.shape, box)
+                if rw is not None:
+                    weight = weight * rw
+                self._stroke[box[1]:box[3], box[0]:box[2]] = paint_over(self._stroke_orig[box[1]:box[3], box[0]:box[2]], self.fg, weight)
         else:                                                  # 'clean': the mask, and a red trace to see it
             paint_segment(self._stroke_mask, lp, tp, size, (255,), region)
             paint_segment(self._stroke, lp, tp, size, (255, 60, 60) + ((255,) if L is not None else ()), region)
@@ -4702,7 +4956,9 @@ class ImageForge:
     def _brush_end(self):
         mode = self.tool.interactive
         stroke, orig, L, mask = self._stroke, self._stroke_orig, self._stroke_layer, self._stroke_mask
-        self._stroke = self._stroke_layer = self._stroke_orig = self._stroke_mask = self._last = None
+        if mode == 'paint' and self._last is not None:
+            self._paint_prev = self._last
+        self._stroke = self._stroke_layer = self._stroke_orig = self._stroke_mask = self._last = self._cover = None
         self.preview = self.lprev = None
         if mode == 'clean':                                    # now rebuild what was painted over
             radius = int((self._read_params() or {}).get('radius', 3))
@@ -4730,6 +4986,92 @@ class ImageForge:
             layers[self.active] = L.replace(rgba=stroke)
             self._commit_layers("%s (layer)" % self.tool.name, layers)
             self._status("%s stroke done on layer '%s'." % (self.tool.name, L.name), ok=True)
+
+    def _fill_click(self, e):
+        kind, L = self._tool_target()
+        if kind == 'text':
+            self._status(self._TEXT_LAYER_MSG)
+            return
+        x, y = self._img_xy(e.x, e.y)
+        ox, oy = (L.x, L.y) if L is not None else (0, 0)
+        px, py = int(math.floor(x)) - ox, int(math.floor(y)) - oy
+        p = self._read_params() or {}
+        target = L.rgba if L is not None else self.hist.current
+        region = layer_region(self.sel, L) if L is not None else self.sel
+        color = self.bg if p.get('use') == 'background' else self.fg
+        out = flood_fill(target, px, py, color, int(p.get('tolerance', 32)), bool(p.get('contiguous', True)), int(p.get('opacity', 100)),
+                         int(p.get('grow', 1)), region)
+        if out is target:
+            self._status("Fill bucket: nothing to fill there (outside the picture or the working area, or already that colour).")
+            return
+        if L is None:
+            self._commit("Fill bucket", out)
+        else:
+            layers = list(self.hist.layers)
+            layers[self.active] = L.replace(rgba=out)
+            self._commit_layers("Fill bucket (layer)", layers)
+        self._status("Filled with #%02x%02x%02x." % tuple(color), ok=True)
+
+    def _grad_start(self, e):
+        kind, L = self._tool_target()
+        if kind == 'text':
+            self._status(self._TEXT_LAYER_MSG)
+            return
+        x, y = self._img_xy(e.x, e.y)
+        ox, oy = (L.x, L.y) if L is not None else (0, 0)
+        target = L.rgba if L is not None else self.hist.current
+        self._grad = dict(p0=(x - ox, y - oy), L=L, orig=target, moved=False)
+
+    def _grad_make(self, e, g=None):
+        g = g or self._grad
+        x, y = self._img_xy(e.x, e.y)
+        L = g['L']
+        ox, oy = (L.x, L.y) if L is not None else (0, 0)
+        p = self._read_params() or {}
+        region = layer_region(self.sel, L) if L is not None else self.sel
+        return gradient_fill(g['orig'], g['p0'], (x - ox, y - oy), self.fg, self.bg, p.get('kind', 'linear'),
+                             p.get('colours', GRADIENT_COLOURS[0]), int(p.get('opacity', 100)), region)
+
+    def _grad_to(self, e):
+        g = self._grad
+        x, y = self._img_xy(e.x, e.y)
+        if not g['moved'] and math.hypot(x - g['p0'][0] - (g['L'].x if g['L'] else 0), y - g['p0'][1] - (g['L'].y if g['L'] else 0)) * self.zoom < 4:
+            return
+        g['moved'] = True
+        out = self._grad_make(e)
+        L = g['L']
+        if L is None:
+            self.preview = None if out is g['orig'] else out
+        else:
+            layers = list(self.hist.layers)
+            layers[self.active] = L.replace(rgba=out)
+            self.lprev = tuple(layers)
+        self._redraw()
+        c = self.canvas
+        c.delete('mdraft')
+        ox, oy = (L.x, L.y) if L is not None else (0, 0)
+        c.create_line((g['p0'][0] + ox) * self.zoom + self.ox, (g['p0'][1] + oy) * self.zoom + self.oy, e.x, e.y, fill='#00e5ff', dash=(4, 3), width=2, tags='mdraft')
+
+    def _grad_end(self, e):
+        g, self._grad = self._grad, None
+        self.canvas.delete('mdraft')
+        self.preview = self.lprev = None
+        if not g['moved']:
+            self._redraw()
+            return
+        out = self._grad_make(e, g)
+        L = g['L']
+        if out is g['orig']:
+            self._redraw()
+            self._status("Gradient: nothing changed (outside the working area?).")
+            return
+        if L is None:
+            self._commit("Gradient", out)
+        else:
+            layers = list(self.hist.layers)
+            layers[self.active] = L.replace(rgba=out)
+            self._commit_layers("Gradient (layer)", layers)
+        self._status("Gradient painted.", ok=True)
 
     def _clone_source(self):
         """The clone source (x, y) in image pixels from the two boxes, or None while it is not set."""
@@ -4801,6 +5143,12 @@ class ImageForge:
         elif self.tool is not None and self.tool.interactive == 'measure':
             self._press = None
             self._measure_press(e)
+        elif self.tool is not None and self.tool.interactive == 'fill':
+            self._press = None
+            self._fill_click(e)
+        elif self.tool is not None and self.tool.interactive == 'gradient':
+            self._press = None
+            self._grad_start(e)
         elif self.tool is not None and self.tool.place == 'segment' and 'x0' in self.pvars:
             self._press, self._placing = None, True
             self._seg_start(e)
@@ -4957,7 +5305,7 @@ class ImageForge:
         if self.tool is not None and self.tool.interactive == 'layer':
             self.canvas.config(cursor='fleur')
             return
-        if self.tool is not None and (self.tool.place or self.tool.interactive == 'measure'):
+        if self.tool is not None and (self.tool.place or self.tool.interactive in ('measure', 'fill', 'gradient')):
             self.canvas.config(cursor='crosshair')
             return
         grab = hit_handle(self.sel, self.zoom, self.ox, self.oy, e.x, e.y) if self._rect_sel() else None
@@ -4969,6 +5317,9 @@ class ImageForge:
     def _on_drag(self, e):
         if self._pan_left:
             self._on_pan(e)
+            return
+        if self._grad is not None:
+            self._grad_to(e)
             return
         if self._mdrag and self._mpts:
             self._draw_measure_draft(e)
@@ -5020,6 +5371,9 @@ class ImageForge:
     def _on_release(self, e):
         if self._pan_left:
             self._pan_left = False
+            return
+        if self._grad is not None:
+            self._grad_end(e)
             return
         if self._mdrag:
             self._measure_release(e)

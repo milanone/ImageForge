@@ -34,6 +34,14 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
   blend instead of cutting). The shape is the working area: every tool, brush, clone, Erase rectangle and layer respects it, the
   *Copy / Cut to layer* commands use it as the layer's transparency, and an outline of marching dashes shows it. Handles, nudging
   and *Move area* exist only for rectangles; *Crop to selection* uses the box around the shape.
+- **Drawing tools** (group Draw): **Pencil** (hard, jagged pixels, round or square tip), **Paintbrush** (soft round brush with size,
+  hardness and opacity; the opacity is that of the whole stroke, so it never gets darker where a stroke crosses itself), **Fill
+  bucket** (tolerance, only the joined area or everywhere, widen by a few pixels to cover the pale edge of a line) and **Gradient**
+  (linear, radial, reflected or angle; foreground to background, foreground fading to transparent, or the other way; shown while you
+  drag). They paint with the **foreground colour** (the two squares above the picture: click one to choose; Ctrl+click on the picture
+  picks the foreground, Ctrl+Shift+click the background; **X** swaps, **D** resets to black and white). Shift+click draws a straight
+  line from where the last stroke ended. They work on the Background or on the selected image layer (paint over a transparent layer
+  makes it opaque), and only inside the working area or shape selection. One stroke is one Undo step.
 - **Shapes and scale bars** (group Draw): *Shapes* draws a line, arrow, double arrow, rectangle or ellipse (colour, width, dashed or
   dotted, arrow head size, optional fill, opacity): drag on the image, press the button, and it is a **layer**, so you can restyle it,
   move it, or drag one of its two ends later (select its layer first). *Scale bar* draws a bar of a given length in the picture's

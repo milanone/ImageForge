@@ -1628,6 +1628,127 @@ class WorkflowTests(unittest.TestCase):
         self.assertLess(os.path.getsize(j1), os.path.getsize(j2))
 
 
+class DrawingTests(unittest.TestCase):
+    """Pencil and paintbrush strokes, fill bucket and gradient: pure functions, on RGB and RGBA, with a rectangle or a shape selection."""
+
+    def stroke(self, base, p0, p1, size, colour, hardness=100, opacity=100, aliased=False, square=False, region=None):
+        cover = np.zeros(base.shape[:2], np.float32)
+        box = il.stamp_cover(cover, p0, p1, size, hardness, square, aliased)
+        w = cover * (opacity / 100.0)
+        rw = il.region_weight_box(region, base.shape, (0, 0, base.shape[1], base.shape[0]))
+        if rw is not None:
+            w = w * rw
+        return il.paint_over(base, colour, w), cover, box
+
+    def test_pencil_is_hard_and_jagged(self):
+        base = np.full((20, 40, 3), 255, np.uint8)
+        out, cover, box = self.stroke(base, (5, 10), (30, 10), 1, (255, 0, 0), aliased=True)
+        self.assertTrue(set(np.unique(cover)) <= {0.0, 1.0})
+        self.assertTrue((out[10, 5:31] == (255, 0, 0)).all())
+        self.assertTrue((out[9] == 255).all() and (out[11] == 255).all())                      # exactly one pixel thick
+        diag, cov, _ = self.stroke(base, (2, 2), (17, 17), 1, (0, 0, 0), aliased=True)
+        self.assertEqual(int((cov > 0).sum()), 16)                                              # a connected one-pixel diagonal, no gaps
+        thick, _, _ = self.stroke(base, (10, 10), (10, 10), 5, (0, 0, 0), aliased=True)
+        self.assertEqual(int((thick[..., 0] == 0).sum()), 21)                                   # a round tip of diameter 5
+        sq, _, _ = self.stroke(base, (10, 10), (10, 10), 5, (0, 0, 0), aliased=True, square=True)
+        self.assertEqual(int((sq[..., 0] == 0).sum()), 25)
+
+    def test_brush_edge_fades_with_hardness_and_overlap_does_not_build_up(self):
+        base = np.full((40, 60, 3), 255, np.uint8)
+        soft, cover, _ = self.stroke(base, (10, 20), (50, 20), 16, (0, 0, 0), hardness=0)
+        self.assertTrue(cover[20, 30] >= 0.9 and 0 < cover[20 + 5, 30] < 1 and cover[20 + 12, 30] == 0)
+        hard, cov2, _ = self.stroke(base, (10, 20), (50, 20), 16, (0, 0, 0), hardness=100)
+        self.assertGreater(int((cov2 > 0.9).sum()), int((cover > 0.9).sum()))
+        back, cov3, _ = self.stroke(base, (10, 20), (50, 20), 16, (0, 0, 0), hardness=100, opacity=40)     # one stroke, 40 %
+        self.assertTrue((back[20, 15:46] == back[20, 15]).all())                                 # the same grey all along: no build-up
+        self.assertTrue(140 < int(back[20, 30, 0]) < 160)
+        loop = np.zeros((40, 60), np.float32)
+        il.stamp_cover(loop, (10, 20), (50, 20), 16, 100)
+        il.stamp_cover(loop, (50, 20), (10, 20), 16, 100)                                        # going back over it
+        self.assertLessEqual(float(loop.max()), 1.0)
+
+    def test_paint_over_rgba(self):
+        rgba = np.zeros((6, 6, 4), np.uint8)
+        out = il.paint_over(rgba, (200, 50, 10), np.full((6, 6), 1.0, np.float32))
+        self.assertTrue((out[..., :3] == (200, 50, 10)).all() and (out[..., 3] == 255).all())      # over see-through: opaque colour
+        half = il.paint_over(rgba, (200, 50, 10), np.full((6, 6), 0.5, np.float32))
+        self.assertTrue((half[..., :3] == (200, 50, 10)).all() and 126 <= int(half[0, 0, 3]) <= 129)
+        solid = np.zeros((6, 6, 4), np.uint8)
+        solid[..., :3], solid[..., 3] = 100, 255
+        mix = il.paint_over(solid, (200, 200, 200), np.full((6, 6), 0.5, np.float32))
+        self.assertTrue((mix[..., 3] == 255).all() and 148 <= int(mix[0, 0, 0]) <= 152)
+        none = il.paint_over(solid, (1, 2, 3), np.zeros((6, 6), np.float32))
+        self.assertTrue(np.array_equal(none, solid))
+
+    def test_working_area_limits_a_stroke(self):
+        base = np.full((20, 40, 3), 255, np.uint8)
+        out, _, _ = self.stroke(base, (2, 10), (38, 10), 4, (0, 0, 0), region=(0, 0, 20, 20))
+        self.assertTrue((out[10, 5] == 0).all() and (out[10, 30] == 255).all())
+        sel = il.combine_selection(None, il.polygon_mask((20, 40), [(0, 0), (19, 0), (19, 19), (0, 19)]), 'replace', (20, 40))
+        faded = il.feather_selection(sel, 8, (20, 40))
+        out2, _, _ = self.stroke(base, (2, 10), (38, 10), 4, (0, 0, 0), region=faded)
+        self.assertTrue(int(out2[10, 5, 0]) < 40 and int(out2[10, 30, 0]) > 240 and 60 < int(out2[10, 19, 0]) < 200)       # fades across the edge
+
+    def test_flood_fill(self):
+        img = np.full((40, 60, 3), 255, np.uint8)
+        img[:, 30:32] = 0                                                                         # a wall splitting the page
+        img[10:15, 5:10] = (250, 250, 250)                                                        # a nearly white patch
+        out = il.flood_fill(img, 5, 5, (255, 0, 0), tolerance=10, grow=0)
+        self.assertTrue((out[5, 5] == (255, 0, 0)).all() and (out[5, 40] == 255).all())            # the other side is not joined
+        self.assertTrue((out[12, 7] == (255, 0, 0)).all())                                         # within the tolerance
+        tight = il.flood_fill(img, 5, 5, (255, 0, 0), tolerance=2, grow=0)
+        self.assertTrue((tight[12, 7] == (250, 250, 250)).all())
+        both = il.flood_fill(img, 5, 5, (255, 0, 0), tolerance=10, contiguous=False, grow=0)
+        self.assertTrue((both[5, 40] == (255, 0, 0)).all() and (both[:, 30:32] == 0).all())
+        grown = il.flood_fill(img, 5, 5, (255, 0, 0), tolerance=10, grow=1)
+        self.assertTrue((grown[5, 29] == (255, 0, 0)).all() and (grown[5, 30] == (255, 0, 0)).all())      # the fringe of the wall is covered
+        half = il.flood_fill(img, 5, 5, (0, 0, 0), tolerance=10, opacity=50, grow=0)
+        self.assertTrue(125 <= int(half[5, 5, 0]) <= 130)
+        self.assertIs(il.flood_fill(img, 5, 5, (255, 255, 255), tolerance=2, grow=0), img)         # already that colour
+        self.assertIs(il.flood_fill(img, 500, 5, (1, 2, 3)), img)
+        self.assertIs(il.flood_fill(img, 5, 5, (1, 2, 3), region=(40, 0, 60, 40)), img)             # outside the working area
+        part = il.flood_fill(img, 5, 5, (255, 0, 0), tolerance=10, grow=0, region=(0, 0, 20, 40))
+        self.assertTrue((part[5, 5] == (255, 0, 0)).all() and (part[5, 25] == 255).all())
+
+    def test_flood_fill_on_a_layer_counts_transparency(self):
+        rgba = np.zeros((20, 20, 4), np.uint8)
+        rgba[5:15, 5:15] = (10, 200, 10, 255)
+        out = il.flood_fill(rgba, 1, 1, (0, 0, 255), tolerance=10, grow=0)                         # the see-through part
+        self.assertTrue((out[1, 1] == (0, 0, 255, 255)).all() and (out[10, 10] == (10, 200, 10, 255)).all())
+        inside = il.flood_fill(rgba, 10, 10, (255, 0, 0), tolerance=10, grow=0)
+        self.assertTrue((inside[10, 10] == (255, 0, 0, 255)).all() and inside[1, 1, 3] == 0)
+
+    def test_gradients(self):
+        img = np.full((20, 100, 3), 128, np.uint8)
+        g = il.gradient_fill(img, (0, 10), (99, 10), (0, 0, 0), (255, 255, 255), 'linear')
+        self.assertTrue(int(g[5, 0, 0]) <= 2 and int(g[5, 99, 0]) >= 253 and 120 <= int(g[5, 50, 0]) <= 135)
+        self.assertTrue((np.diff(g[5, :, 0].astype(int)) >= 0).all())
+        rev = il.gradient_fill(img, (0, 10), (99, 10), (0, 0, 0), (255, 255, 255), 'linear', 'background to foreground')
+        self.assertGreater(int(rev[5, 0, 0]), 250)
+        fade = il.gradient_fill(img, (0, 10), (99, 10), (255, 0, 0), (0, 0, 255), 'linear', 'foreground to transparent')
+        self.assertTrue(int(fade[5, 0, 0]) > 250 and np.array_equal(fade[5, 99], img[5, 99]))      # fully red at the start, the picture at the end
+        rad = il.gradient_fill(img, (50, 10), (60, 10), (0, 0, 0), (255, 255, 255), 'radial')
+        self.assertTrue(int(rad[10, 50, 0]) <= 2 and int(rad[10, 90, 0]) >= 253)
+        refl = il.gradient_fill(img, (50, 10), (90, 10), (0, 0, 0), (255, 255, 255), 'reflected')
+        self.assertTrue(abs(int(refl[5, 30, 0]) - int(refl[5, 70, 0])) <= 2)                        # symmetric about the start
+        ang = il.gradient_fill(img, (50, 10), (60, 10), (0, 0, 0), (255, 255, 255), 'angle')
+        self.assertTrue(int(ang[10, 70, 0]) <= 5)
+        self.assertIs(il.gradient_fill(img, (3, 3), (3, 3), (0, 0, 0), (255, 255, 255)), img)
+        half = il.gradient_fill(img, (0, 10), (99, 10), (0, 0, 0), (0, 0, 0), opacity=50)
+        self.assertTrue(62 <= int(half[5, 5, 0]) <= 66)
+        area = il.gradient_fill(img, (0, 10), (99, 10), (0, 0, 0), (255, 255, 255), region=(0, 0, 40, 20))
+        self.assertTrue(np.array_equal(area[:, 40:], img[:, 40:]) and not np.array_equal(area[:, :40], img[:, :40]))
+        layer = np.zeros((20, 100, 4), np.uint8)
+        gl = il.gradient_fill(layer, (0, 10), (99, 10), (0, 0, 0), (255, 255, 255))
+        self.assertTrue((gl[..., 3] == 255).all())
+
+    def test_tools_are_registered_as_interactive(self):
+        for name in ("Pencil", "Paintbrush", "Fill bucket", "Gradient"):
+            self.assertTrue(il.TOOLS[name].interactive, name)
+            self.assertEqual(il.TOOLS[name].group, "Draw")
+        self.assertEqual(il.TOOLS["Pencil"].interactive, 'paint')
+
+
 class PickedColourFillTests(unittest.TestCase):
     def test_erase_colours_can_paint_with_a_picked_colour(self):
         img = np.full((20, 40, 3), 235, np.uint8)

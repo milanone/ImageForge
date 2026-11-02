@@ -337,6 +337,24 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   the preview on a shrunken copy or in a thread, recording moves / brush strokes, editing a recipe, a recipe with a choice of file,
   copy of the picture to the clipboard.
 
+- **Drawing tools** (`stamp_cover`, `paint_over`, `region_weight_box`, `flood_fill`, `gradient_t`, `gradient_fill`; tools Pencil /
+  Paintbrush with `interactive='paint'`, Fill bucket `'fill'`, Gradient `'gradient'`): the colours are app state, not tool boxes:
+  `self.fg` / `self.bg` (saved in the settings), the swatches in the bar above the picture, `set_colour`, `swap_colours` (X on the canvas),
+  `reset_colours` (D); `_quick_pick` sets them on Ctrl+click (Shift: background) for these three kinds. The paint tools join the brush
+  family (`_is_brush`): the stroke works on a copy of the target (Background or the layer's RGBA) like the eraser, but paints through a
+  per-stroke COVERAGE map (`self._cover`, float 0..1): `stamp_cover` stamps discs (spaced 10 % of the size, 15 % and aliased for the
+  pencil) taking the maximum, and the display is `paint_over(original box, colour, coverage * opacity * region weight)`, so the opacity
+  belongs to the stroke and overlaps do not darken (what Photoshop calls flow 100). `paint_over` also handles RGBA with the 'over'
+  operator (paint on a see-through pixel makes it opaque). The pencil is told apart from the brush by having a `shape` box. Shift on
+  press starts the first segment at `self._paint_prev` (the end of the last stroke). `region_weight_box` is the one place that turns a
+  working area (nothing / rectangle / `MaskRegion`) into weights for a box, so a feathered selection fades strokes, fills and
+  gradients alike. `flood_fill` compares all channels (alpha too on a layer, so the transparent part is one area), widens the mask by
+  `grow` with an ellipse, and returns the same object when nothing changes. The gradient previews through `self.preview` / `lprev`
+  while dragging (`_grad`, `_grad_start/_to/_end`; Esc cancels; `_update_preview` is suppressed meanwhile). None of these steps is
+  recipe-able (positions belong to one picture). Tests: `DrawingTests`; real window: `examples/draw_session.py` (needs
+  `IMAGEFORGE_SETTINGS` only if you care about the saved colours: it does not close the program). Not done: blend modes, a smoothing
+  option for strokes, pressure, brush shapes / textures, a pattern fill, a path / curve tool.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a
@@ -370,7 +388,7 @@ Nothing here is promised; Francesco adds tools as he needs them. Ordered roughly
   an intensity profile along a line, counting / marking tool (cells, colonies), measurements saved in the project.
 - Text: alignment, outline, shadow, background box, bold/italic as flags, several fonts per text; polygon / freehand shapes,
   a text label on a shape, rounded rectangles, rotation handles.
-- Clone / heal brush, smudge, fill bucket with tolerance, gradient fill.
+- Heal brush, smudge, dodge / burn, pattern fill, brush smoothing and pressure, blend modes for strokes.
 
 **Files and use**
 - Copy the picture to the clipboard; save as layered TIFF/ORA/PSD-compatible if ever needed (the `.ifl` project is the native format).
