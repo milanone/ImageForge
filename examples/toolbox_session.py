@@ -35,6 +35,7 @@ a.v_find.set("pen"); root.update(); print("search 'pen' finds mouse tools too:",
 a.v_find.set("rotate"); root.update(); print("search 'rotate':", list(a.ops.get_children()))
 a.v_find.set(""); root.update(); print("cleared: back to the group list:", len(a.ops.get_children()) > 3, "| placeholder back:", a.l_ph.winfo_ismapped())
 root.event_generate('<Control-k>'); root.update(); print("Ctrl+K focuses the search:", root.focus_get() is a.e_find or str(root.focus_get()).endswith("entry"))
+rect = a.b_modes["Rectangle"]; rect.invoke(); root.update(); print("Rectangle button: mode", a.mode, "| pressed:", str(rect.cget('relief')), "| first in the toolbox:", a.toolbox.winfo_children()[0].cget('text')); a.cancel_mode()
 wand = a.b_modes["Magic wand"]; wand.invoke(); root.update(); print("wand button: mode", a.mode, "| pressed look:", str(wand.cget('relief')))
 a.cancel_mode(); root.update(); print("after Esc the wand button is up:", str(wand.cget('relief')))
 hand = [b for b in bs if b.winfo_class() == 'Checkbutton'][0]; hand.invoke(); root.update(); print("Hand button toggles the Hand:", a.v_hand.get()); hand.invoke()

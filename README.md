@@ -64,8 +64,8 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
   size and place, the last folders and the recent files are remembered in `%APPDATA%\ImageForge\settings.json` (written when you
   close the program).
 - **Where things are**: the mouse tools are in the **toolbox** at the left of the picture, as icon buttons in groups of two columns (hover for the
-  name): **Draw** (Pencil, Paintbrush, Eraser brush, Fill bucket, Gradient), **Retouch** (Clone stamp, Clean brush, Erase rectangle, Move area),
-  **Annotate** (Add text, Shapes, Scale bar, Measure), **Layers** (Move layer), and **Select** (Magic wand, Lasso, Hand). The one-shot
+  name): **Select** (Rectangle for the working area, Magic wand, Lasso, Hand) at the top, then **Draw** (Pencil, Paintbrush, Eraser brush, Fill bucket, Gradient), **Retouch** (Clone stamp, Clean brush, Erase rectangle, Move area),
+  **Annotate** (Add text, Shapes, Scale bar, Measure) and **Layers** (Move layer). The one-shot
   operations with a preview and an Apply button are in the *Tools* tab of the panel: four buttons choose the group (**Size** = size and
   orientation, **Adjust**, **Filters**, **Clean-up**) and the list under them shows its tools; the box above them **finds a tool** by typing
   part of its name or group (Ctrl+K; Enter picks the first match; it finds the mouse tools too). The *Tools* and *Image* menus hold the same

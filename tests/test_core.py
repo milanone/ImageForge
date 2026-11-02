@@ -1799,8 +1799,9 @@ class DrawingTests(unittest.TestCase):
     def test_toolbox_icons_and_search(self):
         names = [n for _, ns in il.TOOLBOX for n in ns]
         self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(il.TOOLBOX[0][0], "Select")                                           # the selection tools come first
         for n in names:
-            if n not in ("Magic wand", "Lasso", "Hand"):
+            if n not in ("Rectangle", "Magic wand", "Lasso", "Hand"):
                 self.assertIn(n, il.TOOLS)                                                   # every toolbox button is a real tool
                 self.assertTrue(il.TOOLS[n].interactive or il.TOOLS[n].layer, n)               # and a mouse tool, not a one-shot operation
         mouse = {t.name for t in il.TOOLS.values() if t.interactive or t.layer}

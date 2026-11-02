@@ -133,12 +133,13 @@ def tool(name, group, params=(), geometry=False, preview=True, doc="", interacti
 
 # the toolbox: the mouse tools as icon buttons (a group per line of two), then the selection commands and the Hand
 TOOLBOX = [
+    ("Select", ["Rectangle", "Magic wand", "Lasso", "Hand"]),
     ("Draw", ["Pencil", "Paintbrush", "Eraser brush", "Fill bucket", "Gradient"]),
     ("Retouch", ["Clone stamp", "Clean brush", "Erase rectangle", "Move area"]),
     ("Annotate", ["Add text", "Shapes", "Scale bar", "Measure"]),
     ("Layers", ["Move layer"]),
-    ("Select", ["Magic wand", "Lasso", "Hand"]),
 ]
+TOOLBOX_MODES = {"Rectangle": 'area', "Magic wand": 'wand', "Lasso": 'lasso'}      # buttons that start a selection mode, not a tool
 GROUP_SHORT = {"Size and orientation": "Size", "Adjustments": "Adjust", "Clean-up": "Clean-up", "Filters": "Filters"}
 
 
@@ -228,6 +229,11 @@ def tool_icon(name, size=26):
     elif name == "Move layer":
         box((3, 9, 15, 21), soft, ink)
         box((10, 3, 22, 15), None, acc)
+    elif name == "Rectangle":
+        for a, b in (((4, 5), (22, 5)), ((22, 5), (22, 21)), ((22, 21), (4, 21)), ((4, 21), (4, 5))):
+            dash(a, b)
+        for cx, cy in ((4, 5), (22, 5), (22, 21), (4, 21)):
+            box((cx - 2, cy - 2, cx + 2, cy + 2), acc, acc)
     elif name == "Magic wand":
         line((4, 22, 15, 11), ink, int(3 * u))
         for a in ((19, 2, 19, 12), (14, 7, 24, 7), (15.5, 3.5, 22.5, 10.5), (22.5, 3.5, 15.5, 10.5)):
@@ -3527,7 +3533,7 @@ class ImageForge:
             grid.pack(padx=3)
             col = 0
             for name in names:
-                if name in TOOLS or name in ("Magic wand", "Lasso", "Hand"):
+                if name in TOOLS or name in TOOLBOX_MODES or name == "Hand":
                     img = ImageTk.PhotoImage(tool_icon(name))
                     self._icons[name] = img
                     common = dict(image=img, width=30, height=30, bg='#f4f4f4', activebackground='#dfeaff', bd=1)
@@ -3539,9 +3545,10 @@ class ImageForge:
                         b = tk.Checkbutton(grid, variable=self.v_hand, indicatoron=False, selectcolor='#bcd6ff', command=self._hand_changed, **common)
                         hint = "Hand: the left button moves the picture  (H, or hold Space)"
                     else:
-                        b = tk.Button(grid, command=self.start_wand if name == "Magic wand" else self.start_lasso, **common)
+                        b = tk.Button(grid, command={"Rectangle": self.start_area, "Magic wand": self.start_wand, "Lasso": self.start_lasso}[name], **common)
                         self.b_modes[name] = b
-                        hint = {"Magic wand": "Magic wand: click a colour to select it  (Shift adds, Ctrl removes)",
+                        hint = {"Rectangle": "Rectangle: drag the working area (every tool then acts only inside it)",
+                                "Magic wand": "Magic wand: click a colour to select it  (Shift adds, Ctrl removes)",
                                 "Lasso": "Lasso: draw around what to select  (double-click closes)"}[name]
                     b.grid(row=col // 2, column=col % 2, padx=1, pady=1)
                     self._tip(b, hint)
@@ -3555,8 +3562,8 @@ class ImageForge:
         name = self.tool.name if self.tool is not None else ""
         self.v_toolsel.set(name if any(name in names for _, names in TOOLBOX) else "")
         for n, b in getattr(self, 'b_modes', {}).items():
-            b.config(relief=tk.SUNKEN if self.mode == ('wand' if n == "Magic wand" else 'lasso') else tk.RAISED,
-                     bg='#bcd6ff' if self.mode == ('wand' if n == "Magic wand" else 'lasso') else '#f4f4f4')
+            on = self.mode == TOOLBOX_MODES[n]
+            b.config(relief=tk.SUNKEN if on else tk.RAISED, bg='#bcd6ff' if on else '#f4f4f4')
 
     def _build_chips(self, order):
         """One chip per group of one-shot operations; the list under them shows the chosen group (or the search result)."""
@@ -4996,6 +5003,7 @@ class ImageForge:
             return
         self.cancel_mode()
         self.mode = 'area'
+        self._sync_toolbox()
         self.canvas.config(cursor='tcross')
         self._status("Drag a rectangle on the picture: it becomes the working area, and every tool acts only inside it. "
                      "Esc cancels.")
