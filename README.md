@@ -66,6 +66,7 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
 - **Selection**: drag a rectangle; tools then act only inside it (a click outside it clears it). Drag inside it to move it,
   drag a handle (corners, edge midpoints) to resize it, arrow keys nudge it by 1 px (Shift: 10) once the image has been
   clicked. *Crop to selection*.
+- **Automatic fit**: the picture is fitted to the window when it is opened and every time the window (or the panel divider) is resized, until you zoom (wheel, Ctrl +/-, 100%) or pan by hand; the **Fit** button (shown pressed while the automatic fit is on) turns it on again.
 - **View**: the bar above the picture has **Center** (middle of the window, same zoom), **Fit** (fill the window and
   centre) and **100%**, plus a **Hand** button: while it is pressed, or while you hold **Space**, dragging with the left
   button moves the picture instead of selecting (right/middle drag always moves it). Wheel = zoom at the cursor.

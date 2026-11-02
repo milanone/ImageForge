@@ -355,6 +355,11 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   `IMAGEFORGE_SETTINGS` only if you care about the saved colours: it does not close the program). Not done: blend modes, a smoothing
   option for strokes, pressure, brush shapes / textures, a pattern fill, a path / curve tool.
 
+- **Automatic fit** (`self.autofit`, `_set_autofit`, `_on_canvas_resize`): `fit_view` turns it on (so opening a picture, an Undo that changes the size
+  and the Fit button all do), `_zoom_at` (wheel, Ctrl +/-, 100%) and `_on_pan` turn it off, Center leaves it alone; the canvas `<Configure>` event
+  refits while it is on and just redraws otherwise, so it also follows the panel divider and the first real window size (the first fit at
+  open time happens before the window has its size). The Fit button's relief shows the state. Check: `examples/autofit_session.py`.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a

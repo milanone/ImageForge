@@ -2818,6 +2818,7 @@ class ImageForge:
         self.tool = None
         self.pvars = {}
         self.zoom, self.ox, self.oy = 1.0, 0.0, 0.0
+        self.autofit = True              # the picture follows the window (opening, resizing) until the user zooms or pans by hand
         self.dirty = False
         self._photo = None
         self._after = None
@@ -2981,7 +2982,10 @@ class ImageForge:
         bar = tk.Frame(left, bg='#e8e8e8')
         bar.pack(fill=tk.X)
         for text, cmd in (("Center", self.center_view), ("Fit", self.fit_view), ("100%", self.actual_size)):
-            tk.Button(bar, text=text, command=cmd, width=7).pack(side=tk.LEFT, padx=(4, 0), pady=2)
+            b = tk.Button(bar, text=text, command=cmd, width=7)
+            b.pack(side=tk.LEFT, padx=(4, 0), pady=2)
+            if text == "Fit":
+                self.b_fit = b
         self.v_hand = tk.BooleanVar(value=False)
         tk.Checkbutton(bar, text="Hand: drag moves the picture", variable=self.v_hand, indicatoron=False, padx=8,
                        command=self._hand_changed).pack(side=tk.LEFT, padx=(10, 0), pady=2)
@@ -3110,7 +3114,7 @@ class ImageForge:
         self.params_frame = tk.Frame(tab, bg=bg)
         self.params_frame.pack(fill=tk.X, padx=8, pady=2)
         c = self.canvas
-        c.bind('<Configure>', lambda e: self._redraw())
+        c.bind('<Configure>', lambda e: self._on_canvas_resize())
         c.bind('<ButtonPress-1>', self._on_press)
         c.bind('<B1-Motion>', self._on_drag)
         c.bind('<ButtonRelease-1>', self._on_release)
@@ -4423,9 +4427,23 @@ class ImageForge:
     def _hand_active(self):
         return self.v_hand.get() or self._space
 
+    def _set_autofit(self, on):
+        self.autofit = on
+        if getattr(self, 'b_fit', None) is not None:
+            self.b_fit.config(relief=tk.SUNKEN if on else tk.RAISED)
+
+    def _on_canvas_resize(self):
+        """The window or the panel changed size: while the view is on 'Fit' the picture is fitted again, else it is just redrawn."""
+        if self.autofit and self.hist is not None:
+            self.fit_view()
+        else:
+            self._redraw()
+
     def fit_view(self):
+        """Fill the window with the picture, and keep doing so when the window is resized, until the view is moved or zoomed by hand."""
         if self.hist is None:
             return
+        self._set_autofit(True)
         cw, ch = max(self.canvas.winfo_width(), 50), max(self.canvas.winfo_height(), 50)
         h, w = self._shown().shape[:2]
         self.zoom = min(max(cw - 20, 10) / w, max(ch - 20, 10) / h)
@@ -4438,6 +4456,7 @@ class ImageForge:
     def _zoom_at(self, factor, sx, sy):
         if self.hist is None:
             return
+        self._set_autofit(False)
         z = min(max(self.zoom * factor, self.ZOOM_MIN), self.ZOOM_MAX)
         f = z / self.zoom
         self.ox, self.oy = sx - (sx - self.ox) * f, sy - (sy - self.oy) * f
@@ -5426,6 +5445,7 @@ class ImageForge:
 
     def _on_pan(self, e):
         if self._pan and self.hist is not None:
+            self._set_autofit(False)
             self.ox, self.oy = self._pan[2] + e.x - self._pan[0], self._pan[3] + e.y - self._pan[1]
             self._redraw()
 
