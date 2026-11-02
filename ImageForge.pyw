@@ -138,6 +138,8 @@ SHORTCUTS = [
     ("View", "Ctrl+0 / Ctrl+1", "Fit to window / actual size (100 %)", "like Photoshop"),
     ("View", "Ctrl++ / Ctrl+-", "Zoom in / out", "standard"),
     ("View", "Mouse wheel", "Zoom around the pointer", "like Krita and Figma (Photoshop and GIMP scroll)"),
+    ("View", "Shift + wheel", "Scroll the picture sideways", "standard"),
+    ("View", "H", "Hand on / off (the left button moves the picture)", "standard"),
     ("View", "Space + drag", "Move the picture, with any tool (not while typing in a box)", "standard"),
     ("View", "Right or middle button + drag", "Move the picture", "standard"),
     ("View", "Hand button above the picture", "The left button moves the picture", "standard (tool)"),
@@ -150,6 +152,8 @@ SHORTCUTS = [
     ("Selections with the mouse", "Ctrl / Shift + drag in a selection", "With 'Drag moves the content': Ctrl does the opposite of the box, Shift copies", "ours"),
     ("Drawing and retouch", "Ctrl + click", "Pick the foreground colour; Clone stamp: the source; Erase / keep colours: a colour to find", "like GIMP (Photoshop uses Alt)"),
     ("Drawing and retouch", "Ctrl + Shift + click", "Pick the background colour (or the colour to paint with)", "ours"),
+    ("Drawing and retouch", "[ / ]", "A smaller / larger brush (Size box of the tool, about 10 % a step)", "standard"),
+    ("Drawing and retouch", "Delete or Backspace / Shift + Delete", "Clear the selection (background colour, or transparent on a layer) / fill it with the foreground colour", "like Photoshop"),
     ("Drawing and retouch", "X / D", "Swap the foreground and background colours / back to black and white", "standard"),
     ("Drawing and retouch", "Shift + click", "Pencil and Paintbrush: a straight line from the end of the last stroke", "standard"),
     ("Shapes and measures", "Drag, then drag an end", "Shapes: draw, then move one end of the selected shape", "standard"),
@@ -1435,6 +1439,30 @@ def stamp_cover(cover, p0, p1, size, hardness=100, square=False, aliased=False):
         np.maximum(sub, wgt, out=sub)
         touched = (x0, y0, x1, y1) if touched is None else (min(touched[0], x0), min(touched[1], y0), max(touched[2], x1), max(touched[3], y1))
     return touched
+
+
+def step_size(size, direction, lo=1, hi=1000):
+    """The next brush size for a `[` (direction -1) or `]` (+1) key: about 10 % of the size, at least 1 px, inside [lo, hi]."""
+    step = max(1, int(round(size * 0.1)))
+    return int(min(hi, max(lo, size + direction * step)))
+
+
+def clear_region(target, color, region):
+    """`target` ((h, w, 3) RGB or (h, w, 4) RGBA) with the working area `region` (rectangle or MaskRegion) cleared: filled with `color`
+    ((r, g, b)), or made transparent when `color` is None and the target has alpha (on RGB, None means white). Weights follow a
+    feathered mask. Returns `target` itself when nothing changes (no area, empty overlap, already that colour)."""
+    if region is None:
+        return target
+    h, w = target.shape[:2]
+    weight = region_weight_box(region, target.shape, (0, 0, w, h))
+    if weight is None or not weight.any():
+        return target
+    if color is None and target.shape[2] == 4:
+        out = target.copy()
+        out[..., 3] = _to_u8(target[..., 3].astype(np.float32) * (1.0 - np.clip(weight, 0.0, 1.0)))
+    else:
+        out = paint_over(target, color if color is not None else (255, 255, 255), weight)
+    return target if np.array_equal(out, target) else out
 
 
 def paint_over(orig, color, weight):
@@ -3178,6 +3206,12 @@ class ImageForge:
     def _bind_keys(self):
         r = self.root
         r.bind('<KeyPress-space>', self._space_down)
+        r.bind('<KeyPress-bracketleft>', lambda e: self._bracket(-1, e))
+        r.bind('<KeyPress-bracketright>', lambda e: self._bracket(1, e))
+        r.bind('<KeyPress-h>', self._hand_key)
+        for key in ('Delete', 'BackSpace'):
+            r.bind('<KeyPress-%s>' % key, self._delete_key)
+            r.bind('<Shift-KeyPress-%s>' % key, lambda e: self._delete_key(e, True))
         r.bind('<KeyRelease-space>', self._space_up)
         for seq, fn in (("<Control-o>", self.open_dialog), ("<Control-s>", self.save),
                         ("<Control-S>", self.save_as), ("<Control-z>", self.undo), ("<Control-y>", self.redo),
@@ -3199,6 +3233,74 @@ class ImageForge:
             self._space = True
             self.canvas.config(cursor='hand2')
         return "break"
+
+    @staticmethod
+    def _typing(event):
+        """True when a key goes to a box the user is typing in (the single-letter shortcuts must leave it alone)."""
+        return isinstance(event.widget, (tk.Entry, ttk.Entry, ttk.Spinbox, ttk.Combobox, tk.Text, tk.Listbox))
+
+    def _bracket(self, direction, event):
+        """`[` and `]`: a smaller / larger brush for the tool that has a Size box (pencil, brushes, clone, eraser ...)."""
+        if self._typing(event) or self.tool is None or 'size' not in self.pvars:
+            return None
+        prm = next(q for q in self.tool.params if q.key == 'size')
+        try:
+            cur = int(round(float(self.pvars['size'].get())))
+        except (tk.TclError, ValueError):
+            return None
+        new = step_size(cur, direction, int(prm.lo or 1), int(prm.hi or 1000))
+        if new != cur:
+            self.pvars['size'].set(new)
+            self._status("%s size %d px." % (self.tool.name, new), ok=True)
+        return "break"
+
+    def _hand_key(self, event):
+        """H: the Hand (the left button moves the picture) on / off, as in most editors."""
+        if self._typing(event):
+            return None
+        self.v_hand.set(not self.v_hand.get())
+        self._hand_changed()
+        return "break"
+
+    def _delete_key(self, event, foreground=False):
+        """Delete / Backspace: clear the selection (the background colour on the Background, transparent on an image layer);
+        with Shift: fill it with the foreground colour."""
+        if self._typing(event) or isinstance(event.widget, ttk.Treeview):
+            return None
+        self.clear_selection(foreground)
+        return "break"
+
+    def clear_selection(self, foreground=False):
+        if not self._need_image():
+            return
+        if self.sel is None:
+            self._status("Select an area first (Delete clears it with the background colour, Shift+Delete fills it with the foreground).")
+            return
+        kind, L = self._tool_target()
+        if kind == 'text':
+            self._status(self._TEXT_LAYER_MSG)
+            return
+        if L is None:
+            out = clear_region(self.hist.current, self.fg if foreground else self.bg, self.sel)
+            same = out is self.hist.current
+        else:
+            region = layer_region(self.sel, L)
+            if region[2] <= region[0] or region[3] <= region[1]:
+                self._status("The selection does not touch layer '%s'." % L.name)
+                return
+            out = clear_region(L.rgba, self.fg if foreground else None, region)
+            same = out is L.rgba
+        label = "Fill with the foreground colour" if foreground else "Clear the selection"
+        if same:
+            self._status("Nothing changed (already that colour, or outside the layer).")
+            return
+        if L is None:
+            self._commit(label, out)
+        else:
+            layers = list(self.hist.layers)
+            layers[self.active] = L.replace(rgba=out)
+            self._commit_layers(label + " (layer)", layers)
+        self._status("%s." % label, ok=True)
 
     def _space_up(self, event):
         if self._space:
@@ -5489,6 +5591,11 @@ class ImageForge:
             self._redraw()
 
     def _on_wheel(self, e):
+        if e.state & 0x1:                                  # Shift + wheel: scroll sideways, as in most editors
+            self._set_autofit(False)
+            self.ox += max(-4.0, min(4.0, e.delta / 120.0)) * 60
+            self._redraw()
+            return
         self._zoom_at(1.25 ** max(-4.0, min(4.0, e.delta / 120.0)), e.x, e.y)
 
     def _on_motion(self, e):

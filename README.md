@@ -66,6 +66,7 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
 - **Selection**: drag a rectangle; tools then act only inside it (a click outside it clears it). Drag inside it to move it,
   drag a handle (corners, edge midpoints) to resize it, arrow keys nudge it by 1 px (Shift: 10) once the image has been
   clicked. *Crop to selection*.
+- **Keys**: `[` and `]` make the brush smaller or larger, `H` turns the Hand on and off, **Delete** / Backspace clears the selection (background colour, or transparent on a layer) and Shift+Delete fills it with the foreground colour, Shift+wheel scrolls sideways. None of them act while you type in a box.
 - **Help > Keyboard shortcuts and mouse** (F1): every key and click combination, and whether it is the usual one in other editors (Photoshop, GIMP, Krita) or ours. Ctrl+Shift+Z also redoes.
 - **Automatic fit**: the picture is fitted to the window when it is opened and every time the window (or the panel divider) is resized, until you zoom (wheel, Ctrl +/-, 100%) or pan by hand; the **Fit** button (shown pressed while the automatic fit is on) turns it on again.
 - **View**: the bar above the picture has **Center** (middle of the window, same zoom), **Fit** (fill the window and

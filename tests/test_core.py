@@ -1752,6 +1752,36 @@ class DrawingTests(unittest.TestCase):
             self.assertIn(needed, keys)
         self.assertEqual(len({(r[0], r[1]) for r in il.SHORTCUTS}), len(il.SHORTCUTS))      # no row twice
 
+    def test_step_size(self):
+        self.assertEqual(il.step_size(10, 1), 11)
+        self.assertEqual(il.step_size(10, -1), 9)
+        self.assertEqual(il.step_size(100, 1), 110)
+        self.assertEqual(il.step_size(3, -1), 2)
+        self.assertEqual(il.step_size(1, -1), 1)                                           # never below the minimum
+        self.assertEqual(il.step_size(400, 1, 1, 400), 400)
+        self.assertEqual(il.step_size(395, 1, 1, 400), 400)
+        n = 5
+        for _ in range(60):
+            n = il.step_size(n, 1, 1, 500)
+        self.assertEqual(n, 500)                                                           # keeps growing until the top
+
+    def test_clear_region(self):
+        rgb = np.full((20, 30, 3), 100, np.uint8)
+        out = il.clear_region(rgb, (255, 255, 255), (5, 5, 15, 15))
+        self.assertTrue((out[5:15, 5:15] == 255).all() and (out[:5] == 100).all() and (out[:, 20:] == 100).all())
+        self.assertIs(il.clear_region(rgb, (255, 255, 255), None), rgb)
+        self.assertIs(il.clear_region(rgb, (100, 100, 100), (0, 0, 10, 10)), rgb)            # already that colour
+        self.assertIs(il.clear_region(rgb, (1, 2, 3), (40, 40, 50, 50)), rgb)               # outside
+        rgba = np.zeros((20, 30, 4), np.uint8)
+        rgba[..., :3], rgba[..., 3] = 100, 255
+        gone = il.clear_region(rgba, None, (5, 5, 15, 15))
+        self.assertTrue((gone[5:15, 5:15, 3] == 0).all() and (gone[:5, :, 3] == 255).all() and (gone[..., :3] == 100).all())
+        filled = il.clear_region(rgba, (9, 8, 7), (5, 5, 15, 15))
+        self.assertTrue((filled[5:15, 5:15, :3] == (9, 8, 7)).all() and (filled[5:15, 5:15, 3] == 255).all())
+        shape = il.feather_selection(il.combine_selection(None, il.polygon_mask((20, 30), [(5, 5), (24, 5), (24, 14), (5, 14)]), 'replace', (20, 30)), 4, (20, 30))
+        soft = il.clear_region(rgb, (255, 255, 255), shape)
+        self.assertTrue(int(soft[10, 14, 0]) > 240 and 100 < int(soft[10, 4, 0]) < 220 and int(soft[18, 28, 0]) < 110)
+
     def test_tools_are_registered_as_interactive(self):
         for name in ("Pencil", "Paintbrush", "Fill bucket", "Gradient"):
             self.assertTrue(il.TOOLS[name].interactive, name)

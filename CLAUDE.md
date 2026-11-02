@@ -364,8 +364,11 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   which editor's convention it follows; when a key or click is added, add its row (a test checks the table is well formed and has no
   duplicates, not that it is complete). The choices: Shift adds and Ctrl subtracts in selections, Ctrl+click picks (colour, clone source) = GIMP's
   scheme, because Photoshop's Alt is grabbed by the Windows menu bar in Tk; X / D, Space-pan, Shift-click straight lines, Ctrl+0 / Ctrl+1
-  = common to all; wheel = zoom (Krita / Figma), not scroll. Known gaps against the usual editors: no `[` / `]` to change the brush size, no
-  single-key tool shortcuts (B, E, H ...), no Delete to clear the selection, no Ctrl+N / Ctrl+W, Shift+wheel does not scroll sideways.
+  = common to all; wheel = zoom (Krita / Figma), not scroll. Single keys go through root bindings guarded by `_typing(event)` (a letter typed in a box must not act): `[` / `]` (`step_size`: about 10 % of
+  the Size box, clamped to its range), `H` (Hand), Delete / Backspace and Shift+Delete (`clear_selection` / `clear_region`: background colour or
+  transparency on a layer / foreground colour; weights follow the working area, feathered masks included), Shift+wheel scrolls sideways
+  (`_on_wheel`). Beware when testing: `widget.event_generate('<KeyPress-x>', state=0)` is NOT delivered on Windows, leave `state` out.
+  Known gaps against the usual editors: no single-key tool shortcuts (B, E, ...), no Ctrl+N / Ctrl+W. Check: `examples/keys_session.py`.
 
 ## Adding a tool
 
