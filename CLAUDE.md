@@ -295,6 +295,22 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   the project, a profile line (intensity along a line), counting tools, a text label on shapes, polygon / freehand shapes,
   rotating handles, a ruler along the picture's edges.
 
+- **Clean-up and correction tools** (all registered functions with pure helpers): `reduce_noise` (cv2 median / bilateral /
+  fastNlMeansDenoisingColored), `morphology` (`MORPH_OPS`; works on the values, so on a dark-on-white scan *erode* thickens the ink),
+  `find_edges`, `estimate_skew(img, max_angle, method)` (default 'projection': the rotation, counter-clockwise like the Rotate tool,
+  that maximises the sum of squared row-to-row differences of the Otsu ink mask on a copy shrunk to 900 px, coarse 1/10 of the range
+  then refined by thirds down to 0.02 deg; 'hough': length-weighted median angle of HoughLinesP lines, verticals counted as
+  horizontals), `auto_straighten` (calls `rotate_free`; leaves a sentence in `TOOL_NOTES[name]` that `apply()` appends to the
+  status: the one mechanism for a tool to tell the user a result), `order_corners` / `perspective_warp` (the 'quad' pick: four
+  clicks in any order are sorted TL, TR, BR, BL and written into the eight boxes; `_draw_shape_handles` outlines them; all-zero boxes
+  = no change; automatic size = the longer opposite sides), `canvas_size` (copyMakeBorder; a cut that would leave nothing returns
+  the image unchanged because the generic extremes test must not raise), `aspect_crop_box`, `undistort_radial` (cv2.remap, r
+  normalised by the half-diagonal, zoom to hide the border). `Tool.layer_shift(params, old shape) -> (dx, dy)` marks geometry tools
+  whose result keeps the layers (Canvas size, Crop to aspect ratio): `apply()` commits `shift_layers(...)` instead of asking to flatten.
+  Auto straighten, Perspective and Lens distortion DO flatten (they resample the picture). Tests: `CleanCorrectTests`; real window:
+  `examples/clean_session.py`. Not done: manual deskew by dragging, perspective corner dragging on the picture, lens profiles,
+  deconvolution, inpainting-based dust removal.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a
@@ -325,9 +341,6 @@ Nothing here is promised; Francesco adds tools as he needs them. Ordered roughly
 **Tools**
 - From SpectrumDigitizer: manual link of a broken line (`draw_link`), magnifier next to the cursor, strip ticks inside a frame
   (`strip_inner_ticks`), frame finder (`find_frame`), erase along a polyline (`erase_mask_along`).
-- Noise reduction (median,
-  bilateral, non-local means), morphological operations (open/close, dilate/erode), edge detection.
-- Perspective correction (four clicked corners), automatic deskew (Hough / projection profile), lens distortion.
 - Crop with a fixed aspect ratio or to a size in cm at a dpi; canvas size (add borders); rulers, grid, guides, snapping;
   an intensity profile along a line, counting / marking tool (cells, colonies), measurements saved in the project.
 - Text: alignment, outline, shadow, background box, bold/italic as flags, several fonts per text; polygon / freehand shapes,

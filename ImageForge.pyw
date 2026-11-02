@@ -48,6 +48,7 @@ PROJECT_TYPE = ("ImageForge project (layers kept)", "*.ifl")
 # Tool registry
 # ---------------------------------------------------------------------------------------------------------
 TOOLS = {}                          # name -> Tool, in registration order (which is the order of the tool list)
+TOOL_NOTES = {}                     # name -> a sentence a tool leaves about what it just did (shown after Apply)
 
 
 class Param:
@@ -99,21 +100,22 @@ class Tool:
     with `layer` ('text') makes (or, if one is selected, edits) a Layer of that kind instead of changing the pixels."""
 
     def __init__(self, name, group, func, params, geometry, preview, doc, interactive=None, place=False, layer=None,
-                 layer_geometry=None):
+                 layer_geometry=None, layer_shift=None):
         self.name, self.group, self.func, self.params = name, group, func, tuple(params)
         self.geometry, self.preview, self.doc, self.interactive, self.place = geometry, preview, doc, interactive, place
         self.layer = layer
         self.layer_geometry = layer_geometry          # None, or how it may transform one layer: 'exact' / 'resample'
+        self.layer_shift = layer_shift                # None, or f(params, old shape) -> (dx, dy): the layers move with the canvas
 
 
 def tool(name, group, params=(), geometry=False, preview=True, doc="", interactive=None, place=False,
-         layer=None, layer_geometry=None):
+         layer=None, layer_geometry=None, layer_shift=None):
     """Register `func(img, **params) -> img` as a tool. `img` is an (H, W, 3) uint8 array that must not be
     modified in place (it belongs to the Undo history); return a new array, or `img` itself for 'no change'.
     The keys of `params` are the keyword arguments."""
     def deco(func):
         TOOLS[name] = Tool(name, group, func, params, geometry, preview, doc or (func.__doc__ or "").strip(),
-                           interactive, place, layer, layer_geometry)
+                           interactive, place, layer, layer_geometry, layer_shift)
         return func
     return deco
 
@@ -488,6 +490,261 @@ def sharpen(img, amount, radius, threshold):
 def blur(img, radius):
     """Gaussian blur."""
     return cv2.GaussianBlur(img, (0, 0), radius)
+
+
+@tool("Reduce noise", "Filters", [
+    Param('method', "Method", 'choice', 'non-local means', choices=('median', 'bilateral', 'non-local means')),
+    Param('strength', "Strength", 'int', 8, 1, 50, slider=True),
+    Param('radius', "Radius (px, median and bilateral)", 'int', 2, 1, 15, slider=True)],
+    doc="median: removes salt-and-pepper specks and keeps edges (radius). bilateral: smooths flat areas but not edges (radius sets "
+        "the reach, strength how different two colours may be and still be mixed). non-local means: the best for grainy photos "
+        "and microscope pictures, slowest (strength = how much grain to remove; too much gives a waxy look).")
+def reduce_noise(img, method, strength, radius):
+    if method == 'median':
+        return cv2.medianBlur(img, 2 * int(radius) + 1)
+    if method == 'bilateral':
+        return cv2.bilateralFilter(img, 2 * int(radius) + 1, float(strength) * 4.0, float(radius) * 2.0 + 1.0)
+    return cv2.fastNlMeansDenoisingColored(img, None, float(strength), float(strength), 7, 21)
+
+
+MORPH_OPS = {'dilate': cv2.MORPH_DILATE, 'erode': cv2.MORPH_ERODE, 'open': cv2.MORPH_OPEN, 'close': cv2.MORPH_CLOSE,
+             'outline (gradient)': cv2.MORPH_GRADIENT, 'light details (top-hat)': cv2.MORPH_TOPHAT,
+             'dark details (black-hat)': cv2.MORPH_BLACKHAT}
+
+
+@tool("Morphology", "Filters", [
+    Param('op', "Operation", 'choice', 'open', choices=tuple(MORPH_OPS)),
+    Param('radius', "Size (px)", 'int', 1, 1, 50, slider=True),
+    Param('shape', "Shape", 'choice', 'ellipse', choices=('ellipse', 'square', 'cross'))],
+    doc="Works on the values of the pixels, colour by colour: dilate grows the light parts (and thins dark lines), erode grows the dark "
+        "ones (and thickens dark lines on white); open removes light specks smaller than the size, close fills dark gaps; "
+        "outline gives the edges of shapes; top-hat / black-hat keep only the light / dark details smaller than the size "
+        "(handy to even out uneven backgrounds before thresholding).")
+def morphology(img, op, radius, shape):
+    kind = {'ellipse': cv2.MORPH_ELLIPSE, 'square': cv2.MORPH_RECT, 'cross': cv2.MORPH_CROSS}[shape]
+    return cv2.morphologyEx(img, MORPH_OPS[op], cv2.getStructuringElement(kind, (2 * int(radius) + 1,) * 2))
+
+
+@tool("Find edges", "Filters", [
+    Param('method', "Method", 'choice', 'Canny', choices=('Canny', 'Sobel', 'Laplacian')),
+    Param('blur', "Smooth first (px)", 'float', 1.0, 0.0, 10.0, step=0.1, slider=True),
+    Param('low', "Canny: low threshold", 'int', 50, 0, 500, slider=True),
+    Param('high', "Canny: high threshold", 'int', 150, 0, 500, slider=True),
+    Param('dark_on_light', "Dark edges on a white page", 'bool', True)],
+    doc="Turns the picture into its edges. Canny gives thin one-pixel lines (the high threshold decides which edges start a line, "
+        "the low one how far it follows them); Sobel and Laplacian give soft edge strength. Smooth first to ignore fine grain.")
+def find_edges(img, method, blur, low, high, dark_on_light):
+    g = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    if blur > 0:
+        g = cv2.GaussianBlur(g, (0, 0), blur)
+    if method == 'Canny':
+        e = cv2.Canny(g, int(min(low, high)), int(max(low, high)))
+    elif method == 'Sobel':
+        e = np.clip(np.hypot(cv2.Sobel(g, cv2.CV_32F, 1, 0), cv2.Sobel(g, cv2.CV_32F, 0, 1)), 0, 255).astype(np.uint8)
+    else:
+        e = np.clip(np.abs(cv2.Laplacian(g, cv2.CV_32F)) * 2.0, 0, 255).astype(np.uint8)
+    e = 255 - e if dark_on_light else e
+    return np.ascontiguousarray(np.repeat(e[..., None], 3, axis=2))
+
+
+def estimate_skew(img, max_angle=10.0, method='projection'):
+    """The angle (degrees, counter-clockwise, the sign the Rotate tool wants) that levels the lines of text or rules in `img`;
+    0 when nothing line-like is found. 'projection': the rotation that makes the dark pixels pile up in the fewest rows (works
+    for text, tables, scans); 'hough': the median direction of the long straight edges (works for pictures with a few strong lines)."""
+    g = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    k = 900.0 / max(g.shape)
+    if k < 1:
+        g = cv2.resize(g, None, fx=k, fy=k, interpolation=cv2.INTER_AREA)
+    if method == 'hough':
+        edges = cv2.Canny(cv2.GaussianBlur(g, (0, 0), 1.0), 50, 150)
+        lines = cv2.HoughLinesP(edges, 1, math.pi / 720, threshold=60, minLineLength=max(g.shape) // 4, maxLineGap=8)
+        if lines is None:
+            return 0.0
+        ang, wts = [], []
+        for x1, y1, x2, y2 in lines.reshape(-1, 4):
+            a = math.degrees(math.atan2(y2 - y1, x2 - x1))
+            a = a - 180 if a > 90 else a + 180 if a <= -90 else a
+            a = a - 90 if a > 45 else a + 90 if a < -45 else a                 # a vertical line levels like a horizontal one
+            if abs(a) <= max_angle:
+                ang.append(a)
+                wts.append(math.hypot(x2 - x1, y2 - y1))
+        if not ang:
+            return 0.0
+        order = np.argsort(ang)
+        cum = np.cumsum(np.asarray(wts)[order])
+        return float(np.asarray(ang)[order][int(np.searchsorted(cum, cum[-1] / 2.0))])      # the length-weighted median
+    _, ink = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    if ink.mean() > 127:                                    # light ink on a dark page
+        ink = 255 - ink
+    ink = ink.astype(np.float32)
+    if not ink.any():
+        return 0.0
+    h, w = ink.shape
+    c = (w / 2.0, h / 2.0)
+
+    def score(a):
+        rows = cv2.warpAffine(ink, cv2.getRotationMatrix2D(c, a, 1.0), (w, h)).sum(axis=1)
+        return float(np.sum(np.diff(rows) ** 2))
+
+    best, step = 0.0, max(0.5, max_angle / 10.0)
+    cand = np.arange(-max_angle, max_angle + 1e-9, step)
+    best = float(cand[int(np.argmax([score(a) for a in cand]))])
+    while step > 0.02:
+        step /= 3.0
+        cand = best + np.array([-2, -1, 0, 1, 2]) * step
+        best = float(cand[int(np.argmax([score(a) for a in cand]))])
+    return round(best, 2)
+
+
+@tool("Auto straighten", "Geometry", [
+    Param('method', "Look at", 'choice', 'lines of text or rules', choices=('lines of text or rules', 'straight edges')),
+    Param('max_angle', "Largest tilt to look for (deg)", 'float', 10.0, 1.0, 45.0, step=0.5, slider=True),
+    Param('expand', "Enlarge canvas to fit", 'bool', True),
+    Param('fill', "Fill the corners with", 'choice', 'white', choices=('white', 'black', 'edge'))],
+    geometry=True,
+    doc="Finds how much the page or picture is tilted and rotates it level. 'lines of text or rules' suits scans of text, tables and "
+        "figures with horizontal lines; 'straight edges' suits pictures with a few strong straight lines (a horizon, a frame). "
+        "For a tilt you can measure yourself use Rotate (any angle) and its measuring button. The angle found is shown after Apply.")
+def auto_straighten(img, method, max_angle, expand, fill):
+    angle = estimate_skew(img, max_angle, 'hough' if method == 'straight edges' else 'projection')
+    TOOL_NOTES["Auto straighten"] = "tilt found and removed: %.2f deg" % angle
+    if abs(angle) < 0.05:
+        return img
+    return rotate_free(img, angle, expand, fill)
+
+
+def order_corners(pts):
+    """The four points ordered top-left, top-right, bottom-right, bottom-left (whatever order they were clicked in)."""
+    p = np.asarray(pts, np.float64).reshape(4, 2)
+    s, d = p.sum(axis=1), p[:, 1] - p[:, 0]
+    return np.array([p[np.argmin(s)], p[np.argmin(d)], p[np.argmax(s)], p[np.argmax(d)]])
+
+
+def perspective_warp(img, corners, out_w=0, out_h=0):
+    """The quadrilateral with the given four corners (any order) stretched to a rectangle: a photographed page or a slide seen
+    at an angle becomes square-on. The size is that of the longer sides unless `out_w` / `out_h` say otherwise."""
+    src = order_corners(corners).astype(np.float32)
+    w = out_w or int(round(max(np.hypot(*(src[1] - src[0])), np.hypot(*(src[2] - src[3])))))
+    h = out_h or int(round(max(np.hypot(*(src[3] - src[0])), np.hypot(*(src[2] - src[1])))))
+    w, h = max(2, w), max(2, h)
+    dst = np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], np.float32)
+    return cv2.warpPerspective(img, cv2.getPerspectiveTransform(src, dst), (w, h), flags=cv2.INTER_CUBIC,
+                               borderMode=cv2.BORDER_REPLICATE)
+
+
+@tool("Perspective correction", "Geometry", [
+    Param('tl_x', "Corner 1 X  (use the button to click all four)", 'int', 0, -100000, 100000, pick='quad'),
+    Param('tl_y', "Corner 1 Y", 'int', 0, -100000, 100000),
+    Param('tr_x', "Corner 2 X", 'int', 0, -100000, 100000),
+    Param('tr_y', "Corner 2 Y", 'int', 0, -100000, 100000),
+    Param('br_x', "Corner 3 X", 'int', 0, -100000, 100000),
+    Param('br_y', "Corner 3 Y", 'int', 0, -100000, 100000),
+    Param('bl_x', "Corner 4 X", 'int', 0, -100000, 100000),
+    Param('bl_y', "Corner 4 Y", 'int', 0, -100000, 100000),
+    Param('out_w', "Result width (px, 0 = automatic)", 'int', 0, 0, 100000),
+    Param('out_h', "Result height (px, 0 = automatic)", 'int', 0, 0, 100000)],
+    geometry=True,
+    doc="Press the button and click the four corners of the page, slide or object that looks distorted (in any order): the area "
+        "inside them is stretched to a rectangle. The corners can be corrected in the boxes afterwards; a yellow outline shows "
+        "them on the picture. With every box at 0 nothing changes.")
+def perspective_correction(img, tl_x, tl_y, tr_x, tr_y, br_x, br_y, bl_x, bl_y, out_w, out_h):
+    q = [(tl_x, tl_y), (tr_x, tr_y), (br_x, br_y), (bl_x, bl_y)]
+    if not any(v for pt in q for v in pt):
+        return img
+    return perspective_warp(img, q, out_w, out_h)
+
+
+def canvas_size(img, left, top, right, bottom, fill='white', color=None):
+    """The picture with `left`, `top`, `right`, `bottom` pixels added round it (negative = cut off). The new area is white, black,
+    a copy of the nearest edge pixels or the first colour of `color`."""
+    h, w = img.shape[:2]
+    nh, nw = h + top + bottom, w + left + right
+    if nh < 1 or nw < 1 or (left, top, right, bottom) == (0, 0, 0, 0):          # a cut that would leave nothing does nothing
+        return img
+    if fill == 'edge':
+        pad = cv2.copyMakeBorder(img, max(0, top), max(0, bottom), max(0, left), max(0, right), cv2.BORDER_REPLICATE)
+    else:
+        rgb = {'white': (255, 255, 255), 'black': (0, 0, 0)}.get(fill) or _picked_rgb(color)
+        pad = cv2.copyMakeBorder(img, max(0, top), max(0, bottom), max(0, left), max(0, right), cv2.BORDER_CONSTANT, value=rgb)
+    x0, y0 = max(0, -left), max(0, -top)
+    return np.ascontiguousarray(pad[y0:y0 + nh, x0:x0 + nw])
+
+
+@tool("Canvas size", "Geometry", [
+    Param('left', "Add on the left (px, negative cuts)", 'int', 0, -20000, 20000),
+    Param('top', "Add on top (px)", 'int', 0, -20000, 20000),
+    Param('right', "Add on the right (px)", 'int', 0, -20000, 20000),
+    Param('bottom', "Add on the bottom (px)", 'int', 0, -20000, 20000),
+    Param('fill', "New area", 'choice', 'white', choices=('white', 'black', 'edge', 'picked colour')),
+    Param('color', "Picked colour", 'colors', '#ffffff', pick='color1')],
+    geometry=True, layer_shift=lambda p, shape: (p['left'], p['top']),
+    doc="Makes the canvas bigger by adding a border (white, black, a copy of the edge, or a picked colour), or smaller by giving "
+        "negative numbers. Layers keep their place on the picture.")
+def canvas_size_tool(img, left, top, right, bottom, fill, color):
+    return canvas_size(img, left, top, right, bottom, fill, color)
+
+
+ASPECTS = {'1 : 1': (1, 1), '5 : 4': (5, 4), '4 : 3': (4, 3), '3 : 2': (3, 2), '16 : 9': (16, 9), '2 : 1': (2, 1),
+           'golden (1.618 : 1)': (1.618, 1.0)}
+
+
+def aspect_crop_box(w, h, rw, rh, anchor='centre'):
+    """(x0, y0, x1, y1): the largest rectangle of aspect rw : rh inside w x h, placed at the centre or against the named side."""
+    target = rw / float(rh)
+    cw, ch = (w, int(round(w / target))) if w / float(h) < target else (int(round(h * target)), h)
+    cw, ch = max(1, min(w, cw)), max(1, min(h, ch))
+    x0 = {'left': 0, 'right': w - cw}.get(anchor, (w - cw) // 2)
+    y0 = {'top': 0, 'bottom': h - ch}.get(anchor, (h - ch) // 2)
+    return x0, y0, x0 + cw, y0 + ch
+
+
+def _aspect_of(p):
+    rw, rh = ASPECTS.get(p['ratio']) or (max(1, p['custom_w']), max(1, p['custom_h']))
+    return (rh, rw) if p['portrait'] else (rw, rh)
+
+
+@tool("Crop to aspect ratio", "Geometry", [
+    Param('ratio', "Ratio (width : height)", 'choice', '3 : 2', choices=tuple(ASPECTS) + ('custom',)),
+    Param('custom_w', "Custom: width part", 'int', 4, 1, 1000),
+    Param('custom_h', "Custom: height part", 'int', 5, 1, 1000),
+    Param('portrait', "Upright (swap the two numbers)", 'bool', False),
+    Param('anchor', "Keep", 'choice', 'centre', choices=('centre', 'top', 'bottom', 'left', 'right'))],
+    geometry=True,
+    layer_shift=lambda p, shape: tuple(-v for v in aspect_crop_box(shape[1], shape[0], *_aspect_of(p), p['anchor'])[:2]),
+    doc="Cuts the largest rectangle of the chosen proportions out of the picture, from the centre or from one side (a journal's "
+        "figure shape, a square thumbnail). Layers keep their place.")
+def crop_aspect(img, ratio, custom_w, custom_h, portrait, anchor):
+    h, w = img.shape[:2]
+    box = aspect_crop_box(w, h, *_aspect_of(dict(ratio=ratio, custom_w=custom_w, custom_h=custom_h, portrait=portrait)), anchor)
+    return img if box == (0, 0, w, h) else crop(img, box)
+
+
+def undistort_radial(img, k1, k2=0.0, zoom=100.0):
+    """Radial lens distortion: every output pixel takes the picture at its distance r (0 at the centre, 1 at the corner) from the
+    centre scaled by 1 + k1 r^2 + k2 r^4. k1 < 0 straightens the lines of a barrel-distorted (bulging) picture, k1 > 0 a
+    pincushion one; `zoom` % enlarges the result to hide the empty edges this leaves."""
+    h, w = img.shape[:2]
+    cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
+    norm = math.hypot(cx, cy)
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
+    dx, dy = (xs - cx) / (norm * zoom / 100.0), (ys - cy) / (norm * zoom / 100.0)
+    r2 = dx * dx + dy * dy
+    f = 1.0 + k1 * r2 + k2 * r2 * r2
+    return cv2.remap(img, (cx + dx * f * norm).astype(np.float32), (cy + dy * f * norm).astype(np.float32), cv2.INTER_CUBIC,
+                     borderMode=cv2.BORDER_REPLICATE)
+
+
+@tool("Lens distortion", "Geometry", [
+    Param('k1', "Bend: minus = barrel (bulging), plus = pincushion", 'float', 0.0, -1.0, 1.0, step=0.01, slider=True),
+    Param('k2', "Fine bend (edges)", 'float', 0.0, -1.0, 1.0, step=0.01, slider=True),
+    Param('zoom', "Enlarge (%)", 'int', 100, 100, 200, slider=True)],
+    geometry=True,
+    doc="Straightens the bent lines of a wide-angle or cheap lens. Slide the first bar until a straight object near the edge of the "
+        "picture looks straight, then enlarge a little to hide the stretched border.")
+def lens_distortion(img, k1, k2, zoom):
+    if k1 == 0 and k2 == 0 and zoom == 100:
+        return img
+    return undistort_radial(img, k1, k2, zoom)
 
 
 @tool("Rotate 90 / 180", "Geometry", [
@@ -2553,6 +2810,9 @@ class ImageForge:
                 if p.pick == 'angle':
                     tk.Button(self.params_frame, text="Measure: click two points of a line to level",
                               command=lambda k=p.key: self.start_pick('angle', k)).pack(fill=tk.X, pady=(2, 0))
+                elif p.pick == 'quad':
+                    tk.Button(self.params_frame, text="Click the four corners on the picture",
+                              command=lambda k=p.key: self.start_pick('quad', k), bg='#cdeefc').pack(fill=tk.X, pady=(2, 0))
                 elif p.pick == 'point':
                     tk.Button(self.params_frame, text="Set source: click on the picture",
                               command=lambda k=p.key: self.start_pick('point', k), bg='#cdeefc').pack(fill=tk.X, pady=(2, 0))
@@ -2704,6 +2964,20 @@ class ImageForge:
             self._commit_layers("%s (layer)" % self.tool.name, layers)
             self._status("%s applied on layer '%s'." % (self.tool.name, L.name), ok=True)
             return
+        if self.tool.geometry and self.tool.layer_shift and self.hist.layers:      # Canvas size, aspect crop: the layers move along
+            try:
+                out = apply_tool(self.tool.name, self.hist.current, params, None)
+            except Exception as ex:
+                self._status("%s failed: %s" % (self.tool.name, ex))
+                return
+            if out is self.hist.current or (out.shape == self.hist.current.shape and np.array_equal(out, self.hist.current)):
+                self._status("%s: no change with these parameters." % self.tool.name)
+                return
+            dx, dy = self.tool.layer_shift(params, self.hist.current.shape)
+            self.sel = None
+            self._commit(self.tool.name, out, shift_layers(self.hist.layers, dx, dy))
+            self._status("%s applied (the layers keep their place on the picture)." % self.tool.name, ok=True)
+            return
         cur = self.hist.current
         region = None if self.tool.geometry else self.sel
         flatten = bool(self.tool.geometry and self.hist.layers)
@@ -2720,12 +2994,16 @@ class ImageForge:
         if not flatten and (out is cur or (out.shape == cur.shape and np.array_equal(out, cur))):
             self.preview = None
             self._redraw()
-            self._status("%s: no change with these parameters." % self.tool.name)
+            note = TOOL_NOTES.pop(self.tool.name, "")
+            self._status("%s: no change with these parameters%s." % (self.tool.name, " (%s)" % note if note else ""))
             return
         if flatten:
             self.active = None
         self._commit(self.tool.name, out, () if flatten else None)
         extra = " (applied to the whole image: this tool ignores the selection)" if self.sel and self.tool.geometry else ""
+        note = TOOL_NOTES.pop(self.tool.name, "")
+        if note:
+            extra += " (%s)" % note
         if self.hist.layers:
             extra += " (on the Background: select a layer to filter it)"
         self._status("%s applied%s." % (self.tool.name, extra), ok=True)
@@ -3389,7 +3667,8 @@ class ImageForge:
         self._status({'color': "Click a colour on the image (as many as needed), Esc to finish.",
                       'color1': "Click the colour to use on the image. Esc cancels.",
                       'point': "Click the point of the picture to copy FROM. Esc cancels.",
-                      'angle': "Click two points of a line that should be level (or vertical). Esc cancels."}[what])
+                      'angle': "Click two points of a line that should be level (or vertical). Esc cancels.",
+                      'quad': "Click the four corners of the area to straighten, in any order. Esc cancels."}[what])
 
     def choose_color(self, key):
         var = self.pvars[key]
@@ -3671,6 +3950,19 @@ class ImageForge:
                 var.set((var.get().strip() + " #%02x%02x%02x" % (r, g, b)).strip())
                 self._status("Added #%02x%02x%02x. %s" % (r, g, b, "Ctrl+click adds more." if quick else
                                                            "Click more colours, or Esc to finish."), ok=True)
+        elif self.mode == 'quad':
+            self._pick_pts.append((x, y))
+            self._draw_pick_points()
+            if len(self._pick_pts) == 4:
+                q = order_corners(self._pick_pts)
+                self._params_ready = False
+                for (kx, ky), (qx, qy) in zip((('tl_x', 'tl_y'), ('tr_x', 'tr_y'), ('br_x', 'br_y'), ('bl_x', 'bl_y')), q):
+                    self.pvars[kx].set(int(round(qx)))
+                    self.pvars[ky].set(int(round(qy)))
+                self._params_ready = True
+                self.cancel_mode()
+                self._params_changed()
+                self._status("Corners set; check the preview, adjust the boxes if needed, and press Apply.", ok=True)
         else:
             self._pick_pts.append((x, y))
             sx, sy = x * self.zoom + self.ox, y * self.zoom + self.oy
@@ -3685,6 +3977,16 @@ class ImageForge:
                 self.pvars[self._pick_key].set(round(a, 2))
                 self.cancel_mode()
                 self._status("Angle %.2f deg set; check the preview and press Apply." % a, ok=True)
+
+    def _draw_pick_points(self):
+        c = self.canvas
+        c.delete('pick')
+        pts = [(x * self.zoom + self.ox, y * self.zoom + self.oy) for x, y in self._pick_pts]
+        for i, (sx, sy) in enumerate(pts):
+            c.create_oval(sx - 4, sy - 4, sx + 4, sy + 4, outline='yellow', width=2, tags='pick')
+            c.create_text(sx + 8, sy - 8, text=str(i + 1), fill='yellow', tags='pick', font=('Arial', 9, 'bold'))
+        if len(pts) > 1:
+            c.create_line(*[v for p in pts for v in p], fill='yellow', dash=(3, 3), tags='pick')
 
     def _is_brush(self):
         """Eraser brush, Clone stamp and Clean brush: tools that paint with strokes."""
@@ -4188,9 +4490,23 @@ class ImageForge:
             self.pvars[ky].set(iy)
 
     def _draw_shape_handles(self):
-        """Small squares on the two ends of the shape the Shapes tool is about to make (or is editing)."""
+        """Small squares on the two ends of the shape the Shapes tool is about to make (or is editing); the outline of the area
+        the Perspective correction tool will straighten."""
         c = self.canvas
         c.delete('shapeh')
+        if self.hist is not None and self.tool is not None and 'tl_x' in self.pvars:
+            try:
+                q = [(float(self.pvars[k + '_x'].get()), float(self.pvars[k + '_y'].get())) for k in ('tl', 'tr', 'br', 'bl')]
+            except (tk.TclError, ValueError):
+                return
+            if any(v for pt in q for v in pt):
+                flat = [v for x, y in q for v in (x * self.zoom + self.ox, y * self.zoom + self.oy)]
+                c.create_polygon(*flat, outline='#ffe28a', fill='', width=2, dash=(5, 3), tags='shapeh')
+                for i in range(4):
+                    sx, sy = flat[2 * i], flat[2 * i + 1]
+                    c.create_oval(sx - 5, sy - 5, sx + 5, sy + 5, fill='#ffe28a', outline='black', tags='shapeh')
+                    c.create_text(sx + 9, sy - 9, text=str(i + 1), fill='#ffe28a', tags='shapeh', font=('Arial', 9, 'bold'))
+            return
         if self.hist is None or self.tool is None or self.tool.place != 'segment' or 'x0' not in self.pvars:
             return
         try:

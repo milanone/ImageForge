@@ -72,6 +72,11 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
     highlights) and **White balance** (pick a grey, gray world or brightest areas). *View > Histogram* (Ctrl+H) shows the values of
     the picture as it is now, preview included, per colour and as lightness, with log scale and a *working area only* option; with
     Levels open its black and white points are drawn on it.
+  - Clean-up and correction: **Reduce noise** (median, bilateral, non-local means), **Morphology** (dilate, erode, open, close,
+    outline, top-hat, black-hat), **Find edges** (Canny, Sobel, Laplacian), **Auto straighten** (finds the tilt of text, rules or
+    straight edges and rotates it level; the angle is shown after Apply), **Perspective correction** (click the four corners of a
+    page or slide seen at an angle), **Canvas size** (add or cut borders; layers keep their place), **Crop to aspect ratio** (1 : 1,
+    3 : 2, 16 : 9 ..., from the centre or a side) and **Lens distortion** (barrel / pincushion).
   - Clean (ported from SpectrumDigitizer): erase / keep colours (**Pick** colours on the image, with tolerance and an
     optional widening of the area; paint with white, black, a **picked colour** (Pick it from the picture, or choose it), transparent or **inpaint**, which rebuilds the erased pixels from
     their surroundings so a line over a gradient or a photo fades into it - keep the area narrow, a wide hole gets smeared),

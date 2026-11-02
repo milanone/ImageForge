@@ -1307,6 +1307,150 @@ class ShapeLayerTests(unittest.TestCase):
         self.assertEqual(il.format_measure(45, 'angle', (0.5, "um")), "45.0 deg")
 
 
+class CleanCorrectTests(unittest.TestCase):
+    """Reduce noise, Morphology, Find edges, Auto straighten, Perspective correction, Canvas size, Crop to aspect, Lens distortion."""
+
+    def page(self, angle=0.0):
+        """A light page with dark rules and blocks of 'text' lines, optionally tilted (counter-clockwise, degrees)."""
+        import cv2
+        img = np.full((300, 400, 3), 245, np.uint8)
+        for y in range(40, 270, 22):
+            cv2.line(img, (40, y), (360, y), (20, 20, 20), 3)
+            for x in range(40, 340, 40):
+                cv2.rectangle(img, (x + 4, y - 11), (x + 24, y - 3), (30, 30, 30), -1)
+        if angle:
+            m = cv2.getRotationMatrix2D((200, 150), angle, 1.0)
+            img = cv2.warpAffine(img, m, (400, 300), borderValue=(245, 245, 245), flags=cv2.INTER_CUBIC)
+        return img
+
+    def test_noise_reduction_methods(self):
+        rs = np.random.RandomState(3)
+        clean = np.full((60, 60, 3), 120, np.uint8)
+        clean[:, 30:] = 200                                                     # an edge
+        noisy = np.clip(clean + rs.randn(60, 60, 3) * 14, 0, 255).astype(np.uint8)
+        for method in ('median', 'bilateral', 'non-local means'):
+            out = il.apply_tool("Reduce noise", noisy, dict(method=method, strength=12, radius=2))
+            err_in = float(np.abs(noisy.astype(int) - clean).mean())
+            err_out = float(np.abs(out.astype(int) - clean).mean())
+            self.assertLess(err_out, err_in * 0.75, method)
+            self.assertGreater(float(out[:, 40:].mean()) - float(out[:, :20].mean()), 60, method)     # the edge survives
+        speck = clean.copy()
+        speck[10, 10] = 255
+        speck[40, 20] = 0
+        self.assertEqual(int(il.apply_tool("Reduce noise", speck, dict(method='median', radius=1))[10, 10, 0]), 120)
+
+    def test_morphology(self):
+        img = np.full((40, 40, 3), 255, np.uint8)
+        img[18:22, 5:35] = 0                                                    # a dark line 4 px thick
+        thick = il.apply_tool("Morphology", img, dict(op='erode', radius=2))
+        self.assertGreater(int((thick[..., 0] == 0).sum()), int((img[..., 0] == 0).sum()))      # erode grows the dark
+        thin = il.apply_tool("Morphology", img, dict(op='dilate', radius=2))
+        self.assertEqual(int((thin[..., 0] == 0).sum()), 0)                                    # the 4 px line is eaten by a 5 px light
+        speck = np.zeros((30, 30, 3), np.uint8)
+        speck[10, 10] = 255
+        self.assertEqual(int(il.apply_tool("Morphology", speck, dict(op='open', radius=1)).sum()), 0)    # a light speck is opened away
+        edge = il.apply_tool("Morphology", img, dict(op='outline (gradient)', radius=1))
+        self.assertGreater(int(edge.sum()), 0)
+
+    def test_find_edges(self):
+        img = np.full((60, 60, 3), 255, np.uint8)
+        img[20:40, 20:40] = 0
+        for method in ('Canny', 'Sobel', 'Laplacian'):
+            out = il.apply_tool("Find edges", img, dict(method=method, blur=0.0))
+            self.assertTrue(out.shape == img.shape and out.dtype == np.uint8)
+            self.assertEqual(int(out[5, 5, 0]), 255, method)                               # flat page: white
+            self.assertLess(int(out[19:22, 30, 0].min()), 128, method)                      # the border of the square: dark line
+        flat = np.full((20, 20, 3), 90, np.uint8)
+        self.assertTrue((il.apply_tool("Find edges", flat, dict(method='Canny'))[..., 0] == 255).all())
+        light = il.apply_tool("Find edges", img, dict(method='Sobel', blur=0.0, dark_on_light=False))
+        self.assertEqual(int(light[5, 5, 0]), 0)
+
+    def test_skew_estimate_and_auto_straighten(self):
+        for tilt in (-4.0, 2.5, 6.0):
+            est = il.estimate_skew(self.page(tilt), 10.0)
+            self.assertLess(abs(est + tilt), 0.4, (tilt, est))                              # it is the rotation that levels it
+        self.assertLess(abs(il.estimate_skew(self.page(0.0), 10.0)), 0.3)
+        self.assertEqual(il.estimate_skew(np.full((50, 50, 3), 255, np.uint8)), 0.0)
+        tilted = self.page(3.0)
+        out = il.apply_tool("Auto straighten", tilted, dict(max_angle=10.0))
+        self.assertIn("deg", il.TOOL_NOTES.pop("Auto straighten"))
+        self.assertLess(abs(il.estimate_skew(out, 10.0)), 0.4)
+        level = self.page(0.0)
+        self.assertIs(il.apply_tool("Auto straighten", level, dict(max_angle=10.0)), level)
+        hough = il.estimate_skew(self.page(4.0), 10.0, 'hough')
+        self.assertLess(abs(hough + 4.0), 0.8)
+
+    def test_corner_order_and_perspective(self):
+        pts = [(300, 200), (20, 30), (310, 40), (10, 210)]
+        q = il.order_corners(pts)
+        self.assertEqual([tuple(map(int, p)) for p in q], [(20, 30), (310, 40), (300, 200), (10, 210)])
+        import cv2
+        img = np.full((260, 340, 3), 200, np.uint8)
+        quad = np.array([(20, 30), (310, 40), (300, 200), (10, 210)], np.int32)
+        cv2.fillPoly(img, [quad], (30, 120, 220))
+        cv2.circle(img, (160, 120), 30, (250, 250, 20), -1)
+        out = il.apply_tool("Perspective correction", img, dict(tl_x=20, tl_y=30, tr_x=310, tr_y=40, br_x=300, br_y=200, bl_x=10, bl_y=210))
+        self.assertTrue(280 < out.shape[1] < 320 and 160 < out.shape[0] < 190)                 # about the lengths of the sides
+        self.assertTrue((out[3:-3, 3:-3] != 200).any(axis=2).all() or float(np.abs(out[5:-5, 5:-5].astype(int) - 200).sum(axis=2).min()) > 0)
+        inside = np.abs(out[4:-4, 4:-4].astype(int) - np.array([30, 120, 220])).sum(axis=2) < 40
+        yellow = np.abs(out.astype(int) - np.array([250, 250, 20])).sum(axis=2) < 40
+        self.assertGreater(float(inside.mean() + yellow.mean()), 0.95)                          # only the quad's content is left
+        self.assertTrue(yellow[yellow.shape[0] // 2 - 5:yellow.shape[0] // 2 + 5, yellow.shape[1] // 2 - 5:yellow.shape[1] // 2 + 5].all())
+        fixed = il.apply_tool("Perspective correction", img, dict(tl_x=20, tl_y=30, tr_x=310, tr_y=40, br_x=300, br_y=200, bl_x=10, bl_y=210,
+                                                                   out_w=100, out_h=50))
+        self.assertEqual(fixed.shape[:2], (50, 100))
+        self.assertIs(il.apply_tool("Perspective correction", img, {}), img)
+
+    def test_canvas_size(self):
+        img = np.full((20, 30, 3), 100, np.uint8)
+        out = il.apply_tool("Canvas size", img, dict(left=5, top=3, right=10, bottom=2, fill='white'))
+        self.assertEqual(out.shape[:2], (25, 45))
+        self.assertTrue((out[3:23, 5:35] == 100).all() and (out[0, 0] == 255).all() and (out[-1, -1] == 255).all())
+        black = il.apply_tool("Canvas size", img, dict(left=2, fill='black'))
+        self.assertTrue((black[:, :2] == 0).all())
+        edge = img.copy()
+        edge[:, 0] = (10, 20, 30)
+        self.assertTrue((il.apply_tool("Canvas size", edge, dict(left=4, fill='edge'))[:, :4] == (10, 20, 30)).all())
+        colour = il.apply_tool("Canvas size", img, dict(top=2, fill='picked colour', color='#ff0000'))
+        self.assertTrue((colour[:2] == (255, 0, 0)).all())
+        cut = il.apply_tool("Canvas size", img, dict(left=-5, right=-5, top=-2))
+        self.assertEqual(cut.shape[:2], (18, 20))
+        self.assertTrue((cut == 100).all())
+        self.assertIs(il.apply_tool("Canvas size", img, dict(left=-100)), img)             # a cut that leaves nothing does nothing
+        self.assertIs(il.apply_tool("Canvas size", img, {}), img)
+        self.assertEqual(il.TOOLS["Canvas size"].layer_shift(dict(left=5, top=3), img.shape), (5, 3))
+
+    def test_aspect_crop(self):
+        self.assertEqual(il.aspect_crop_box(400, 300, 1, 1), (50, 0, 350, 300))
+        self.assertEqual(il.aspect_crop_box(400, 300, 16, 9, 'top'), (0, 0, 400, 225))
+        self.assertEqual(il.aspect_crop_box(400, 300, 16, 9, 'bottom'), (0, 75, 400, 300))
+        self.assertEqual(il.aspect_crop_box(300, 400, 3, 2, 'centre'), (0, 100, 300, 300))
+        self.assertEqual(il.aspect_crop_box(400, 300, 4, 3), (0, 0, 400, 300))
+        img = np.zeros((300, 400, 3), np.uint8)
+        out = il.apply_tool("Crop to aspect ratio", img, dict(ratio='1 : 1'))
+        self.assertEqual(out.shape[:2], (300, 300))
+        tall = il.apply_tool("Crop to aspect ratio", img, dict(ratio='custom', custom_w=1, custom_h=2, portrait=False))
+        self.assertEqual(tall.shape[:2], (300, 150))
+        swapped = il.apply_tool("Crop to aspect ratio", img, dict(ratio='3 : 2', portrait=True))
+        self.assertEqual(swapped.shape[:2], (300, 200))
+        shift = il.TOOLS["Crop to aspect ratio"].layer_shift(dict(ratio='1 : 1', custom_w=1, custom_h=1, portrait=False, anchor='centre'), img.shape)
+        self.assertEqual(shift, (-50, 0))
+
+    def test_lens_distortion(self):
+        import cv2
+        img = np.full((120, 160, 3), 255, np.uint8)
+        for x in range(0, 160, 20):
+            cv2.line(img, (x, 0), (x, 119), (0, 0, 0), 1)
+        self.assertIs(il.apply_tool("Lens distortion", img, {}), img)
+        out = il.apply_tool("Lens distortion", img, dict(k1=-0.2))
+        self.assertEqual(out.shape, img.shape)
+        self.assertTrue(np.array_equal(out[60, 78:82], img[60, 78:82]) or abs(float(out[60, 76:84].mean()) - float(img[60, 76:84].mean())) < 30)  # the centre hardly moves
+        self.assertFalse(np.array_equal(out, img))
+        self.assertTrue(np.array_equal(il.undistort_radial(img, 0.0, 0.0, 100.0), img))
+        zoomed = il.apply_tool("Lens distortion", img, dict(zoom=120))
+        self.assertEqual(zoomed.shape, img.shape)
+
+
 class PickedColourFillTests(unittest.TestCase):
     def test_erase_colours_can_paint_with_a_picked_colour(self):
         img = np.full((20, 40, 3), 235, np.uint8)
