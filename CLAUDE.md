@@ -360,6 +360,13 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   refits while it is on and just redraws otherwise, so it also follows the panel divider and the first real window size (the first fit at
   open time happens before the window has its size). The Fit button's relief shows the state. Check: `examples/autofit_session.py`.
 
+- **Keyboard and mouse conventions** (`SHORTCUTS`, `show_shortcuts`, F1): the table is the single list of every combination, with a column saying
+  which editor's convention it follows; when a key or click is added, add its row (a test checks the table is well formed and has no
+  duplicates, not that it is complete). The choices: Shift adds and Ctrl subtracts in selections, Ctrl+click picks (colour, clone source) = GIMP's
+  scheme, because Photoshop's Alt is grabbed by the Windows menu bar in Tk; X / D, Space-pan, Shift-click straight lines, Ctrl+0 / Ctrl+1
+  = common to all; wheel = zoom (Krita / Figma), not scroll. Known gaps against the usual editors: no `[` / `]` to change the brush size, no
+  single-key tool shortcuts (B, E, H ...), no Delete to clear the selection, no Ctrl+N / Ctrl+W, Shift+wheel does not scroll sideways.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a

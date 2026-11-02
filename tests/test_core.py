@@ -1742,6 +1742,16 @@ class DrawingTests(unittest.TestCase):
         gl = il.gradient_fill(layer, (0, 10), (99, 10), (0, 0, 0), (255, 255, 255))
         self.assertTrue((gl[..., 3] == 255).all())
 
+    def test_shortcut_table_is_complete_and_consistent(self):
+        self.assertGreater(len(il.SHORTCUTS), 25)
+        for row in il.SHORTCUTS:
+            self.assertEqual(len(row), 4)
+            self.assertTrue(all(isinstance(x, str) and x.strip() for x in row), row)
+        keys = " ".join(r[1] for r in il.SHORTCUTS)
+        for needed in ("Ctrl+Z", "Space + drag", "Ctrl + click", "X / D", "Esc", "Ctrl+0"):
+            self.assertIn(needed, keys)
+        self.assertEqual(len({(r[0], r[1]) for r in il.SHORTCUTS}), len(il.SHORTCUTS))      # no row twice
+
     def test_tools_are_registered_as_interactive(self):
         for name in ("Pencil", "Paintbrush", "Fill bucket", "Gradient"):
             self.assertTrue(il.TOOLS[name].interactive, name)

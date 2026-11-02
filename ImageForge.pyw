@@ -121,6 +121,42 @@ def tool(name, group, params=(), geometry=False, preview=True, doc="", interacti
     return deco
 
 
+# (section, keys, what it does, how it compares with other programs): the table of Help > Keyboard shortcuts and mouse
+SHORTCUTS = [
+    ("Files", "Ctrl+O", "Open a picture or a project", "standard"),
+    ("Files", "Ctrl+S / Ctrl+Shift+S", "Save (project, keeps layers) / Save as", "standard"),
+    ("Files", "Ctrl+E", "Export (format, quality, size, dpi)", "like GIMP"),
+    ("Files", "Ctrl+V", "Paste a picture from the clipboard as a layer", "standard"),
+    ("Undo and selection", "Ctrl+Z / Ctrl+Y", "Undo / Redo (Ctrl+Shift+Z too)", "standard"),
+    ("Undo and selection", "Ctrl+A / Ctrl+D", "Select all / Deselect", "standard"),
+    ("Undo and selection", "Ctrl+I", "Invert the selection", "like GIMP (Photoshop: Ctrl+Shift+I)"),
+    ("Undo and selection", "Ctrl+J / Ctrl+Shift+J", "Copy / cut the selection to a new layer", "like Photoshop"),
+    ("Undo and selection", "Ctrl+Shift+X", "Crop to the selection", "ours"),
+    ("Undo and selection", "Ctrl+Enter", "Apply the tool", "ours"),
+    ("Undo and selection", "Esc", "Cancel what is in progress (pick, lasso, measure, gradient); otherwise deselect", "standard"),
+    ("Undo and selection", "Arrow keys / Shift+arrows", "Move the rectangle selection by 1 / 10 px (click the picture first)", "like Photoshop"),
+    ("View", "Ctrl+0 / Ctrl+1", "Fit to window / actual size (100 %)", "like Photoshop"),
+    ("View", "Ctrl++ / Ctrl+-", "Zoom in / out", "standard"),
+    ("View", "Mouse wheel", "Zoom around the pointer", "like Krita and Figma (Photoshop and GIMP scroll)"),
+    ("View", "Space + drag", "Move the picture, with any tool (not while typing in a box)", "standard"),
+    ("View", "Right or middle button + drag", "Move the picture", "standard"),
+    ("View", "Hand button above the picture", "The left button moves the picture", "standard (tool)"),
+    ("View", "Ctrl+H", "Histogram window", "ours"),
+    ("Selections with the mouse", "Drag", "Draw a rectangle; drag inside it to move it, drag a handle to resize", "standard"),
+    ("Selections with the mouse", "Shift + click", "Magic wand and Lasso: add to the selection", "standard"),
+    ("Selections with the mouse", "Ctrl + click", "Magic wand and Lasso: remove from the selection", "like GIMP (Photoshop uses Alt)"),
+    ("Selections with the mouse", "Shift + Ctrl + click", "Magic wand and Lasso: keep only the overlap", "like GIMP"),
+    ("Selections with the mouse", "Double-click / Enter / first point", "Close the lasso (also: end a path or area measurement)", "standard"),
+    ("Selections with the mouse", "Ctrl / Shift + drag in a selection", "With 'Drag moves the content': Ctrl does the opposite of the box, Shift copies", "ours"),
+    ("Drawing and retouch", "Ctrl + click", "Pick the foreground colour; Clone stamp: the source; Erase / keep colours: a colour to find", "like GIMP (Photoshop uses Alt)"),
+    ("Drawing and retouch", "Ctrl + Shift + click", "Pick the background colour (or the colour to paint with)", "ours"),
+    ("Drawing and retouch", "X / D", "Swap the foreground and background colours / back to black and white", "standard"),
+    ("Drawing and retouch", "Shift + click", "Pencil and Paintbrush: a straight line from the end of the last stroke", "standard"),
+    ("Shapes and measures", "Drag, then drag an end", "Shapes: draw, then move one end of the selected shape", "standard"),
+    ("Shapes and measures", "Click, click, double-click", "Measure: the points of a path or an area", "standard"),
+]
+
+
 class MaskRegion(tuple):
     """A selection that is not a plain rectangle: the rectangle (x0, y0, x1, y1) that bounds it, as a tuple (so everything that
     only knows rectangles keeps working with it), plus `mask`, a float32 array 0..1 of the whole canvas (1 = selected, values in
@@ -2920,6 +2956,7 @@ class ImageForge:
         mb.add_cascade(label="Image", menu=self.m_image)
         mb.add_cascade(label="Measure", menu=self.m_measure)
         self.m_recipe = tk.Menu(mb, tearoff=0)
+        self.m_help = tk.Menu(mb, tearoff=0)
         mb.add_cascade(label="Recipe", menu=self.m_recipe)
         rc = self.m_recipe
         rc.add_command(label="Save the steps so far as a recipe...", command=self.save_recipe_dialog)
@@ -2928,6 +2965,8 @@ class ImageForge:
         rc.add_separator()
         rc.add_command(label="Show the steps (History tab)", command=lambda: self.nbk.select(2))
         mb.add_cascade(label="Layer", menu=self.m_layer)
+        mb.add_cascade(label="Help", menu=self.m_help)
+        self.m_help.add_command(label="Keyboard shortcuts and mouse...", accelerator="F1", command=self.show_shortcuts)
         ms = self.m_measure
         ms.add_command(label="Measure tool", command=lambda: self.tree.selection_set("Measure"))
         ms.add_command(label="Measurements...", command=self.show_measurements)
@@ -3144,7 +3183,7 @@ class ImageForge:
                         ("<Control-S>", self.save_as), ("<Control-z>", self.undo), ("<Control-y>", self.redo),
                         ("<Control-a>", self.select_all), ("<Control-d>", self.deselect), ("<Control-i>", self.invert_sel),
                         ("<Control-e>", self.export_dialog), ("<Control-v>", self.paste_clipboard),
-                        ("<Control-h>", self.show_histogram),
+                        ("<Control-h>", self.show_histogram), ("<F1>", self.show_shortcuts), ("<Control-Z>", self.redo),
                         ("<Control-X>", self.crop_to_selection), ("<Control-j>", lambda: self.selection_to_layer(False)),
                         ("<Control-J>", lambda: self.selection_to_layer(True)), ("<Control-0>", self.fit_view),
                         ("<Control-1>", self.actual_size), ("<Control-plus>", lambda: self._zoom_step(1.25)),
@@ -5769,6 +5808,34 @@ class ImageForge:
         self.measures = []
         self._refresh_measures()
         self._draw_measures()
+
+    # ---- keyboard shortcuts and mouse -----------------------------------------------------------------------------------
+    def show_shortcuts(self):
+        """Help > Keyboard shortcuts and mouse: every key and click combination of the program, and how it compares with other editors."""
+        win = getattr(self, '_help_win', None)
+        if win is not None and win.winfo_exists():
+            win.lift()
+            return
+        w = tk.Toplevel(self.root)
+        w.title("Keyboard shortcuts and mouse - " + APP_NAME)
+        w.geometry("1100x640")
+        self._help_win = w
+        tree = ttk.Treeview(w, columns=('what', 'cmp'), show='tree headings', selectmode='none')
+        tree.heading('#0', text="Keys")
+        tree.heading('what', text="What it does")
+        tree.heading('cmp', text="Like other programs?")
+        tree.column('#0', width=270)
+        tree.column('what', width=560)
+        tree.column('cmp', width=270)
+        sb = ttk.Scrollbar(w, orient='vertical', command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        tree.pack(fill=tk.BOTH, expand=True)
+        parents = {}
+        for section, keys, what, cmp_ in SHORTCUTS:
+            if section not in parents:
+                parents[section] = tree.insert('', tk.END, text=section, open=True)
+            tree.insert(parents[section], tk.END, text=keys, values=(what, cmp_))
 
     # ---- histogram window ------------------------------------------------------------------------------
     HIST_W, HIST_H = 512, 200
