@@ -235,6 +235,25 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   with `mode` set only for the call. It takes priority over Ctrl-flips-'Drag moves the content' for those tools (inside a selection on
   Erase / keep colours, Eraser brush, ...). The tool description gets a line about it. Check: `examples/ctrl_click_session.py`.
 
+- **Shape selections** (`MaskRegion`, `wand_mask`, `polygon_mask`, `combine_selection`, `invert_selection`, `grow_selection`,
+  `feather_selection`, `mask_outline`; app: `start_wand`, `_wand_click`, `start_lasso`, `_lasso_*`, `invert_sel`, `grow_sel`,
+  `feather_sel`, `_set_shape`, `_rect_sel`): `self.sel` is still ONE object that every old code path treats as a rectangle, because a
+  `MaskRegion` is a tuple subclass (x0, y0, x1, y1) that also carries `.mask` (float32 canvas-sized 0..1, feathered edges in between).
+  Assigning a plain tuple to `self.sel` therefore drops the mask by itself. Consumers of the mask: `apply_tool` through
+  `masked_merge(orig, new, region)` (a rectangle pastes its box, a mask blends), `layer_region` (cuts the canvas mask to the layer's
+  box and returns a `MaskRegion` in layer coordinates), `paint_segment` / `stamp_clone` (`region_mask(region, img.shape)`: the mask
+  must have the shape of the array being painted, otherwise it is ignored: a stale mask after an undo of a crop does nothing wrong),
+  `_rect_erase_apply` (merges with the mask after `erase_rect`), `selection_to_layer` (mask = layer alpha, cut = masked fill). Handles,
+  nudging, the content move and the cursor shapes are gated by `_rect_sel()`: they exist only for plain rectangles. The wand works on
+  `_flat()` (the composite) with the RGB distance of the 3x3 median of the clicked pixel, like the other colour tools
+  (`contiguous` = 8-connected component of the click). Modes `'wand'` and `'lasso'` are checked in `_on_press` right after `'area'`, so
+  they work with any tool selected, and stay on until Esc; a lasso in progress is cleared by the first Esc. A double click is NOT bound
+  (Tk sends only `<Double-Button-1>` to the more specific binding, and the second click of a quick pair was lost for the wand):
+  `_lasso_press` times the clicks itself. The outline is `mask_outline` (cv2.findContours + approxPolyDP, the 300 longest lines,
+  cached per mask object in `_outline`), drawn white + black dashed. Invert on a rectangle gives the frame; subtract with no
+  selection selects everything but the shape. Tests: `MaskSelectionTests`; real window: `examples/selection_session.py`.
+  Not done: moving a shape's content (Move area is rectangular), saving the selection, selection from a layer's alpha, rotation.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a
@@ -258,8 +277,8 @@ Nothing here is promised; Francesco adds tools as he needs them. Ordered roughly
 - Undo history panel (list of steps to jump to), recent files, remember window/panel settings.
 
 **Selection**
-- Rotation of the selection (SpectrumDigitizer's working area rotated); free-form (lasso/polygon) selection, magic wand
-  (select by colour, with tolerance), invert selection, feather, selection from a layer's alpha, zoom to selection.
+- Rotation of the selection (SpectrumDigitizer's working area rotated); selection from a layer's alpha, zoom to selection,
+  moving the content of a shape selection, saving / loading a selection, quick mask painting.
 - Aspect-ratio-locked selection and numeric entry of its position and size.
 
 **Tools**

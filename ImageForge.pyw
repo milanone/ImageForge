@@ -118,8 +118,42 @@ def tool(name, group, params=(), geometry=False, preview=True, doc="", interacti
     return deco
 
 
+class MaskRegion(tuple):
+    """A selection that is not a plain rectangle: the rectangle (x0, y0, x1, y1) that bounds it, as a tuple (so everything that
+    only knows rectangles keeps working with it), plus `mask`, a float32 array 0..1 of the whole canvas (1 = selected, values in
+    between = a feathered edge). Code that knows about masks uses `getattr(region, 'mask', None)`."""
+
+    def __new__(cls, rect, mask):
+        obj = tuple.__new__(cls, rect)
+        obj.mask = mask
+        return obj
+
+
+def region_mask(region, shape):
+    """The mask of a region when it is a MaskRegion whose mask fits the (h, w) of `shape`, else None."""
+    m = getattr(region, 'mask', None)
+    return m if m is not None and m.shape == tuple(shape[:2]) else None
+
+
+def masked_merge(orig, new, region):
+    """`new` where `region` selects, `orig` elsewhere: a plain rectangle pastes its box, a MaskRegion blends by its mask
+    (so a feathered edge fades). Works on RGB and RGBA arrays of the same shape; returns `new` when region is None."""
+    if region is None:
+        return new
+    x0, y0, x1, y1 = region
+    m = region_mask(region, orig.shape)
+    out = orig.copy()
+    if m is None:
+        out[y0:y1, x0:x1] = new[y0:y1, x0:x1]
+        return out
+    w = m[y0:y1, x0:x1][..., None]
+    a, b = orig[y0:y1, x0:x1].astype(np.float32), new[y0:y1, x0:x1].astype(np.float32)
+    out[y0:y1, x0:x1] = np.clip(np.rint(a + (b - a) * w), 0, 255).astype(np.uint8)
+    return out
+
+
 def apply_tool(name, img, params=None, region=None):
-    """Run a registered tool. `region` = (x0, y0, x1, y1) limits a non-geometry tool to that rectangle."""
+    """Run a registered tool. `region` = (x0, y0, x1, y1) limits a non-geometry tool to that rectangle (a MaskRegion: to its mask)."""
     t = TOOLS[name]
     values = {p.key: p.default for p in t.params}
     for p in t.params:
@@ -129,10 +163,7 @@ def apply_tool(name, img, params=None, region=None):
         values['fill'] = 'white'
     out = t.func(img, **values)
     if region is not None and not t.geometry and out is not img:
-        x0, y0, x1, y1 = region
-        merged = img.copy()
-        merged[y0:y1, x0:x1] = out[y0:y1, x0:x1]
-        return merged
+        return masked_merge(img, out, region)
     return out
 
 
@@ -717,6 +748,9 @@ def stamp_clone(dst, src, cx, cy, ox, oy, size, hardness=100, opacity=100, regio
     ys, xs = np.mgrid[y0:y1, x0:x1]
     soft = max(r * (1.0 - hardness / 100.0), 1e-6)
     wgt = np.clip((r - np.hypot(xs - cx, ys - cy)) / soft, 0.0, 1.0).astype(np.float32) * (opacity / 100.0)
+    m = region_mask(region, dst.shape)
+    if m is not None:
+        wgt = wgt * m[y0:y1, x0:x1]
     if not wgt.any():
         return False
     patch = src[y0 + oy:y1 + oy, x0 + ox:x1 + ox].astype(np.float32)
@@ -819,6 +853,12 @@ def paint_segment(img, p0, p1, size, color, region=None):
         inside = np.zeros(sub.shape[:2], bool)
         inside[max(0, ry0 - y0):max(0, ry1 - y0), max(0, rx0 - x0):max(0, rx1 - x0)] = True
         sub[~inside] = keep[~inside]
+        m = region_mask(region, img.shape)
+        if m is not None:                                  # a mask selection: fade by its value (0 keeps, 1 paints)
+            wgt = m[y0:y1, x0:x1]
+            if sub.ndim == 3:
+                wgt = wgt[..., None]
+            sub[:] = np.clip(np.rint(keep + (sub.astype(np.float32) - keep) * wgt), 0, 255).astype(np.uint8)
 
 
 HANDLE_CURSORS = {'nw': 'size_nw_se', 'se': 'size_nw_se', 'ne': 'size_ne_sw', 'sw': 'size_ne_sw',
@@ -1112,7 +1152,16 @@ def layer_region(sel, layer):
         return None
     h, w = layer.rgba.shape[:2]
     x0, y0, x1, y1 = sel[0] - layer.x, sel[1] - layer.y, sel[2] - layer.x, sel[3] - layer.y
-    return max(0, x0), max(0, y0), min(w, x1), min(h, y1)
+    rect = max(0, x0), max(0, y0), min(w, x1), min(h, y1)
+    m = getattr(sel, 'mask', None)
+    if m is None:
+        return rect
+    lm = np.zeros((h, w), np.float32)                 # the canvas mask cut to the layer's own box
+    cx0, cy0 = max(0, layer.x), max(0, layer.y)
+    cx1, cy1 = min(m.shape[1], layer.x + w), min(m.shape[0], layer.y + h)
+    if cx1 > cx0 and cy1 > cy0:
+        lm[cy0 - layer.y:cy1 - layer.y, cx0 - layer.x:cx1 - layer.x] = m[cy0:cy1, cx0:cx1]
+    return MaskRegion(rect, lm)
 
 
 def apply_tool_to_layer(name, rgba, params=None, region=None):
@@ -1263,6 +1312,99 @@ def autocrop(img, background, tolerance, margin):
 def intersect_rect(a, b):
     """The overlap of two (x0, y0, x1, y1) rectangles; empty (x1 <= x0 or y1 <= y0) when they do not touch."""
     return max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])
+
+
+# ---- selections that are not rectangles (magic wand, lasso, invert, grow / shrink, feather) -------------------
+def wand_mask(img, x, y, tolerance, contiguous=True):
+    """Bool mask of the pixels whose colour is within `tolerance` (RGB distance) of the pixel at (x, y) (median of the 3x3 around
+    it, so a stray pixel does not decide). `contiguous`: only the area connected to that pixel (8 neighbours); otherwise every
+    such pixel of the picture. Empty mask when (x, y) is outside."""
+    h, w = img.shape[:2]
+    if not (0 <= x < w and 0 <= y < h):
+        return np.zeros((h, w), bool)
+    patch = img[max(0, y - 1):y + 2, max(0, x - 1):x + 2, :3].reshape(-1, 3)
+    seed = np.median(patch, axis=0)
+    near = _distance_from(img[..., :3], seed) <= tolerance
+    if not contiguous or not near[y, x]:
+        return near
+    n, lab = cv2.connectedComponents(near.astype(np.uint8), connectivity=8)
+    return lab == lab[y, x]
+
+
+def polygon_mask(shape, points):
+    """Bool mask of the polygon through `points` (x, y image pixels; at least 3), clipped to the (h, w) of `shape`."""
+    m = np.zeros(shape[:2], np.uint8)
+    if len(points) >= 3:
+        cv2.fillPoly(m, [np.round(np.asarray(points, np.float64)).astype(np.int32)], 1)
+    return m > 0
+
+
+def sel_to_mask(sel, shape):
+    """The float mask (h, w) of a selection (None = everything, rectangle, or MaskRegion)."""
+    h, w = shape[:2]
+    m = region_mask(sel, shape)
+    if m is not None:
+        return m
+    out = np.zeros((h, w), np.float32)
+    if sel is None:
+        out[:] = 1.0
+    else:
+        out[sel[1]:sel[3], sel[0]:sel[2]] = 1.0
+    return out
+
+
+def mask_to_sel(mask, floor=0.004):
+    """A MaskRegion for a float mask, or None when nothing is selected (bounding box of the values above `floor`)."""
+    ys, xs = np.nonzero(mask > floor)
+    if len(ys) == 0:
+        return None
+    return MaskRegion((int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1), mask)
+
+
+def combine_selection(sel, new, mode, shape):
+    """Combine the selection `sel` with the bool mask `new`: 'replace', 'add', 'subtract' (what is not new stays; with no
+    selection that is everything but `new`) or 'intersect'. Returns a MaskRegion, or None when the result is empty."""
+    new = new.astype(np.float32)
+    if mode == 'replace' or (sel is None and mode == 'add'):
+        out = new
+    else:
+        old = sel_to_mask(sel, shape)
+        out = {'add': np.maximum(old, new), 'subtract': old * (1.0 - new), 'intersect': old * new}[mode]
+    return mask_to_sel(out)
+
+
+def invert_selection(sel, shape):
+    """Everything that was not selected (a rectangle, a mask or nothing at all, which becomes empty -> None)."""
+    return mask_to_sel(1.0 - sel_to_mask(sel, shape))
+
+
+def grow_selection(sel, px, shape):
+    """Grow (px > 0) or shrink (px < 0) the selection by px pixels; a feathered edge becomes hard (>= 0.5 counts)."""
+    if px == 0:
+        return sel
+    solid = (sel_to_mask(sel, shape) >= 0.5).astype(np.uint8)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * abs(int(px)) + 1,) * 2)
+    solid = cv2.dilate(solid, k) if px > 0 else cv2.erode(solid, k)
+    return mask_to_sel(solid.astype(np.float32))
+
+
+def feather_selection(sel, px, shape):
+    """Soften the edge of the selection over about `px` pixels (Gaussian): the tools then blend instead of cutting."""
+    if px <= 0:
+        return sel
+    m = cv2.GaussianBlur(sel_to_mask(sel, shape), (0, 0), max(0.3, px / 2.0))
+    return mask_to_sel(m)
+
+
+def mask_outline(mask, level=0.5):
+    """Polylines [N x 2 float arrays, x then y in image pixels] that follow the edge of a float mask (for drawing it)."""
+    cnts, _ = cv2.findContours((mask >= level).astype(np.uint8), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    out = []
+    for c in cnts:
+        if len(c) >= 2 or cv2.contourArea(c) > 0:
+            c = cv2.approxPolyDP(c, 0.7, True)
+            out.append(c.reshape(-1, 2).astype(np.float32) + 0.5)
+    return out
 
 
 def crop(img, region):
@@ -1485,6 +1627,9 @@ class ImageForge:
         self._mv = None                  # (press point, selection, copy?, original image) while moving the content
         self._placing = False            # a click/drag is setting the x, y of a 'place' tool
         self._grab = None                # (handle, press point in image pixels, selection at press) while dragging it
+        self._lasso = []                 # image points of the lasso being drawn, and the modifier of its first press
+        self._lasso_mod, self._lasso_down, self._lasso_t = 'replace', False, 0.0
+        self._outline = (None, [])       # (mask, polylines): the outline of a mask selection, computed once per mask
         self._area_start = None          # press point of a 'Define working area' drag, and the rectangle so far
         self._area_cur = None
         self._area_sync = False          # True while the X/Y/W/H boxes are filled from the area (no change events)
@@ -1637,6 +1782,26 @@ class ImageForge:
             sp.bind('<FocusOut>', lambda ev: self._apply_area_box())
         self.l_area = tk.Label(wa, text="Whole image", bg=bg, fg='#555555', font=('Arial', 8), anchor='w')
         self.l_area.pack(fill=tk.X, padx=6, pady=(0, 2))
+        # Selections that are not rectangles: they are the working area too (every tool, brush and layer respects the shape)
+        row = tk.Frame(wa, bg=bg)
+        row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        tk.Button(row, text="Magic wand", command=self.start_wand, bg='#cdeefc').pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
+        tk.Button(row, text="Lasso", command=self.start_lasso, bg='#cdeefc').pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
+        tk.Button(row, text="Invert", command=self.invert_sel).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
+        row = tk.Frame(wa, bg=bg)
+        row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        tk.Label(row, text="Tolerance", bg=bg, font=('Arial', 8)).pack(side=tk.LEFT, padx=(2, 1))
+        self.v_wand_tol = tk.IntVar(value=32)
+        ttk.Spinbox(row, from_=0, to=441, increment=4, textvariable=self.v_wand_tol, width=4).pack(side=tk.LEFT)
+        self.v_wand_contig = tk.BooleanVar(value=True)
+        tk.Checkbutton(row, text="Contiguous", variable=self.v_wand_contig, bg=bg, font=('Arial', 8)).pack(side=tk.LEFT, padx=(6, 0))
+        row = tk.Frame(wa, bg=bg)
+        row.pack(fill=tk.X, padx=4, pady=(0, 3))
+        self.v_selpx = tk.IntVar(value=3)
+        ttk.Spinbox(row, from_=1, to=200, increment=1, textvariable=self.v_selpx, width=4).pack(side=tk.LEFT, padx=(2, 1))
+        tk.Label(row, text="px", bg=bg, font=('Arial', 8)).pack(side=tk.LEFT)
+        for text, cmd in (("Grow", lambda: self.grow_sel(1)), ("Shrink", lambda: self.grow_sel(-1)), ("Feather", self.feather_sel)):
+            tk.Button(row, text=text, command=cmd).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
 
         row = tk.Frame(panel, bg=bg)
         row.pack(fill=tk.X, padx=8, pady=(4, 0))
@@ -1689,6 +1854,7 @@ class ImageForge:
             c.bind('<%s>' % key, lambda e, dx=dx, dy=dy: self.nudge(dx, dy))
             c.bind('<Shift-%s>' % key, lambda e, dx=dx, dy=dy: self.nudge(dx * 10, dy * 10))
         c.bind('<Motion>', self._on_motion)
+        c.bind('<Return>', lambda e: self._lasso_close() if self.mode == 'lasso' else None)
         c.bind('<Leave>', lambda e: (self._set_info(""), c.delete('brush')))
         if HAS_DND:
             for w in (self.canvas, panel):
@@ -1701,7 +1867,7 @@ class ImageForge:
         r.bind('<KeyRelease-space>', self._space_up)
         for seq, fn in (("<Control-o>", self.open_dialog), ("<Control-s>", self.save),
                         ("<Control-S>", self.save_as), ("<Control-z>", self.undo), ("<Control-y>", self.redo),
-                        ("<Control-a>", self.select_all), ("<Control-d>", self.deselect),
+                        ("<Control-a>", self.select_all), ("<Control-d>", self.deselect), ("<Control-i>", self.invert_sel),
                         ("<Control-X>", self.crop_to_selection), ("<Control-j>", lambda: self.selection_to_layer(False)),
                         ("<Control-J>", lambda: self.selection_to_layer(True)), ("<Control-0>", self.fit_view),
                         ("<Control-1>", self.actual_size), ("<Control-plus>", lambda: self._zoom_step(1.25)),
@@ -2145,7 +2311,11 @@ class ImageForge:
 
     def escape(self):
         """Esc: end a pick in progress, else drop the selection."""
-        if self.mode:
+        if self.mode == 'lasso' and self._lasso:
+            self._lasso = []
+            self.canvas.delete('lasso')
+            self._status("Lasso cleared. Click to start again, Esc to leave the lasso.")
+        elif self.mode:
             self.cancel_mode()
             self._status("Cancelled.")
         else:
@@ -2433,12 +2603,17 @@ class ImageForge:
             return
         x0, y0, x1, y1 = self.sel
         base = self.hist.current
-        rgba = np.dstack([base[y0:y1, x0:x1], np.full((y1 - y0, x1 - x0), 255, np.uint8)])
+        m = region_mask(self.sel, base.shape)
+        alpha = np.full((y1 - y0, x1 - x0), 255, np.uint8) if m is None else \
+            np.clip(np.rint(m[y0:y1, x0:x1] * 255), 0, 255).astype(np.uint8)          # a shape: its mask is the layer's alpha
+        rgba = np.dstack([base[y0:y1, x0:x1], alpha])
         L = Layer('image', "Selection", x0, y0, rgba=rgba)
         new_base = base
         if cut:
             new_base = base.copy()
             new_base[y0:y1, x0:x1] = self._fill_color(base)
+            if m is not None:
+                new_base = masked_merge(base, new_base, self.sel)
         self._commit_layers("Cut to layer" if cut else "Copy to layer", list(self.hist.layers) + [L],
                             len(self.hist.layers), base=new_base)
         self.tree.selection_set("Move layer")
@@ -2616,6 +2791,17 @@ class ImageForge:
             return
         x0, y0, x1, y1 = rect
         z = self.zoom
+        if rect is self.sel and region_mask(rect, self.hist.current.shape) is not None:      # a shape: draw its outline
+            m = rect.mask
+            if self._outline[0] is not m:
+                lines = sorted(mask_outline(m), key=len, reverse=True)[:300]
+                self._outline = (m, lines)
+            for line in self._outline[1]:
+                flat = [v for px, py in line for v in (px * z + self.ox, py * z + self.oy)]
+                if len(flat) >= 4:
+                    c.create_line(*flat, *flat[:2], fill='white', tags='sel')
+                    c.create_line(*flat, *flat[:2], fill='black', dash=(4, 4), tags='sel')
+            return
         pts = (x0 * z + self.ox, y0 * z + self.oy, x1 * z + self.ox, y1 * z + self.oy)
         c.create_rectangle(*pts, outline='white', tags='sel')
         c.create_rectangle(*pts, outline='black', dash=(4, 4), tags='sel')
@@ -2667,6 +2853,145 @@ class ImageForge:
         self._status("Drag a rectangle on the picture: it becomes the working area, and every tool acts only inside it. "
                      "Esc cancels.")
 
+    def _rect_sel(self):
+        """The selection when it is a plain rectangle (handles, nudging and content moves only exist for those), else None."""
+        if self.sel is None or self.hist is None or region_mask(self.sel, self.hist.current.shape) is not None:
+            return None
+        return self.sel
+
+    @staticmethod
+    def _sel_mode(e):
+        """How a click combines with the selection: Shift adds, Ctrl removes, both keep only the overlap."""
+        shift, ctrl = bool(e.state & 0x1), bool(e.state & 0x4)
+        return 'intersect' if shift and ctrl else 'add' if shift else 'subtract' if ctrl else 'replace'
+
+    def _set_shape(self, sel, what):
+        self.sel = sel
+        self._after_selection()
+        if sel is None:
+            self._status("%s: nothing is selected now." % what)
+        else:
+            self._status("%s: %d x %d px box, %d%% of it selected. Every tool acts only on the shape." % (
+                what, sel[2] - sel[0], sel[3] - sel[1], round(100.0 * float((sel.mask > 0.5).sum()) / max(1, (sel[2] - sel[0]) * (sel[3] - sel[1])))),
+                ok=True)
+
+    def start_wand(self):
+        """'Magic wand': each click on the picture selects the area of that colour (tolerance and Contiguous in the bar);
+        Shift adds, Ctrl removes, Shift+Ctrl keeps the overlap; Esc ends."""
+        if not self._need_image():
+            return
+        self.cancel_mode()
+        self.mode = 'wand'
+        self.canvas.config(cursor='tcross')
+        self._status("Magic wand: click a colour on the picture (Shift adds to the selection, Ctrl removes, Esc ends).")
+
+    def _wand_click(self, e):
+        x, y = self._img_xy(e.x, e.y)
+        img = self._flat()                                      # as seen, layers included
+        try:
+            tol = int(self.v_wand_tol.get())
+        except (tk.TclError, ValueError):
+            tol = 32
+        mask = wand_mask(img, int(math.floor(x)), int(math.floor(y)), tol, self.v_wand_contig.get())
+        if not mask.any():
+            self._status("Magic wand: click inside the picture.")
+            return
+        self._set_shape(combine_selection(self.sel, mask, self._sel_mode(e), img.shape[:2]), "Magic wand")
+
+    def start_lasso(self):
+        """'Lasso': click the corners of a polygon, or drag to draw freehand; double-click or Enter closes it, Esc clears it.
+        Shift adds to the selection, Ctrl removes."""
+        if not self._need_image():
+            return
+        self.cancel_mode()
+        self.mode = 'lasso'
+        self.canvas.config(cursor='tcross')
+        self.canvas.focus_set()
+        self._status("Lasso: click the corners (or drag freehand); double-click or Enter closes it, Esc clears. "
+                     "Shift adds, Ctrl removes.")
+
+    def _lasso_press(self, e):
+        x, y = self._img_xy(e.x, e.y)
+        now = time.time()
+        quick = self._lasso and now - self._lasso_t < 0.45 and math.hypot(x - self._lasso[-1][0], y - self._lasso[-1][1]) * self.zoom < 6
+        self._lasso_t = now
+        if not self._lasso:
+            self._lasso_mod = self._sel_mode(e)
+        elif len(self._lasso) >= 3 and (quick or math.hypot(x - self._lasso[0][0], y - self._lasso[0][1]) * self.zoom < 6):
+            self._lasso_close()                       # a double click, or a click on the first point, closes it
+            return
+        self._lasso.append((x, y))
+        self._lasso_down = True
+        self._draw_lasso(e)
+
+    def _lasso_add(self, e, freehand=False):
+        x, y = self._img_xy(e.x, e.y)
+        lx, ly = self._lasso[-1]
+        if math.hypot(x - lx, y - ly) * self.zoom >= 3:
+            self._lasso.append((x, y))
+        self._draw_lasso(e)
+
+    def _draw_lasso(self, e):
+        c = self.canvas
+        c.delete('lasso')
+        if not self._lasso:
+            return
+        pts = [v for x, y in self._lasso for v in (x * self.zoom + self.ox, y * self.zoom + self.oy)]
+        if len(pts) >= 4:
+            c.create_line(*pts, fill='yellow', width=2, tags='lasso')
+        c.create_line(pts[-2], pts[-1], e.x, e.y, fill='yellow', dash=(3, 3), tags='lasso')
+        c.create_oval(pts[0] - 4, pts[1] - 4, pts[0] + 4, pts[1] + 4, outline='yellow', width=2, tags='lasso')
+
+    def _lasso_close(self):
+        if self.mode != 'lasso' or self.hist is None:
+            return
+        pts, mod = self._lasso, self._lasso_mod
+        if len(pts) > 2 and pts[-1] == pts[-2]:
+            pts = pts[:-1]
+        self._lasso, self._lasso_down = [], False
+        self.canvas.delete('lasso')
+        if len(pts) < 3:
+            self._status("A lasso needs at least three points.")
+            return
+        shape = self.hist.current.shape[:2]
+        mask = polygon_mask(shape, pts)
+        if not mask.any():
+            self._status("The lasso is outside the picture.")
+            return
+        self._set_shape(combine_selection(self.sel, mask, mod, shape), "Lasso")
+
+    def invert_sel(self):
+        if not self._need_image():
+            return
+        if self.sel is None:
+            self._status("Nothing is selected: select something first, then Invert (Ctrl+I) selects everything else.")
+            return
+        self._set_shape(invert_selection(self.sel, self.hist.current.shape[:2]), "Invert")
+
+    def grow_sel(self, sign):
+        if not self._need_image():
+            return
+        if self.sel is None:
+            self._status("Nothing is selected.")
+            return
+        try:
+            px = max(1, int(self.v_selpx.get()))
+        except (tk.TclError, ValueError):
+            px = 3
+        self._set_shape(grow_selection(self.sel, sign * px, self.hist.current.shape[:2]), "Grow" if sign > 0 else "Shrink")
+
+    def feather_sel(self):
+        if not self._need_image():
+            return
+        if self.sel is None:
+            self._status("Nothing is selected.")
+            return
+        try:
+            px = max(1, int(self.v_selpx.get()))
+        except (tk.TclError, ValueError):
+            px = 3
+        self._set_shape(feather_selection(self.sel, px, self.hist.current.shape[:2]), "Feather")
+
     def clear_area(self):
         """Back to the whole image."""
         if self.mode == 'area':
@@ -2688,7 +3013,8 @@ class ImageForge:
                 x0, y0, x1, y1 = self.sel
                 for k, val in zip('XYWH', (x0, y0, x1 - x0, y1 - y0)):
                     self.area_vars[k].set(str(val))
-                self.l_area.config(text="%d x %d px at (%d, %d)" % (x1 - x0, y1 - y0, x0, y0), fg='#8a5a00')
+                shape = " (a shape)" if region_mask(self.sel, self.hist.current.shape) is not None else ""
+                self.l_area.config(text="%d x %d px at (%d, %d)%s" % (x1 - x0, y1 - y0, x0, y0, shape), fg='#8a5a00')
         finally:
             self._area_sync = False
 
@@ -2714,6 +3040,8 @@ class ImageForge:
             self._area_start = self._area_cur = None
             self._draw_selection()
         self.canvas.delete('pick')
+        self.canvas.delete('lasso')
+        self._lasso, self._lasso_down = [], False
         self.canvas.config(cursor='crosshair')
 
     @staticmethod
@@ -2957,6 +3285,14 @@ class ImageForge:
         if self.mode == 'area':                        # 'Define working area': this drag draws it, with any tool selected
             self._press, self._area_start, self._area_cur = None, (e.x, e.y), None
             return
+        if self.mode == 'wand':                        # magic wand: a click selects the area of that colour
+            self._press = None
+            self._wand_click(e)
+            return
+        if self.mode == 'lasso':
+            self._press = None
+            self._lasso_press(e)
+            return
         if self._hand_active():                        # the left button moves the picture, whatever the tool
             self._press, self._pan_left = None, True
             self._on_pan_start(e)
@@ -2979,7 +3315,7 @@ class ImageForge:
             self._press, self._placing = None, True
             self._place_at(e)
         else:
-            grab = hit_handle(self.sel, self.zoom, self.ox, self.oy, e.x, e.y) if self.sel else None
+            grab = hit_handle(self.sel, self.zoom, self.ox, self.oy, e.x, e.y) if self._rect_sel() else None
             if grab == 'move' and self._moves_content(e):
                 self._press = None
                 self._start_content_move(e)
@@ -3058,6 +3394,7 @@ class ImageForge:
 
     # ---- 'Erase rectangle' ------------------------------------------------------------------------------
     def _rect_erase_apply(self, rect):
+        shape_mask = region_mask(self.sel, self.hist.current.shape) if self.sel is not None else None
         if self.sel is not None:                       # the working area limits this tool like every other
             rect = intersect_rect(rect, self.sel)
             if rect[2] <= rect[0] or rect[3] <= rect[1]:
@@ -3071,6 +3408,8 @@ class ImageForge:
             return
         if kind == 'layer':
             out = erase_rect_layer(L.rgba, layer_region(rect, L), fill, radius, color)
+            if shape_mask is not None and out is not L.rgba:
+                out = masked_merge(L.rgba, out, layer_region(MaskRegion(rect, shape_mask), L))
             if out is L.rgba:
                 self._status("Nothing to erase there on layer '%s'." % L.name)
                 return
@@ -3079,6 +3418,8 @@ class ImageForge:
             self._commit_layers("Erase rectangle (layer)", layers)
         else:
             out = erase_rect(self.hist.current, rect, fill, radius, color)
+            if shape_mask is not None and out is not self.hist.current:
+                out = masked_merge(self.hist.current, out, MaskRegion(rect, shape_mask))
             if out is self.hist.current:
                 self._status("Nothing changed (the rectangle is already that colour).")
                 return
@@ -3103,7 +3444,7 @@ class ImageForge:
                 layers[self.active] = L.replace(x=L.x + dx, y=L.y + dy)
                 self._commit_layers("Move layer", layers)
             return
-        if self.sel and self.hist is not None and not self.mode and not self._is_brush():
+        if self._rect_sel() and self.hist is not None and not self.mode and not self._is_brush():
             h, w = self.hist.current.shape[:2]
             self.sel = drag_rect(self.sel, 'move', dx, dy, (w, h))
             self._after_selection()
@@ -3120,7 +3461,7 @@ class ImageForge:
         if self.tool is not None and self.tool.place:
             self.canvas.config(cursor='crosshair')
             return
-        grab = hit_handle(self.sel, self.zoom, self.ox, self.oy, e.x, e.y) if self.sel else None
+        grab = hit_handle(self.sel, self.zoom, self.ox, self.oy, e.x, e.y) if self._rect_sel() else None
         cursor = HANDLE_CURSORS[grab] if grab else 'crosshair'
         if grab == 'move' and self._moves_content(e):
             cursor = 'hand2'
@@ -3129,6 +3470,9 @@ class ImageForge:
     def _on_drag(self, e):
         if self._pan_left:
             self._on_pan(e)
+            return
+        if self._lasso_down:
+            self._lasso_add(e, freehand=True)
             return
         if self._area_start is not None:
             if self._area_cur is None and math.hypot(e.x - self._area_start[0], e.y - self._area_start[1]) < 4:
@@ -3174,6 +3518,9 @@ class ImageForge:
     def _on_release(self, e):
         if self._pan_left:
             self._pan_left = False
+            return
+        if self._lasso_down:
+            self._lasso_down = False
             return
         if self._area_start is not None:
             rect, self._area_start, self._area_cur = self._area_cur, None, None
@@ -3228,6 +3575,8 @@ class ImageForge:
 
     def _on_motion(self, e):
         self._draw_brush_circle(e)
+        if self.mode == 'lasso' and self._lasso:
+            self._draw_lasso(e)
         if self.hist is None or self._press is not None:
             return
         self._update_cursor(e)

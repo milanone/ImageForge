@@ -28,6 +28,12 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
   place; X / Y / W / H can be typed; **Whole image** removes it, Esc cancels a definition in progress). It works with any tool
   already selected, which the plain drag does not (a brush or a layer tool uses the drag for itself). It is the same rectangle
   as the selection below: you can still move or resize it with the handles, and Move area / Crop use it.
+- **Shape selections** (same box): **Magic wand** (click a colour; *Tolerance* and *Contiguous* in the box; Shift adds, Ctrl removes,
+  Shift+Ctrl keeps the overlap; Esc ends), **Lasso** (click the corners, or drag freehand; double-click, Enter or a click on the first
+  point closes it; Shift adds, Ctrl removes), **Invert** (Ctrl+I), **Grow / Shrink** by N px and **Feather** (soft edge: tools then
+  blend instead of cutting). The shape is the working area: every tool, brush, clone, Erase rectangle and layer respects it, the
+  *Copy / Cut to layer* commands use it as the layer's transparency, and an outline of marching dashes shows it. Handles, nudging
+  and *Move area* exist only for rectangles; *Crop to selection* uses the box around the shape.
 - **Selection**: drag a rectangle; tools then act only inside it (a click outside it clears it). Drag inside it to move it,
   drag a handle (corners, edge midpoints) to resize it, arrow keys nudge it by 1 px (Shift: 10) once the image has been
   clicked. *Crop to selection*.

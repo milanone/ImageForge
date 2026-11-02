@@ -949,6 +949,123 @@ class RemoveMarksTests(unittest.TestCase):
         self.assertFalse((np.abs(out.astype(int) - np.array(self.RED)).sum(axis=2) < 120).any())
 
 
+class MaskSelectionTests(unittest.TestCase):
+    """Selections that are not rectangles: magic wand, lasso, invert, grow / shrink, feather, and tools obeying the mask."""
+
+    def picture(self):
+        img = np.full((60, 80, 3), 240, np.uint8)
+        img[10:30, 10:30] = (200, 40, 40)                  # a red square
+        img[10:30, 50:70] = (205, 45, 45)                  # a nearly identical one, not connected to the first
+        img[40:55, 10:70] = (40, 40, 200)                  # a blue bar
+        return img
+
+    def test_wand_contiguous_and_global(self):
+        img = self.picture()
+        near = il.wand_mask(img, 20, 20, 30, contiguous=True)
+        self.assertEqual(int(near.sum()), 400)
+        self.assertFalse(near[20, 60])
+        both = il.wand_mask(img, 20, 20, 30, contiguous=False)
+        self.assertTrue(both[20, 60] and int(both.sum()) == 800)
+        self.assertEqual(int(il.wand_mask(img, 20, 20, 5, contiguous=False).sum()), 400)        # tight: only the identical one
+        self.assertEqual(int(il.wand_mask(img, 999, 5, 30).sum()), 0)
+
+    def test_polygon_mask(self):
+        m = il.polygon_mask((50, 50), [(10, 10), (40, 10), (40, 40), (10, 40)])
+        self.assertTrue(m[20, 20] and not m[5, 5] and not m[45, 45])
+        self.assertEqual(int(il.polygon_mask((50, 50), [(1, 1), (5, 5)]).sum()), 0)
+
+    def test_combine_invert_and_empty(self):
+        shape = (60, 80)
+        a = il.combine_selection(None, il.wand_mask(self.picture(), 20, 20, 30), 'replace', shape)
+        self.assertEqual(tuple(a), (10, 10, 30, 30))
+        b = il.combine_selection(a, il.polygon_mask(shape, [(40, 5), (75, 5), (75, 35), (40, 35)]), 'add', shape)
+        self.assertEqual(tuple(b), (10, 5, 76, 36))                                       # a polygon covers its boundary pixels
+        c = il.combine_selection(b, il.polygon_mask(shape, [(0, 0), (35, 0), (35, 60), (0, 60)]), 'subtract', shape)
+        self.assertEqual(tuple(c), (40, 5, 76, 36))
+        d = il.combine_selection(b, il.polygon_mask(shape, [(0, 0), (35, 0), (35, 60), (0, 60)]), 'intersect', shape)
+        self.assertEqual(tuple(d), (10, 10, 30, 30))
+        self.assertIsNone(il.combine_selection(a, il.wand_mask(self.picture(), 20, 20, 30), 'subtract', shape))
+        inv = il.invert_selection(a, shape)
+        self.assertEqual(float(inv.mask.sum() + a.mask.sum()), 60 * 80)
+        self.assertIsNone(il.invert_selection(il.invert_selection(None, shape), shape))      # nothing selected inverts to... nothing
+        sub = il.combine_selection(None, il.wand_mask(self.picture(), 20, 20, 30), 'subtract', shape)   # all but the red square
+        self.assertEqual(int(sub.mask.sum()), 60 * 80 - 400)
+
+    def test_rectangle_selection_inverts_to_a_frame(self):
+        inv = il.invert_selection((10, 10, 30, 30), (60, 80))
+        self.assertEqual(tuple(inv), (0, 0, 80, 60))
+        self.assertEqual(float(inv.mask[20, 20]), 0.0)
+        self.assertEqual(float(inv.mask[5, 5]), 1.0)
+
+    def test_grow_shrink_feather(self):
+        shape = (60, 80)
+        sel = il.combine_selection(None, il.wand_mask(self.picture(), 20, 20, 30), 'replace', shape)
+        grown = il.grow_selection(sel, 3, shape)
+        self.assertEqual(tuple(grown), (7, 7, 33, 33))
+        shrunk = il.grow_selection(sel, -3, shape)
+        self.assertEqual(tuple(shrunk), (13, 13, 27, 27))
+        self.assertIsNone(il.grow_selection(sel, -30, shape))
+        soft = il.feather_selection(sel, 6, shape)
+        self.assertTrue(0.0 < float(soft.mask[10, 20]) < 1.0)                                # the edge fades
+        self.assertGreater(float(soft.mask[20, 20]), 0.9)
+        self.assertGreater(soft[2] - soft[0], 20)                                           # and the box grew with it
+
+    def test_tool_obeys_the_mask_and_keeps_the_input(self):
+        img = self.picture()
+        before = img.copy()
+        sel = il.combine_selection(None, il.wand_mask(img, 20, 20, 30), 'replace', img.shape[:2])
+        out = il.apply_tool("Invert", img, {}, sel)
+        self.assertTrue(np.array_equal(img, before))
+        self.assertTrue((out[10:30, 10:30] == 255 - np.array([200, 40, 40])).all())
+        self.assertTrue(np.array_equal(out[10:30, 50:70], img[10:30, 50:70]))               # the other red square untouched
+        self.assertTrue(np.array_equal(out[:, 30:], img[:, 30:]))
+        tri = il.combine_selection(None, il.polygon_mask(img.shape[:2], [(0, 0), (79, 0), (0, 59)]), 'replace', img.shape[:2])
+        out2 = il.apply_tool("Invert", img, {}, tri)
+        self.assertTrue((out2[1, 1] == 255 - img[1, 1]).all() and (out2[58, 78] == img[58, 78]).all())      # inside / outside the triangle
+
+    def test_feathered_selection_blends(self):
+        img = np.full((40, 40, 3), 100, np.uint8)
+        sel = il.feather_selection(il.combine_selection(None, il.polygon_mask(img.shape[:2], [(10, 10), (30, 10), (30, 30), (10, 30)]),
+                                                        'replace', img.shape[:2]), 8, img.shape[:2])
+        out = il.apply_tool("Invert", img, {}, sel)
+        edge, centre = int(out[10, 20, 0]), int(out[20, 20, 0])
+        self.assertTrue(100 < edge < centre <= 155)                                          # inverted = 155; the edge is in between
+
+    def test_tool_on_a_layer_uses_the_mask_in_layer_coordinates(self):
+        rgba = np.dstack([np.full((30, 30, 3), 50, np.uint8), np.full((30, 30), 255, np.uint8)])
+        layer = il.Layer('image', "L", 20, 10, rgba=rgba)
+        sel = il.combine_selection(None, il.polygon_mask((60, 80), [(25, 15), (45, 15), (45, 25), (25, 25)]), 'replace', (60, 80))
+        reg = il.layer_region(sel, layer)
+        out = il.apply_tool_to_layer("Invert", rgba, {}, reg)
+        self.assertTrue((out[5:15, 5:25, :3] == 205).all())                                  # canvas (25..45, 15..25) -> layer (5..25, 5..15)
+        self.assertTrue((out[0:4, :, :3] == 50).all() and (out[:, :, 3] == 255).all())
+
+    def test_brush_and_clone_obey_the_mask(self):
+        img = np.full((40, 40, 3), 200, np.uint8)
+        sel = il.combine_selection(None, il.polygon_mask((40, 40), [(0, 0), (19, 0), (19, 39), (0, 39)]), 'replace', (40, 40))
+        il.paint_segment(img, (2, 20), (38, 20), 8, (0, 0, 0), sel)
+        self.assertTrue((img[20, 5] == 0).all() and (img[20, 30] == 200).all())
+        src = np.full((40, 40, 3), 0, np.uint8)
+        dst = np.full((40, 40, 3), 200, np.uint8)
+        il.stamp_clone(dst, src, 10, 20, 0, 0, 12, 100, 100, sel)
+        il.stamp_clone(dst, src, 30, 20, 0, 0, 12, 100, 100, sel)
+        self.assertTrue((dst[20, 10] == 0).all() and (dst[20, 30] == 200).all())
+
+    def test_a_mask_of_another_size_is_ignored(self):
+        img = self.picture()
+        sel = il.MaskRegion((0, 0, 20, 20), np.ones((10, 10), np.float32))
+        out = il.apply_tool("Invert", img, {}, sel)
+        self.assertTrue((out[0:20, 0:20] == 255 - img[0:20, 0:20]).all() and (out[30:, :] == img[30:, :]).all())
+
+    def test_outline_follows_the_mask(self):
+        m = np.zeros((40, 40), np.float32)
+        m[10:20, 10:30] = 1.0
+        lines = il.mask_outline(m)
+        self.assertEqual(len(lines), 1)
+        xs, ys = lines[0][:, 0], lines[0][:, 1]
+        self.assertTrue(xs.min() <= 10.6 and xs.max() >= 29 and ys.min() <= 10.6 and ys.max() >= 19)
+
+
 class PickedColourFillTests(unittest.TestCase):
     def test_erase_colours_can_paint_with_a_picked_colour(self):
         img = np.full((20, 40, 3), 235, np.uint8)
