@@ -228,6 +228,13 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   Known limit: lines that run tangent to the hole instead of into it, or a mark on a junction of three or more lines with a letter
   next to it, can still leave a small gap or blotch: Clone stamp. Tests: `RemoveMarksTests`; real window: `examples/remove_marks_session.py` (synthetic figure).
 
+- **Ctrl+click quick picks** (`_quick_pick`, `_quick_pick_hint`, called from `_on_press` right after the Hand check, only when no pick
+  mode is active): a tool with a `Param(pick='point' | 'color' | 'color1')` gets, on Ctrl+click, what its button does without the mode
+  staying on: the clone source; a colour appended to the `pick='color'` text; or the `pick='color1'` colour (with `fill` switched to
+  'picked colour'). Ctrl+Shift picks the `color1` one on a tool that has both (Erase / keep colours). It reuses `_pick_click(quick=True)`
+  with `mode` set only for the call. It takes priority over Ctrl-flips-'Drag moves the content' for those tools (inside a selection on
+  Erase / keep colours, Eraser brush, ...). The tool description gets a line about it. Check: `examples/ctrl_click_session.py`.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a

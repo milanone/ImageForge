@@ -48,6 +48,9 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
   - Areas: **Erase rectangle** (drag a rectangle, what is inside is erased on release: white, black, a colour **picked from the
     picture** (Pick) or chosen with a dialog (...), transparent on a layer, or inpainted) and **Move area** (drag a rectangle round something, then drag inside it to move it; Shift or its
     *Copy* box copies; the old place is filled as the *leaves* box says; on an image layer it works inside that layer)
+- **Ctrl+click as a shortcut for Pick**: with a tool that has a Pick / Set source button, Ctrl+click on the picture does what the button
+  does, without pressing it: the Clone stamp source, a colour to find (Erase / keep colours, Remove marks: added to the list), the
+  colour to paint with (Eraser brush, Erase rectangle, Add text), and Ctrl+Shift+click the *paint with* colour of Erase / keep colours.
   - Clean (ported from SpectrumDigitizer): erase / keep colours (**Pick** colours on the image, with tolerance and an
     optional widening of the area; paint with white, black, a **picked colour** (Pick it from the picture, or choose it), transparent or **inpaint**, which rebuilds the erased pixels from
     their surroundings so a line over a gradient or a photo fades into it - keep the area narrow, a wide hole gets smeared),

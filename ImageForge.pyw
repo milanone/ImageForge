@@ -1764,7 +1764,7 @@ class ImageForge:
         self.tool = TOOLS[name]
         self.canvas.delete('brush')
         self.canvas.delete('clone')
-        self.l_doc.config(text=self.tool.doc)
+        self.l_doc.config(text=self.tool.doc + self._quick_pick_hint(self.tool))
         self._build_params()
         self.preview = self.lprev = None
         ei = self._edit_index()
@@ -2716,7 +2716,47 @@ class ImageForge:
         self.canvas.delete('pick')
         self.canvas.config(cursor='crosshair')
 
-    def _pick_click(self, e):
+    @staticmethod
+    def _quick_pick_hint(tool):
+        """The line added to a tool's description when Ctrl+click can pick for it."""
+        kinds = [q.pick for q in tool.params if q.pick in ('point', 'color', 'color1')]
+        if 'point' in kinds:
+            return "\n\nCtrl+click on the picture sets the source."
+        if 'color' in kinds and 'color1' in kinds:
+            return "\n\nCtrl+click on the picture adds a colour to find; Ctrl+Shift+click picks the colour to paint with."
+        if kinds:
+            return "\n\nCtrl+click on the picture picks the colour."
+        return ""
+
+    def _quick_pick(self, e):
+        """Ctrl+click with a tool that has a pick button does what the button does, without pressing it: the clone source, a
+        colour to find ('color': added to the list), or the colour to paint with ('color1'; Shift chooses it when the tool has
+        both). Returns True when the click was used."""
+        if self.tool is None or not (e.state & 0x4):
+            return False
+        params = [q for q in self.tool.params if q.pick in ('point', 'color', 'color1')]
+        if not params:
+            return False
+        shift = bool(e.state & 0x1)
+        point = [q for q in params if q.pick == 'point']
+        find = [q for q in params if q.pick == 'color']
+        paint = [q for q in params if q.pick == 'color1']
+        if point:
+            chosen = point[0]
+        elif find and paint:
+            chosen = paint[0] if shift else find[0]
+        else:
+            chosen = (find or paint)[0]
+        self.mode, self._pick_key = chosen.pick, chosen.key
+        try:
+            self._pick_click(e, quick=True)
+        finally:
+            self.cancel_mode()
+        if point:
+            self._draw_brush_circle(e)
+        return True
+
+    def _pick_click(self, e, quick=False):
         x, y = self._img_xy(e.x, e.y)
         img = self._flat()                       # colours are picked from the picture as seen, layers included
         h, w = img.shape[:2]
@@ -2744,7 +2784,8 @@ class ImageForge:
                 self._status("Colour #%02x%02x%02x set." % (r, g, b), ok=True)
             else:
                 var.set((var.get().strip() + " #%02x%02x%02x" % (r, g, b)).strip())
-                self._status("Added #%02x%02x%02x. Click more colours, or Esc to finish." % (r, g, b), ok=True)
+                self._status("Added #%02x%02x%02x. %s" % (r, g, b, "Ctrl+click adds more." if quick else
+                                                           "Click more colours, or Esc to finish."), ok=True)
         else:
             self._pick_pts.append((x, y))
             sx, sy = x * self.zoom + self.ox, y * self.zoom + self.oy
@@ -2781,14 +2822,6 @@ class ImageForge:
         mode = self.tool.interactive
         x, y = self._img_xy(e.x, e.y)
         pt = (int(math.floor(x)), int(math.floor(y)))
-        if mode == 'clone' and (e.state & 0x4):                 # Ctrl+click: choose where to copy from
-            self.pvars['src_x'].set(pt[0])
-            self.pvars['src_y'].set(pt[1])
-            self._clone_off = None
-            self._draw_clone_marker()
-            self._status("Clone source set at (%d, %d). Now paint where the copy should go." % pt, ok=True)
-            self._draw_brush_circle(e)
-            return
         kind, L = self._tool_target()
         if kind == 'text':
             self._status(self._TEXT_LAYER_MSG)
@@ -2927,6 +2960,9 @@ class ImageForge:
         if self._hand_active():                        # the left button moves the picture, whatever the tool
             self._press, self._pan_left = None, True
             self._on_pan_start(e)
+            return
+        if not self.mode and self._quick_pick(e):      # Ctrl+click: the tool's Pick / Set source button, without pressing it
+            self._press = None
             return
         if self.mode:
             self._press = None
