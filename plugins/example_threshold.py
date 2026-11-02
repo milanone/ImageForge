@@ -14,7 +14,7 @@ A file whose name starts with an underscore is skipped.
 """
 
 
-@tool("Threshold (black & white)", "Tone", [
+@tool("Threshold (black & white)", "Adjustments", [
     Param('level', "Level (0 = Otsu)", 'int', 128, 0, 255, slider=True),
     Param('invert', "Invert", 'bool', False)])
 def threshold(img, level, invert):

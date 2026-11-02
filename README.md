@@ -20,7 +20,7 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
   Ctrl+Shift+J: a cut leaves a hole filled like *leaves*), from a file with its transparency (*Open as layer...*) or with
   *Add text*. Raise, lower, duplicate, delete, *Merge down* (onto the layer below or the Background), *Flatten all*.
   The **Move layer** tool drags the selected layer on the image (arrow keys nudge it). Every change is an undo step.
-- **Add text** (group Draw): type the text (`\n` = new line), pick font, size, colour (type, **Pick** from the image or
+- **Add text** (group Annotate): type the text (`\n` = new line), pick font, size, colour (type, **Pick** from the image or
   the colour dialog), rotation and opacity; click or drag on the image to place it, then *Add as layer*. The text stays
   editable: select its layer, change the boxes, press *Update layer* (select *Background* to add a second text).
 - **Working area** (the box at the top of the right panel): press **Define working area** *before* choosing any tool, drag a
@@ -42,7 +42,7 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
   picks the foreground, Ctrl+Shift+click the background; **X** swaps, **D** resets to black and white). Shift+click draws a straight
   line from where the last stroke ended. They work on the Background or on the selected image layer (paint over a transparent layer
   makes it opaque), and only inside the working area or shape selection. One stroke is one Undo step.
-- **Shapes and scale bars** (group Draw): *Shapes* draws a line, arrow, double arrow, rectangle or ellipse (colour, width, dashed or
+- **Shapes and scale bars** (group Annotate): *Shapes* draws a line, arrow, double arrow, rectangle or ellipse (colour, width, dashed or
   dotted, arrow head size, optional fill, opacity): drag on the image, press the button, and it is a **layer**, so you can restyle it,
   move it, or drag one of its two ends later (select its layer first). *Scale bar* draws a bar of a given length in the picture's
   units, with its label, as a layer too. The Background must be selected to add a second shape.
@@ -63,6 +63,12 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
   *Edit > Paste* (Ctrl+V: a picture on the clipboard becomes a layer, or opens as the picture when nothing is open). The window
   size and place, the last folders and the recent files are remembered in `%APPDATA%\ImageForge\settings.json` (written when you
   close the program).
+- **Where things are**: the tool list (and the *Tools* and *Image* menus) follows the usual split. *Tools* are the ones you use with the mouse:
+  **Draw** (Pencil, Paintbrush, Eraser brush, Fill bucket, Gradient), **Retouch** (Clone stamp, Clean brush, Erase rectangle, Move area),
+  **Annotate** (Add text, Shapes, Scale bar, Measure), **Layers** (Move layer). *Image* holds the one-shot operations with a preview and an
+  Apply button: **Size and orientation** (Resize, Canvas size, Crop, Rotate, Flip, Auto straighten, Perspective, Lens), **Adjustments**
+  (Levels, Curves, Hue / saturation, White balance, Grayscale, Invert ...), **Filters** (Sharpen, Blur, Reduce noise, Morphology, Find
+  edges) and **Clean-up** (Erase / keep colours, Remove marks, Despeckle, Flatten ink, Join dashed lines). A plug-in's group comes after these.
 - **Selection**: drag a rectangle; tools then act only inside it (a click outside it clears it). Drag inside it to move it,
   drag a handle (corners, edge midpoints) to resize it, arrow keys nudge it by 1 px (Shift: 10) once the image has been
   clicked. *Crop to selection*.
@@ -89,18 +95,18 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
 - **Ctrl+click as a shortcut for Pick**: with a tool that has a Pick / Set source button, Ctrl+click on the picture does what the button
   does, without pressing it: the Clone stamp source, a colour to find (Erase / keep colours, Remove marks: added to the list), the
   colour to paint with (Eraser brush, Erase rectangle, Add text), and Ctrl+Shift+click the *paint with* colour of Erase / keep colours.
-  - Tone and colour: **Levels** (per channel or all; black / white points, gamma, output range), **Curves** (smooth monotone curve
+  - Adjustments: **Levels** (per channel or all; black / white points, gamma, output range), **Curves** (smooth monotone curve
     through five points), **Auto contrast** (with a clip percentage, one stretch or per channel), **Local contrast (CLAHE)**,
     **Even out illumination** (removes a slow brightness gradient), **Hue / saturation**, **Colour balance** (shadows / midtones /
     highlights) and **White balance** (pick a grey, gray world or brightest areas). *View > Histogram* (Ctrl+H) shows the values of
     the picture as it is now, preview included, per colour and as lightness, with log scale and a *working area only* option; with
     Levels open its black and white points are drawn on it.
-  - Clean-up and correction: **Reduce noise** (median, bilateral, non-local means), **Morphology** (dilate, erode, open, close,
+  - Filters and corrections: **Reduce noise** (median, bilateral, non-local means), **Morphology** (dilate, erode, open, close,
     outline, top-hat, black-hat), **Find edges** (Canny, Sobel, Laplacian), **Auto straighten** (finds the tilt of text, rules or
     straight edges and rotates it level; the angle is shown after Apply), **Perspective correction** (click the four corners of a
     page or slide seen at an angle), **Canvas size** (add or cut borders; layers keep their place), **Crop to aspect ratio** (1 : 1,
     3 : 2, 16 : 9 ..., from the centre or a side) and **Lens distortion** (barrel / pincushion).
-  - Clean (ported from SpectrumDigitizer): erase / keep colours (**Pick** colours on the image, with tolerance and an
+  - Clean-up (ported from SpectrumDigitizer): erase / keep colours (**Pick** colours on the image, with tolerance and an
     optional widening of the area; paint with white, black, a **picked colour** (Pick it from the picture, or choose it), transparent or **inpaint**, which rebuilds the erased pixels from
     their surroundings so a line over a gradient or a photo fades into it - keep the area narrow, a wide hole gets smeared),
     **Remove marks** (pick the colour of small marks such as the red stars on a scheme: they are taken out with their fringe and

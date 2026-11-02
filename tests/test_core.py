@@ -1782,6 +1782,20 @@ class DrawingTests(unittest.TestCase):
         soft = il.clear_region(rgb, (255, 255, 255), shape)
         self.assertTrue(int(soft[10, 14, 0]) > 240 and 100 < int(soft[10, 4, 0]) < 220 and int(soft[18, 28, 0]) < 110)
 
+    def test_tool_layout_covers_every_built_in_tool(self):
+        listed = {name: g for g, names in il.TOOL_LAYOUT.items() for name in names}
+        self.assertEqual(len(listed), sum(len(v) for v in il.TOOL_LAYOUT.values()))          # no tool listed twice
+        for name, tool in il.TOOLS.items():
+            if name in listed:
+                self.assertEqual(tool.group, listed[name], name)                              # the decorator and the table agree
+            elif tool.group in il.TOOL_LAYOUT:
+                self.fail("%s is in the group %s but not in TOOL_LAYOUT" % (name, tool.group))
+        for name in listed:
+            if name != "Threshold (black & white)":                                           # that one comes from a plug-in
+                self.assertIn(name, il.TOOLS)
+        mouse = {g for g, names in il.TOOL_LAYOUT.items() if any(il.TOOLS[n].interactive or il.TOOLS[n].layer for n in names if n in il.TOOLS)}
+        self.assertEqual(mouse, {"Draw", "Retouch", "Annotate", "Layers"})                    # the groups of mouse tools, and only those
+
     def test_tools_are_registered_as_interactive(self):
         for name in ("Pencil", "Paintbrush", "Fill bucket", "Gradient"):
             self.assertTrue(il.TOOLS[name].interactive, name)

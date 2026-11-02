@@ -137,7 +137,7 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   goes too, for every fill. On a layer the erased pixels are found by the white/black comparison trick and `inpaint_mask(valid=alpha>0)`
   also treats invisible pixels next to the hole as holes, so their (often white) colour is never a source. Wide holes get smeared:
   the tool doc says so. Not done: Navier-Stokes variant, a texture-synthesis fill. Tests: `InpaintTests`.
-- **Erase rectangle / Move area** (group Areas, `interactive='rect-erase'` / `'rect-move'`): *Erase rectangle* drags a rectangle with
+- **Erase rectangle / Move area** (group Retouch, `interactive='rect-erase'` / `'rect-move'`): *Erase rectangle* drags a rectangle with
   the selection-drawing code (`_rect_from`, `_draw_selection(rect)`, not stored in `self.sel`) and applies on release through
   `erase_rect` (RGB) or `erase_rect_layer` (RGBA, rectangle converted with `layer_region`): flat white/black, `transparent` (white on
   the Background), `inpaint`. *Move area* is the ordinary selection, but `_moves_content` is always true for it, so the drag inside
@@ -202,7 +202,7 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
 - **Progressive slider** (`Param(progressive=True)`): slider position t in 0..1 maps to `lo + (hi-lo)*t^2`, so low values have fine steps and
   high ones coarse; the number box and the slider follow each other. Used by the Diameter of Clone stamp, Clean brush and Eraser brush (default 10).
 
-- **Remove marks** (`remove_marks`, `rebuild_under`, `_stubs`, `_link_stubs`; group Clean): for stars/stamps/dots of one colour over a
+- **Remove marks** (`remove_marks`, `rebuild_under`, `_stubs`, `_link_stubs`; group Clean-up): for stars/stamps/dots of one colour over a
   drawing made of fills and dark outlines (Francesco's `synechocystis.png`, a cartoon scheme with 16 red stars; the file is not in the
   repo, it is a published figure). Mask = pixels within the tolerance of the picked colours, connected shapes up to `max_area`
   (a large object of a similar colour, such as a pink box, is left alone: the default tolerance is tight, 35), dilated by `grow`.
@@ -254,7 +254,7 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   selection selects everything but the shape. Tests: `MaskSelectionTests`; real window: `examples/selection_session.py`.
   Not done: moving a shape's content (Move area is rectangular), saving the selection, selection from a layer's alpha, rotation.
 
-- **Tone and colour tools** (group Tone / Colour; all pure numpy / cv2 functions of `img`, each returning `img` itself at its
+- **Tone and colour tools** (group Adjustments; all pure numpy / cv2 functions of `img`, each returning `img` itself at its
   defaults so 'no change' is recognised): `levels` (`levels_lut`, a 256-value LUT per call, `apply_lut` for one channel),
   `curves` (`monotone_curve`: Fritsch-Carlson cubic through 5 points, it cannot overshoot, so a rising set of points never makes
   an inverted band; a hand-drawn curve widget was left out on purpose: five sliders are enough and fit the Param machinery),
@@ -370,11 +370,18 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   (`_on_wheel`). Beware when testing: `widget.event_generate('<KeyPress-x>', state=0)` is NOT delivered on Windows, leave `state` out.
   Known gaps against the usual editors: no single-key tool shortcuts (B, E, ...), no Ctrl+N / Ctrl+W. Check: `examples/keys_session.py`.
 
+- **Tool list layout** (`TOOL_LAYOUT`, `_fill_tool_tree`): the order of the groups and of the tools inside them is the table, not the order
+  of registration; a tool or group that is not in it (a plug-in) comes after, in registration order. A group that holds any `interactive` or
+  `layer` tool goes under the *Tools* menu, every other under *Image*. The `@tool(name, group, ...)` group and the table must agree
+  (a test checks that and that no built-in tool is missing from the table): when you add a tool, give it a group AND a line in `TOOL_LAYOUT`.
+  Groups: Draw, Retouch, Annotate, Layers (mouse tools); Size and orientation, Adjustments, Filters, Clean-up (one-shot operations).
+  Check: `examples/menus_session.py`.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a
 test: every registered tool is already checked for dtype/shape and for not modifying its input). Group names create
-new tree nodes automatically.
+new tree nodes automatically (and add it to `TOOL_LAYOUT` to choose its place).
 
 ## Verified / not verified
 

@@ -49,6 +49,16 @@ PROJECT_TYPE = ("ImageForge project (layers kept)", "*.ifl")
 # Tool registry
 # ---------------------------------------------------------------------------------------------------------
 TOOLS = {}                          # name -> Tool, in registration order (which is the order of the tool list)
+TOOL_LAYOUT = {
+    'Draw': ['Pencil', 'Paintbrush', 'Eraser brush', 'Fill bucket', 'Gradient'],
+    'Retouch': ['Clone stamp', 'Clean brush', 'Erase rectangle', 'Move area'],
+    'Annotate': ['Add text', 'Shapes', 'Scale bar', 'Measure'],
+    'Layers': ['Move layer'],
+    'Size and orientation': ['Resize', 'Canvas size', 'Crop to aspect ratio', 'Auto-crop borders', 'Rotate 90 / 180', 'Rotate (any angle)', 'Flip', 'Auto straighten', 'Perspective correction', 'Lens distortion'],
+    'Adjustments': ['Brightness / contrast', 'Levels', 'Curves', 'Auto contrast', 'Local contrast (CLAHE)', 'Even out illumination', 'Hue / saturation', 'Colour balance', 'White balance', 'Grayscale', 'Invert', 'Threshold (black & white)'],
+    'Filters': ['Sharpen (unsharp mask)', 'Blur (Gaussian)', 'Reduce noise', 'Morphology', 'Find edges'],
+    'Clean-up': ['Erase / keep colours', 'Remove marks', 'Despeckle', 'Flatten ink to one colour', 'Join dashed lines'],
+}          # the order of the groups and of the tools in the lists; a group of a plug-in comes after them, in registration order
 TOOL_NOTES = {}                     # name -> a sentence a tool leaves about what it just did (shown after Apply)
 
 
@@ -241,7 +251,7 @@ def _to_u8(f):
     return np.clip(np.rint(f), 0, 255).astype(np.uint8)
 
 
-@tool("Brightness / contrast", "Tone", [
+@tool("Brightness / contrast", "Adjustments", [
     Param('brightness', "Brightness", 'int', 0, -100, 100, slider=True),
     Param('contrast', "Contrast", 'int', 0, -100, 99, slider=True)])
 def brightness_contrast(img, brightness, contrast):
@@ -252,7 +262,7 @@ def brightness_contrast(img, brightness, contrast):
     return _to_u8((img.astype(np.float32) - 128.0) * k + 128.0 + brightness * 2.55)
 
 
-@tool("Grayscale", "Tone", [
+@tool("Grayscale", "Adjustments", [
     Param('method', "Method", 'choice', 'luminance', choices=('luminance', 'average')),
     Param('strength', "Strength (%)", 'int', 100, 0, 100, slider=True)])
 def grayscale(img, method, strength):
@@ -268,7 +278,7 @@ def grayscale(img, method, strength):
     return _to_u8(f * (1 - s) + g[:, :, None] * s)
 
 
-@tool("Invert", "Tone")
+@tool("Invert", "Adjustments")
 def invert(img):
     """Negative: every value v becomes 255 - v."""
     return 255 - img
@@ -333,7 +343,7 @@ def levels_lut(in_black, in_white, gamma, out_black, out_white):
     return _to_u8(out_black + t * (out_white - out_black))
 
 
-@tool("Levels", "Tone", [
+@tool("Levels", "Adjustments", [
     Param('channel', "Channel", 'choice', 'RGB', choices=CHANNELS),
     Param('in_black', "Input black point", 'int', 0, 0, 254, slider=True),
     Param('in_white', "Input white point", 'int', 255, 1, 255, slider=True),
@@ -368,7 +378,7 @@ def monotone_curve(xs, ys):
     return _to_u8(y)
 
 
-@tool("Curves", "Tone", [
+@tool("Curves", "Adjustments", [
     Param('channel', "Channel", 'choice', 'RGB', choices=CHANNELS),
     Param('black', "Black ends at", 'int', 0, 0, 255, slider=True),
     Param('shadows', "Shadows (input 64) becomes", 'int', 64, 0, 255, slider=True),
@@ -383,7 +393,7 @@ def curves(img, channel, black, shadows, mid, high, white):
     return apply_lut(img, monotone_curve([0, 64, 128, 192, 255], [black, shadows, mid, high, white]), channel)
 
 
-@tool("Auto contrast", "Tone", [
+@tool("Auto contrast", "Adjustments", [
     Param('clip', "Ignore the darkest and lightest (%)", 'float', 0.5, 0.0, 10.0, step=0.1, slider=True),
     Param('per_channel', "Each colour channel on its own (also removes a colour cast)", 'bool', False)],
     doc="Stretches the values so that the darkest and the lightest ends of the picture reach black and white. By default one "
@@ -405,7 +415,7 @@ def auto_contrast(img, clip, per_channel):
     return img if np.array_equal(_to_u8(out), img) else _to_u8(out)
 
 
-@tool("Local contrast (CLAHE)", "Tone", [
+@tool("Local contrast (CLAHE)", "Adjustments", [
     Param('clip_limit', "Strength", 'float', 2.0, 0.5, 10.0, step=0.1, slider=True),
     Param('tiles', "Tiles across (more = more local)", 'int', 8, 2, 32, slider=True)],
     doc="Adaptive histogram equalisation of the lightness: brings out detail in dim and washed-out parts of a picture (microscopy, "
@@ -416,7 +426,7 @@ def clahe(img, clip_limit, tiles):
     return cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
 
 
-@tool("Even out illumination", "Tone", [
+@tool("Even out illumination", "Adjustments", [
     Param('radius', "Scale of the uneven light (px)", 'int', 80, 5, 600, slider=True, progressive=True),
     Param('strength', "Strength (%)", 'int', 100, 0, 100, slider=True),
     Param('mode', "Correct by", 'choice', 'divide', choices=('divide', 'subtract'))],
@@ -440,7 +450,7 @@ def even_illumination(img, radius, strength, mode):
     return _to_u8(f + (out - f) * (strength / 100.0))
 
 
-@tool("Hue / saturation", "Colour", [
+@tool("Hue / saturation", "Adjustments", [
     Param('hue', "Hue shift (deg)", 'int', 0, -180, 180, slider=True),
     Param('saturation', "Saturation (%)", 'int', 0, -100, 100, slider=True),
     Param('lightness', "Lightness (%)", 'int', 0, -100, 100, slider=True)],
@@ -460,7 +470,7 @@ def hue_saturation(img, hue, saturation, lightness):
     return _to_u8(out)
 
 
-@tool("Colour balance", "Colour", [
+@tool("Colour balance", "Adjustments", [
     Param('tones', "Tones to change", 'choice', 'midtones', choices=('shadows', 'midtones', 'highlights', 'all')),
     Param('red', "Cyan  <->  Red", 'int', 0, -100, 100, slider=True),
     Param('green', "Magenta  <->  Green", 'int', 0, -100, 100, slider=True),
@@ -477,7 +487,7 @@ def colour_balance(img, tones, red, green, blue):
     return _to_u8(f + w[..., None] * shift)
 
 
-@tool("White balance", "Colour", [
+@tool("White balance", "Adjustments", [
     Param('method', "Method", 'choice', 'picked neutral', choices=('picked neutral', 'gray world', 'brightest areas')),
     Param('neutral', "Neutral colour (Pick or Ctrl+click on grey / white)", 'colors', '', pick='color1'),
     Param('strength', "Strength (%)", 'int', 100, 0, 100, slider=True)],
@@ -637,7 +647,7 @@ def estimate_skew(img, max_angle=10.0, method='projection'):
     return round(best, 2)
 
 
-@tool("Auto straighten", "Geometry", [
+@tool("Auto straighten", "Size and orientation", [
     Param('method', "Look at", 'choice', 'lines of text or rules', choices=('lines of text or rules', 'straight edges')),
     Param('max_angle', "Largest tilt to look for (deg)", 'float', 10.0, 1.0, 45.0, step=0.5, slider=True),
     Param('expand', "Enlarge canvas to fit", 'bool', True),
@@ -673,7 +683,7 @@ def perspective_warp(img, corners, out_w=0, out_h=0):
                                borderMode=cv2.BORDER_REPLICATE)
 
 
-@tool("Perspective correction", "Geometry", [
+@tool("Perspective correction", "Size and orientation", [
     Param('tl_x', "Corner 1 X  (use the button to click all four)", 'int', 0, -100000, 100000, pick='quad'),
     Param('tl_y', "Corner 1 Y", 'int', 0, -100000, 100000),
     Param('tr_x', "Corner 2 X", 'int', 0, -100000, 100000),
@@ -711,7 +721,7 @@ def canvas_size(img, left, top, right, bottom, fill='white', color=None):
     return np.ascontiguousarray(pad[y0:y0 + nh, x0:x0 + nw])
 
 
-@tool("Canvas size", "Geometry", [
+@tool("Canvas size", "Size and orientation", [
     Param('left', "Add on the left (px, negative cuts)", 'int', 0, -20000, 20000),
     Param('top', "Add on top (px)", 'int', 0, -20000, 20000),
     Param('right', "Add on the right (px)", 'int', 0, -20000, 20000),
@@ -744,7 +754,7 @@ def _aspect_of(p):
     return (rh, rw) if p['portrait'] else (rw, rh)
 
 
-@tool("Crop to aspect ratio", "Geometry", [
+@tool("Crop to aspect ratio", "Size and orientation", [
     Param('ratio', "Ratio (width : height)", 'choice', '3 : 2', choices=tuple(ASPECTS) + ('custom',)),
     Param('custom_w', "Custom: width part", 'int', 4, 1, 1000),
     Param('custom_h', "Custom: height part", 'int', 5, 1, 1000),
@@ -775,7 +785,7 @@ def undistort_radial(img, k1, k2=0.0, zoom=100.0):
                      borderMode=cv2.BORDER_REPLICATE)
 
 
-@tool("Lens distortion", "Geometry", [
+@tool("Lens distortion", "Size and orientation", [
     Param('k1', "Bend: minus = barrel (bulging), plus = pincushion", 'float', 0.0, -1.0, 1.0, step=0.01, slider=True),
     Param('k2', "Fine bend (edges)", 'float', 0.0, -1.0, 1.0, step=0.01, slider=True),
     Param('zoom', "Enlarge (%)", 'int', 100, 100, 200, slider=True)],
@@ -788,7 +798,7 @@ def lens_distortion(img, k1, k2, zoom):
     return undistort_radial(img, k1, k2, zoom)
 
 
-@tool("Rotate 90 / 180", "Geometry", [
+@tool("Rotate 90 / 180", "Size and orientation", [
     Param('turn', "Turn", 'choice', '90 clockwise', choices=('90 clockwise', '90 counter-clockwise', '180'))],
     geometry=True, layer_geometry='exact')
 def rotate_quarter(img, turn):
@@ -797,7 +807,7 @@ def rotate_quarter(img, turn):
     return np.ascontiguousarray(np.rot90(img, k))
 
 
-@tool("Rotate (any angle)", "Geometry", [
+@tool("Rotate (any angle)", "Size and orientation", [
     Param('angle', "Angle (deg, counter-clockwise)", 'float', 0.0, -180.0, 180.0, step=0.1, slider=True,
           pick='angle'),
     Param('expand', "Enlarge canvas to fit", 'bool', True),
@@ -821,7 +831,7 @@ def rotate_free(img, angle, expand, fill):
     return cv2.warpAffine(img, m, (nw, nh), flags=cv2.INTER_CUBIC, borderMode=border[0], borderValue=border[1])
 
 
-@tool("Flip", "Geometry", [Param('axis', "Axis", 'choice', 'horizontal', choices=('horizontal', 'vertical'))],
+@tool("Flip", "Size and orientation", [Param('axis', "Axis", 'choice', 'horizontal', choices=('horizontal', 'vertical'))],
       geometry=True, layer_geometry='exact')
 def flip(img, axis):
     """Mirror the image left-right (horizontal) or top-bottom (vertical)."""
@@ -832,7 +842,7 @@ INTERPOLATIONS = {'nearest': cv2.INTER_NEAREST, 'linear': cv2.INTER_LINEAR, 'cub
                   'lanczos': cv2.INTER_LANCZOS4, 'area': cv2.INTER_AREA}
 
 
-@tool("Resize", "Geometry", [
+@tool("Resize", "Size and orientation", [
     Param('percent', "Scale (%)", 'float', 100.0, 1.0, 1000.0, step=1.0, slider=True),
     Param('width', "Width (px, 0 = use scale)", 'int', 0, 0, 100000),
     Param('height', "Height (px, 0 = use scale)", 'int', 0, 0, 100000),
@@ -910,7 +920,7 @@ def inpaint_mask(img, hole, radius, valid=None):
     return img if np.array_equal(out, img) else out
 
 
-@tool("Erase / keep colours", "Clean", [
+@tool("Erase / keep colours", "Clean-up", [
     Param('colors', "Colours (click Pick on the image)", 'colors', '', pick='color'),
     Param('mode', "Mode", 'choice', 'erase', choices=('erase', 'keep only')),
     Param('tolerance', "Tolerance (RGB distance)", 'int', 60, 1, 441, slider=True),
@@ -1174,7 +1184,7 @@ def rebuild_under(img, hole, ink_below=100, reach=12):
     return out
 
 
-@tool("Remove marks", "Clean", [
+@tool("Remove marks", "Clean-up", [
     Param('colors', "Colour of the marks (click Pick on one)", 'colors', '', pick='color'),
     Param('tolerance', "Tolerance (RGB distance)", 'int', 35, 1, 441, slider=True),
     Param('grow', "Widen each mark by (px)", 'int', 3, 0, 20),
@@ -1246,7 +1256,7 @@ def erase_rect_layer(rgba, rect, fill='transparent', radius=3, color=None):
     return out if not np.array_equal(out, rgba) else rgba
 
 
-@tool("Erase rectangle", "Areas", [
+@tool("Erase rectangle", "Retouch", [
     Param('fill', "Paint with", 'choice', 'white', choices=tuple(FILLS) + ('picked colour', 'transparent', 'inpaint')),
     Param('color', "Picked colour", 'colors', '#ffffff', pick='color1'),
     Param('radius', "Inpaint radius (px)", 'int', 3, 1, 30, slider=True)],
@@ -1258,7 +1268,7 @@ def erase_rectangle(img, fill, color, radius):
     return img
 
 
-@tool("Move area", "Areas", [Param('copy', "Copy instead of moving", 'bool', False)],
+@tool("Move area", "Retouch", [Param('copy', "Copy instead of moving", 'bool', False)],
       preview=False, interactive='rect-move',
       doc="Drag a rectangle round what you want to move, then drag inside it to move it (Shift also copies). The place it "
           "leaves is filled as the 'leaves' box says. Drag a handle to resize the rectangle first; drag outside to draw "
@@ -1321,7 +1331,7 @@ def clean_brush(img, size, radius):
     return img
 
 
-@tool("Despeckle", "Clean", [
+@tool("Despeckle", "Clean-up", [
     Param('min_size', "Remove specks under (px)", 'int', 6, 1, 500, slider=True),
     Param('tolerance', "Ink = further from background than", 'int', 60, 1, 441, slider=True),
     Param('background', "Background", 'choice', 'white', choices=tuple(FILLS))])
@@ -1341,7 +1351,7 @@ def despeckle(img, min_size, tolerance, background):
     return out
 
 
-@tool("Flatten ink to one colour", "Clean", [
+@tool("Flatten ink to one colour", "Clean-up", [
     Param('tolerance', "Ink = further from background than", 'int', 60, 1, 441, slider=True),
     Param('background', "Background", 'choice', 'white', choices=tuple(FILLS))])
 def flatten_ink(img, tolerance, background):
@@ -1358,7 +1368,7 @@ def flatten_ink(img, tolerance, background):
     return out
 
 
-@tool("Eraser brush", "Clean", [
+@tool("Eraser brush", "Draw", [
     Param('size', "Diameter (px)", 'int', 10, 1, 300, slider=True, progressive=True),
     Param('fill', "Paint with", 'choice', 'white', choices=tuple(FILLS) + ('picked colour', 'transparent')),
     Param('color', "Picked colour", 'colors', '#ffffff', pick='color1')],
@@ -1726,7 +1736,7 @@ def join_dashes(img, background, tolerance, max_gap, max_turn):
     return (np.asarray(pim), joins) if joins else (img, 0)
 
 
-@tool("Join dashed lines", "Clean", [
+@tool("Join dashed lines", "Clean-up", [
     Param('max_gap', "Largest gap to join (px)", 'int', 15, 1, 200, slider=True),
     Param('max_turn', "Largest turn at a join (deg)", 'int', 50, 10, 89, slider=True),
     Param('tolerance', "Ink = further from background than", 'int', 60, 1, 441, slider=True),
@@ -1813,7 +1823,7 @@ def blend_rgba(dst, rgba, x, y, opacity=1.0):
     return True
 
 
-@tool("Add text", "Draw", [
+@tool("Add text", "Annotate", [
     Param('text', "Text (type \n for a new line)", 'text', "Text"),
     Param('size', "Size (px)", 'int', 32, 4, 2000, slider=True),
     Param('font', "Font", 'choice', FONT_CHOICES[0], choices=FONT_CHOICES),
@@ -2101,7 +2111,7 @@ LAYER_KINDS = {
 }
 
 
-@tool("Measure", "Measure", [
+@tool("Measure", "Annotate", [
     Param('what', "Measure", 'choice', 'distance', choices=('distance', 'path length', 'angle', 'area'))],
     preview=False, interactive='measure',
     doc="distance: drag from one point to the other (or click both). path length: click the points, double-click or Enter ends. "
@@ -2112,7 +2122,7 @@ def measure(img, what):
     return img
 
 
-@tool("Shapes", "Draw", [
+@tool("Shapes", "Annotate", [
     Param('shape', "Shape", 'choice', 'arrow', choices=SHAPES),
     Param('stroke', "Line colour", 'colors', '#e02020', pick='color1'),
     Param('width', "Line width (px)", 'float', 3.0, 0.5, 100.0, step=0.5, slider=True, progressive=True),
@@ -2140,7 +2150,7 @@ def shapes(img, shape, stroke, width, dash, head, filled, fill, opacity, x0, y0,
     return out if blend_rgba(out, rgba, L.x, L.y) else img
 
 
-@tool("Scale bar", "Draw", [
+@tool("Scale bar", "Annotate", [
     Param('length', "Length of the bar (in the picture's units)", 'float', 10.0, 0.0001, 1000000.0, step=1.0),
     Param('label', "Label (empty = length and unit)", 'text', ""),
     Param('label_pos', "Label", 'choice', 'above', choices=('above', 'below', 'none')),
@@ -2314,7 +2324,7 @@ def border_color(img):
     return tuple(int(v) for v in np.median(ring, axis=0))
 
 
-@tool("Auto-crop borders", "Geometry", [
+@tool("Auto-crop borders", "Size and orientation", [
     Param('background', "Border colour", 'choice', 'auto', choices=('auto',) + tuple(FILLS)),
     Param('tolerance', "Content = further from it than", 'int', 30, 1, 441, slider=True),
     Param('margin', "Keep a margin (px)", 'int', 0, 0, 500)],
@@ -2976,11 +2986,13 @@ class ImageForge:
         self.root.config(menu=mb)
         self.m_file, self.m_edit, self.m_view = tk.Menu(mb, tearoff=0), tk.Menu(mb, tearoff=0), tk.Menu(mb, tearoff=0)
         self.m_image = tk.Menu(mb, tearoff=0)
+        self.m_tools = tk.Menu(mb, tearoff=0)
         self.m_layer = tk.Menu(mb, tearoff=0)
         self.m_measure = tk.Menu(mb, tearoff=0)
         mb.add_cascade(label="File", menu=self.m_file)
         mb.add_cascade(label="Edit", menu=self.m_edit)
         mb.add_cascade(label="View", menu=self.m_view)
+        mb.add_cascade(label="Tools", menu=self.m_tools)
         mb.add_cascade(label="Image", menu=self.m_image)
         mb.add_cascade(label="Measure", menu=self.m_measure)
         self.m_recipe = tk.Menu(mb, tearoff=0)
@@ -3316,16 +3328,22 @@ class ImageForge:
         return "break"
 
     def _fill_tool_tree(self):
-        """Fill the tool list (built-ins and plug-ins) and the Image menu, grouped."""
+        """Fill the tool list (built-ins and plug-ins) in the order of TOOL_LAYOUT. The groups that hold mouse tools (a pencil, a clone
+        stamp, text ...) go in the Tools menu, the others (one-shot operations with a preview) in the Image menu."""
         self.tree.delete(*self.tree.get_children())
         self.m_image.delete(0, tk.END)
+        self.m_tools.delete(0, tk.END)
         groups = {}
         for t in TOOLS.values():
             groups.setdefault(t.group, []).append(t)
-        for g, ts in groups.items():
+        order = [g for g in TOOL_LAYOUT if g in groups] + [g for g in groups if g not in TOOL_LAYOUT]
+        for g in order:
+            names = TOOL_LAYOUT.get(g, [])
+            ts = sorted(groups[g], key=lambda t: names.index(t.name) if t.name in names else len(names))
             self.tree.insert('', tk.END, iid='g:' + g, text=g, open=True)
-            sub = tk.Menu(self.m_image, tearoff=0)
-            self.m_image.add_cascade(label=g, menu=sub)
+            menu = self.m_tools if any(t.interactive or t.layer for t in ts) else self.m_image
+            sub = tk.Menu(menu, tearoff=0)
+            menu.add_cascade(label=g, menu=sub)
             for t in ts:
                 self.tree.insert('g:' + g, tk.END, iid=t.name, text=t.name)
                 sub.add_command(label=t.name, command=lambda n=t.name: self.tree.selection_set(n))
