@@ -311,6 +311,32 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   `examples/clean_session.py`. Not done: manual deskew by dragging, perspective corner dragging on the picture, lens profiles,
   deconvolution, inpainting-based dust removal.
 
+- **Workflow: history steps, recipes, batch, settings** (`History.steps` / `.lost` / `.recipe()`, `tool_step`, `layer_step`,
+  `validate_steps`, `save_recipe` / `load_recipe` (`.ifr`, JSON, version 1), `run_recipe`, `parse_step_text`, `list_images`,
+  `batch_output_path`, `run_batch`, `cli`, `settings_path` / `load_settings` / `save_settings` / `add_recent` / `recent_files`):
+  next to every `History` state sits the recipe step that made it, or None. `_commit(label, img, layers, step)` and
+  `_commit_layers(..., step)` carry it; `apply()` records the Background tools (`_recipe_step_for`: not when a shape selection is
+  active, because it belongs to this picture; a plain rectangle is stored as the step's `region` and clipped to each picture's size at
+  run time; geometry tools ignore it) and `_apply_layer_tool` records the ADDITION of a text / shape / scale-bar layer (an edit of an
+  existing layer is not repeatable). Everything else (brush strokes, moves, tools run on one layer, merges, crops to the selection)
+  leaves None and is reported as skipped. Because the list is parallel to `states` and trimmed with them, an Undo or a jump shortens
+  the recipe by itself, a new step after an Undo replaces the old branch, and `lost` counts steps dropped by the memory limit (the
+  recipe then starts late: said when saving). `run_recipe` is headless: tools through `apply_tool`, layer steps through the
+  `LAYER_KINDS` builders with the scale stored in the step, a geometry tool first merges the layers (or shifts them when it has
+  `layer_shift`), the layers are merged at the end. `run_batch` never stops on a bad file, writes `name + suffix + ext` in the output
+  folder (sub-folders kept when `root_dir` is given), takes a free name (`_1`, `_2`) unless overwrite, and never writes over its
+  own source. The dialog processes one file per `after(5)` call so the window stays alive; the output folder is excluded from the
+  input list. The command line (`main()` -> `cli()`, only when the first argument starts with `--`) loads the plug-ins and returns
+  0 / 1 (some files failed) / 2 (bad arguments). The History tab (`_refresh_history`, `jump_to`) rebuilds only when the labels, the
+  index or the replayable marks change; `jump_to` sets `hist.index` and refreshes like `_step`. Settings are written only in
+  `on_close` (never while editing: the scripted sessions call `root.destroy()` and so never touch the user's file; the workflow session
+  sets `IMAGEFORGE_SETTINGS` anyway); a damaged or unwritable file is ignored. Window geometry is restored only when it parses and fits the
+  screen. `paste_clipboard` uses `PIL.ImageGrab.grabclipboard` (Windows / macOS; a copied FILE list opens the first picture). The
+  Export dialog applies the options to a copy of the flattened picture. A modal `messagebox` in a scripted session hangs it: sessions
+  set `a.dirty = False` before `open_path`. Tests: `WorkflowTests`; real window: `examples/workflow_session.py`. Not done:
+  the preview on a shrunken copy or in a thread, recording moves / brush strokes, editing a recipe, a recipe with a choice of file,
+  copy of the picture to the clipboard.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a
@@ -331,7 +357,6 @@ Nothing here is promised; Francesco adds tools as he needs them. Ordered roughly
 - Layer blend modes (multiply, screen, ...), layer masks, layer groups, lock/link layers.
 - *Drag moves the content* and Cut/Copy to layer working from a layer (they use the Background); Pick colours from the
   selected layer instead of the composite.
-- Undo history panel (list of steps to jump to), recent files, remember window/panel settings.
 
 **Selection**
 - Rotation of the selection (SpectrumDigitizer's working area rotated); selection from a layer's alpha, zoom to selection,
@@ -348,10 +373,7 @@ Nothing here is promised; Francesco adds tools as he needs them. Ordered roughly
 - Clone / heal brush, smudge, fill bucket with tolerance, gradient fill.
 
 **Files and use**
-- Paste an image from the clipboard (as a layer) and copy the picture to the clipboard; export dialog with JPEG quality, PNG
-  compression, dpi; save as layered TIFF/ORA/PSD-compatible if ever needed (the `.ifl` project is the native format).
-- Batch mode: apply a chain of tools to a folder of images (record the history steps as a recipe, replay on other files);
-  command-line `--apply "Tool:param=value"` for scripts.
+- Copy the picture to the clipboard; save as layered TIFF/ORA/PSD-compatible if ever needed (the `.ifl` project is the native format).
 - 16-bit and alpha on the Background, ICC profiles, EXIF kept on save, animated GIF / multi-page TIFF.
 - Plug-in niceties: a `plugins/` template generator, per-plug-in help text in the tool list, parameter presets.
 

@@ -43,6 +43,18 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
   and listed in *Measure > Measurements*, which can copy the table for a spreadsheet. **Calibrate from a measured length** (a known
   object or a ruler) gives the scale, which can also be typed or taken from the picture's dpi; then lengths and areas are given in
   real units, scale bars are the right size, and the scale is saved in a `.ifl` project. Measurements themselves are not saved.
+- **History tab, recipes and batch**: the *History* tab lists every step of the picture; click one to go back (or forward) to it.
+  A dot marks the steps a **recipe** can repeat on other pictures (tools applied to the whole picture or to a rectangle, and text /
+  shape / scale-bar layers); brush strokes, moves and shape selections cannot be repeated and are listed as skipped. *Recipe > Save
+  the steps so far* writes a `.ifr` file; *Run a recipe on this picture* applies one to the open picture; *Run a recipe on a folder*
+  processes every picture of a folder (and its sub-folders, if asked) into another folder, in the same or a chosen format, with a name
+  suffix and a JPEG quality, never over the originals unless told to. The same from a terminal:
+  `python ImageForge.pyw --batch IN OUT --apply "Levels:gamma=1.4" --apply "Auto contrast" --format png --recursive`
+  (or `--recipe file.ifr`); `python ImageForge.pyw --list-tools` lists the tools and their boxes.
+- **Files**: *File > Open recent*, *Export...* (format, JPEG quality, PNG compression, longest side, dpi; the project is untouched) and
+  *Edit > Paste* (Ctrl+V: a picture on the clipboard becomes a layer, or opens as the picture when nothing is open). The window
+  size and place, the last folders and the recent files are remembered in `%APPDATA%\ImageForge\settings.json` (written when you
+  close the program).
 - **Selection**: drag a rectangle; tools then act only inside it (a click outside it clears it). Drag inside it to move it,
   drag a handle (corners, edge midpoints) to resize it, arrow keys nudge it by 1 px (Shift: 10) once the image has been
   clicked. *Crop to selection*.

@@ -16,6 +16,7 @@ import io
 import json
 import math
 import os
+import re
 import sys
 import time
 import traceback
@@ -2205,6 +2206,8 @@ class History:
 
     def __init__(self, img, limit_bytes=HISTORY_BYTES, layers=()):
         self.states = [("Original", img, tuple(layers))]
+        self.steps = [None]               # beside every state: the recipe step that made it (a dict) or None (cannot be replayed)
+        self.lost = 0                     # states dropped from the start by the memory limit: the recipe is then incomplete
         self.index = 0
         self.limit = limit_bytes
 
@@ -2225,15 +2228,31 @@ class History:
                     total += a.nbytes
         return total
 
-    def push(self, label, img, layers=None):
-        """New state; `layers` None keeps the current layers."""
+    def push(self, label, img, layers=None, step=None):
+        """New state; `layers` None keeps the current layers. `step` is the recipe step (see recipe_step) that makes it, when it
+        is something a recipe can repeat on another picture."""
         layers = self.layers if layers is None else tuple(layers)
         del self.states[self.index + 1:]
+        del self.steps[self.index + 1:]
         self.states.append((label, img, layers))
+        self.steps.append(step)
         self.index += 1
         while len(self.states) > 2 and self._bytes() > self.limit:
             del self.states[0]
+            del self.steps[0]
             self.index -= 1
+            self.lost += 1
+
+    def recipe(self):
+        """(steps, skipped): the replayable steps that lead to the current state, and the labels of the steps that cannot be
+        repeated on another picture (brush strokes, moves, edits of one layer ...)."""
+        steps, skipped = [], []
+        for i in range(1, self.index + 1):
+            if self.steps[i] is not None:
+                steps.append(self.steps[i])
+            else:
+                skipped.append(self.states[i][0])
+        return steps, skipped
 
     def can_undo(self):
         return self.index > 0
@@ -2362,7 +2381,230 @@ def project_scale(path):
         return None
 
 
-def save_image(img, path, dpi=None, jpeg_quality=95):
+# ---- recipes: steps recorded while editing, replayed on other pictures -------------------------------------------------------------
+RECIPE_FORMAT = "ImageForge recipe"
+RECIPE_VERSION = 1
+RECIPE_EXT = ".ifr"
+
+
+def tool_step(name, params, region=None):
+    """A recipe step: the tool and the values of its boxes (and the rectangle it was limited to, if any)."""
+    return dict(kind='tool', tool=name, params=dict(params), region=[int(v) for v in region] if region is not None else None)
+
+
+def layer_step(tool_name, params, scale=None):
+    """A recipe step that adds a layer (text, shape, scale bar) made by a layer tool; it is merged into the picture when the
+    recipe is run on a file."""
+    return dict(kind='layer', tool=tool_name, params=dict(params), scale=list(scale) if scale else None)
+
+
+def validate_steps(steps):
+    """Check recipe steps against the tools of this installation; ValueError with a plain message otherwise."""
+    for i, st in enumerate(steps, 1):
+        if not isinstance(st, dict) or st.get('kind') not in ('tool', 'layer') or st.get('tool') not in TOOLS:
+            raise ValueError("step %d uses a tool this ImageForge does not have: %r" % (i, st.get('tool') if isinstance(st, dict) else st))
+        t = TOOLS[st['tool']]
+        if st['kind'] == 'tool' and (t.interactive or t.layer):
+            raise ValueError("step %d (%s) is not a tool that can run on its own" % (i, t.name))
+        if st['kind'] == 'layer' and not t.layer:
+            raise ValueError("step %d (%s) does not make a layer" % (i, t.name))
+        if not isinstance(st.get('params', {}), dict):
+            raise ValueError("step %d has no usable parameters" % i)
+
+
+def save_recipe(path, steps, note=""):
+    """Write a recipe (JSON). Written to a temporary file first."""
+    validate_steps(steps)
+    doc = dict(format=RECIPE_FORMAT, version=RECIPE_VERSION, note=note, steps=steps)
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(doc, f, indent=1)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def load_recipe(path):
+    """The steps of a recipe file; ValueError with a plain message when it is not one, is newer, or needs a missing tool."""
+    try:
+        with open(path, encoding='utf-8') as f:
+            doc = json.load(f)
+    except (OSError, ValueError) as ex:
+        raise ValueError("not a readable recipe (%s)" % ex)
+    if not isinstance(doc, dict) or doc.get('format') != RECIPE_FORMAT:
+        raise ValueError("not an ImageForge recipe")
+    if int(doc.get('version', 0)) > RECIPE_VERSION:
+        raise ValueError("saved by a newer ImageForge (recipe version %s)" % doc['version'])
+    steps = doc.get('steps')
+    if not isinstance(steps, list):
+        raise ValueError("the recipe has no steps")
+    validate_steps(steps)
+    return steps
+
+
+def run_recipe(img, steps):
+    """The RGB picture `img` after every step: tools run on the picture (a rectangle recorded with a step is clipped to this
+    picture's size), layer steps add their layer, which stays editable until the next geometry tool (that merges the layers
+    first, like the editor does) or the end, where everything is merged."""
+    base, layers = img, ()
+    for st in steps:
+        t = TOOLS[st['tool']]
+        if st['kind'] == 'layer':
+            sc = tuple(st['scale']) if st.get('scale') else None
+            L = LAYER_KINDS[t.layer]['build'](dict(st['params']), None, sc)
+            if L is not None:
+                layers = layers + (L,)
+            continue
+        region = None
+        if st.get('region') and not t.geometry:
+            h, w = base.shape[:2]
+            x0, y0, x1, y1 = st['region']
+            region = (max(0, x0), max(0, y0), min(w, x1), min(h, y1))
+            if region[2] <= region[0] or region[3] <= region[1]:
+                continue
+        if t.geometry and layers:
+            if t.layer_shift:
+                dx, dy = t.layer_shift(dict(_full_params(t, st['params'])), base.shape)
+                layers = shift_layers(layers, dx, dy)
+            else:
+                base, layers = composite(base, layers), ()
+        base = apply_tool(t.name, base, st['params'], region)
+    return composite(base, layers)
+
+
+def _full_params(t, params):
+    """The coerced values of every box of tool `t` (defaults for the ones `params` does not mention)."""
+    return {p.key: p.coerce(params[p.key]) if p.key in params else p.default for p in t.params}
+
+
+def parse_step_text(text):
+    """A recipe step from 'Tool name:key=value,key=value' (the form of the command line): the tool name is matched without regard
+    to case, values are converted by the kind of each box (True / False for tick boxes)."""
+    name, _, rest = text.partition(":")
+    found = [n for n in TOOLS if n.lower() == name.strip().lower()]
+    if not found:
+        raise ValueError("no tool called %r (python ImageForge.pyw --list-tools shows them)" % name.strip())
+    t = TOOLS[found[0]]
+    by_key = {p.key: p for p in t.params}
+    params = {}
+    for item in [x for x in rest.split(",") if x.strip()]:
+        key, _, val = item.partition("=")
+        key = key.strip()
+        if key not in by_key:
+            raise ValueError("%s has no box %r (boxes: %s)" % (t.name, key, ", ".join(by_key) or "none"))
+        p = by_key[key]
+        val = val.strip()
+        params[key] = (val.lower() in ('1', 'true', 'yes', 'on')) if p.kind == 'bool' else val
+    return tool_step(t.name, {k: by_key[k].coerce(v) for k, v in params.items()})
+
+
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp", ".gif")
+
+
+def list_images(folder, recursive=False):
+    """The picture files of a folder, sorted (and of its sub-folders when asked)."""
+    out = []
+    if recursive:
+        for root_dir, _, names in os.walk(folder):
+            out += [os.path.join(root_dir, n) for n in names if n.lower().endswith(IMAGE_EXTS)]
+    else:
+        out = [os.path.join(folder, n) for n in os.listdir(folder) if n.lower().endswith(IMAGE_EXTS) and os.path.isfile(os.path.join(folder, n))]
+    return sorted(out, key=lambda q: q.lower())
+
+
+def batch_output_path(src, out_dir, fmt="same", suffix="", overwrite=False, root_dir=None):
+    """Where the result for `src` goes: the same name (plus `suffix`) in `out_dir`, in the format `fmt` ('same', 'png', 'jpg',
+    'tif'), keeping the sub-folder it came from when `root_dir` is given; a free name (name_1, name_2 ...) unless `overwrite`."""
+    stem, ext = os.path.splitext(os.path.basename(src))
+    ext = ext if fmt == 'same' else {'png': '.png', 'jpg': '.jpg', 'tif': '.tif'}[fmt]
+    sub = os.path.relpath(os.path.dirname(src), root_dir) if root_dir else "."
+    folder = os.path.normpath(os.path.join(out_dir, sub))
+    path = os.path.join(folder, stem + suffix + ext)
+    if overwrite:
+        return path
+    n = 0
+    while os.path.exists(path) or os.path.normcase(path) == os.path.normcase(src):
+        n += 1
+        path = os.path.join(folder, "%s%s_%d%s" % (stem, suffix, n, ext))
+    return path
+
+
+def run_batch(steps, files, out_dir, fmt="same", suffix="", overwrite=False, jpeg_quality=95, root_dir=None, progress=None):
+    """Run a recipe on every file: [(source, output path or None, message)], one entry per file; a file that cannot be read or
+    processed is reported and the batch goes on. `progress(i, n, src)` is called before each file."""
+    results = []
+    for i, src in enumerate(files):
+        if progress:
+            progress(i, len(files), src)
+        try:
+            img, dpi = load_image(src)
+            out = run_recipe(img, steps)
+            dest = batch_output_path(src, out_dir, fmt, suffix, overwrite, root_dir)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            save_image(out, dest, dpi, jpeg_quality)
+            results.append((src, dest, "ok"))
+        except Exception as ex:
+            results.append((src, None, "%s: %s" % (type(ex).__name__, ex)))
+    return results
+
+
+# ---- settings: recent files, window, folders --------------------------------------------------------------------------------------------
+def settings_path():
+    """Where the settings live: %APPDATA%\\ImageForge on Windows, ~/.config/ImageForge elsewhere (IMAGEFORGE_SETTINGS overrides)."""
+    env = os.environ.get("IMAGEFORGE_SETTINGS")
+    if env:
+        return env
+    base = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, "ImageForge", "settings.json")
+
+
+def load_settings(path=None):
+    """The saved settings as a dict; {} when there are none or the file is damaged (it is never an error)."""
+    try:
+        with open(path or settings_path(), encoding='utf-8') as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(d, path=None):
+    """Write the settings; failures (a read-only profile ...) are ignored: settings are a convenience."""
+    path = path or settings_path()
+    tmp = path + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(d, f, indent=1)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def add_recent(settings, path, limit=10):
+    """Put `path` at the top of settings['recent'] (no duplicates, at most `limit`)."""
+    path = os.path.abspath(path)
+    key = os.path.normcase(path)
+    rest = [q for q in settings.get('recent', []) if os.path.normcase(q) != key]
+    settings['recent'] = ([path] + rest)[:limit]
+    return settings
+
+
+def recent_files(settings):
+    """The recent files that still exist, newest first."""
+    return [q for q in settings.get('recent', []) if isinstance(q, str) and os.path.isfile(q)]
+
+
+def save_image(img, path, dpi=None, jpeg_quality=95, png_level=9):
     """Write `img` in the format of the extension (PNG, JPEG, TIFF, BMP, WebP)."""
     ext = os.path.splitext(path)[1].lower()
     im = Image.fromarray(img)
@@ -2372,7 +2614,7 @@ def save_image(img, path, dpi=None, jpeg_quality=95):
     if ext in ('.jpg', '.jpeg'):
         kw.update(quality=jpeg_quality, subsampling=0)
     elif ext == '.png':
-        kw['compress_level'] = 9
+        kw['compress_level'] = int(png_level)
     elif ext in ('.tif', '.tiff'):
         kw['compression'] = 'tiff_lzw'
     elif ext == '.webp':
@@ -2418,6 +2660,7 @@ class ImageForge:
         self._placing = False            # a click/drag is setting the x, y of a 'place' tool
         self._grab = None                # (handle, press point in image pixels, selection at press) while dragging it
         self._hist_win, self._hist_pending, self._hist_key = None, False, None      # the Histogram window
+        self.settings = load_settings()  # recent files, last folders, window: written back when the program is closed
         self.scale = None                # (units per pixel, unit) of the picture, or None until it is calibrated
         self.measures = []               # finished measurements: dicts kind / pts (image px) / value / text
         self._mpts, self._mdrag, self._mwin, self._seg_end = [], False, None, 'p1'
@@ -2452,6 +2695,17 @@ class ImageForge:
                 print("Plug-in %s:\n%s" % (f, e), file=sys.stderr)
         root.report_callback_exception = self._on_tk_error
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self._rebuild_recent()
+        geo = self.settings.get('geometry')
+        try:
+            if isinstance(geo, str) and re.fullmatch(r"\d+x\d+[+-]\d+[+-]\d+", geo):
+                gw, gh = (int(v) for v in geo.split('+')[0].split('-')[0].split('x'))
+                if 600 <= gw <= root.winfo_screenwidth() and 400 <= gh <= root.winfo_screenheight():
+                    root.geometry(geo)
+            if self.settings.get('zoomed'):
+                root.state('zoomed')
+        except (tk.TclError, ValueError):
+            pass
 
     def _on_tk_error(self, exc, val, tb):
         """An error inside a button or mouse handler: pythonw has no console, so without this it would vanish and the
@@ -2482,6 +2736,14 @@ class ImageForge:
         mb.add_cascade(label="View", menu=self.m_view)
         mb.add_cascade(label="Image", menu=self.m_image)
         mb.add_cascade(label="Measure", menu=self.m_measure)
+        self.m_recipe = tk.Menu(mb, tearoff=0)
+        mb.add_cascade(label="Recipe", menu=self.m_recipe)
+        rc = self.m_recipe
+        rc.add_command(label="Save the steps so far as a recipe...", command=self.save_recipe_dialog)
+        rc.add_command(label="Run a recipe on this picture...", command=self.run_recipe_here)
+        rc.add_command(label="Run a recipe on a folder of pictures...", command=self.batch_dialog)
+        rc.add_separator()
+        rc.add_command(label="Show the steps (History tab)", command=lambda: self.nbk.select(2))
         mb.add_cascade(label="Layer", menu=self.m_layer)
         ms = self.m_measure
         ms.add_command(label="Measure tool", command=lambda: self.tree.selection_set("Measure"))
@@ -2495,14 +2757,19 @@ class ImageForge:
         ms.add_command(label="Add a scale bar...", command=lambda: self.tree.selection_set("Scale bar"))
         f = self.m_file
         f.add_command(label="Open...", accelerator="Ctrl+O", command=self.open_dialog)
+        self.m_recent = tk.Menu(f, tearoff=0)
+        f.add_cascade(label="Open recent", menu=self.m_recent)
         f.add_command(label="Open as layer...", command=self.open_layer_dialog)
         f.add_command(label="Save", accelerator="Ctrl+S", command=self.save)
         f.add_command(label="Save As...", accelerator="Ctrl+Shift+S", command=self.save_as)
+        f.add_command(label="Export...", accelerator="Ctrl+E", command=self.export_dialog)
         f.add_separator()
         f.add_command(label="Exit", command=self.on_close)
         e = self.m_edit
         e.add_command(label="Undo", accelerator="Ctrl+Z", command=self.undo)
         e.add_command(label="Redo", accelerator="Ctrl+Y", command=self.redo)
+        e.add_separator()
+        e.add_command(label="Paste (new layer, or open)", accelerator="Ctrl+V", command=self.paste_clipboard)
         e.add_separator()
         e.add_command(label="Select all", accelerator="Ctrl+A", command=self.select_all)
         e.add_command(label="Deselect", accelerator="Ctrl+D", command=self.deselect)
@@ -2631,6 +2898,9 @@ class ImageForge:
         self.nbk.add(self.tools_pane, text="  Tools  ")
         tab_layers = tk.Frame(self.nbk, bg=bg)
         self.nbk.add(tab_layers, text="  Layers  ")
+        tab_hist = tk.Frame(self.nbk, bg=bg)
+        self.nbk.add(tab_hist, text="  History  ")
+        self._build_history_tab(tab_hist, bg)
         self._build_layers_tab(tab_layers, bg)
         tf = tk.Frame(self.tools_pane, bg=bg)
         self.tools_pane.add(tf, weight=1)
@@ -2677,6 +2947,7 @@ class ImageForge:
         for seq, fn in (("<Control-o>", self.open_dialog), ("<Control-s>", self.save),
                         ("<Control-S>", self.save_as), ("<Control-z>", self.undo), ("<Control-y>", self.redo),
                         ("<Control-a>", self.select_all), ("<Control-d>", self.deselect), ("<Control-i>", self.invert_sel),
+                        ("<Control-e>", self.export_dialog), ("<Control-v>", self.paste_clipboard),
                         ("<Control-h>", self.show_histogram),
                         ("<Control-X>", self.crop_to_selection), ("<Control-j>", lambda: self.selection_to_layer(False)),
                         ("<Control-J>", lambda: self.selection_to_layer(True)), ("<Control-0>", self.fit_view),
@@ -2975,7 +3246,7 @@ class ImageForge:
                 return
             dx, dy = self.tool.layer_shift(params, self.hist.current.shape)
             self.sel = None
-            self._commit(self.tool.name, out, shift_layers(self.hist.layers, dx, dy))
+            self._commit(self.tool.name, out, shift_layers(self.hist.layers, dx, dy), tool_step(self.tool.name, params))
             self._status("%s applied (the layers keep their place on the picture)." % self.tool.name, ok=True)
             return
         cur = self.hist.current
@@ -2999,7 +3270,7 @@ class ImageForge:
             return
         if flatten:
             self.active = None
-        self._commit(self.tool.name, out, () if flatten else None)
+        self._commit(self.tool.name, out, () if flatten else None, self._recipe_step_for(params))
         extra = " (applied to the whole image: this tool ignores the selection)" if self.sel and self.tool.geometry else ""
         note = TOOL_NOTES.pop(self.tool.name, "")
         if note:
@@ -3008,11 +3279,11 @@ class ImageForge:
             extra += " (on the Background: select a layer to filter it)"
         self._status("%s applied%s." % (self.tool.name, extra), ok=True)
 
-    def _commit(self, label, img, layers=None):
+    def _commit(self, label, img, layers=None, step=None):
         """Put a new state on the history (`layers` None keeps the current ones). Size changes drop the selection and
-        refit the view."""
+        refit the view. `step` is the recipe step that makes this state, when a recipe can repeat it."""
         resized = img.shape[:2] != self.hist.current.shape[:2]
-        self.hist.push(label, img, layers)
+        self.hist.push(label, img, layers, step)
         self.preview = self.lprev = None
         self.dirty = True
         if resized:
@@ -3034,8 +3305,30 @@ class ImageForge:
             return not self.dirty
         return True
 
+    def _dir_for(self, key='dir'):
+        d = self.settings.get(key)
+        return d if isinstance(d, str) and os.path.isdir(d) else None
+
+    def _remember_dir(self, path, key='dir'):
+        self.settings[key] = os.path.dirname(os.path.abspath(path))
+
+    def _rebuild_recent(self):
+        self.m_recent.delete(0, tk.END)
+        files = recent_files(self.settings)
+        for q in files:
+            self.m_recent.add_command(label=q if len(q) < 70 else "..." + q[-67:], command=lambda q=q: self.open_path(q))
+        if files:
+            self.m_recent.add_separator()
+            self.m_recent.add_command(label="Clear the list", command=self._clear_recent)
+        else:
+            self.m_recent.add_command(label="(none yet)", state=tk.DISABLED)
+
+    def _clear_recent(self):
+        self.settings['recent'] = []
+        self._rebuild_recent()
+
     def open_dialog(self):
-        path = filedialog.askopenfilename(parent=self.root, filetypes=OPEN_TYPES)
+        path = filedialog.askopenfilename(parent=self.root, filetypes=OPEN_TYPES, initialdir=self._dir_for())
         if path:
             self.open_path(path)
 
@@ -3052,6 +3345,9 @@ class ImageForge:
             messagebox.showerror(APP_NAME, "Cannot open %s:\n%s" % (path, ex))
             return False
         self.hist, self.path, self.dpi = History(img, layers=layers), path, dpi
+        add_recent(self.settings, path)
+        self._remember_dir(path)
+        self._rebuild_recent()
         self.scale = project_scale(path) if project else None
         self.measures, self._mpts, self._mdrag = [], [], False
         self.save_path = path if project else None             # a project is saved back to itself, an image never
@@ -3085,7 +3381,7 @@ class ImageForge:
         base = os.path.splitext(os.path.basename(self.path or "image"))[0]
         layered = bool(self.hist.layers)
         types = [PROJECT_TYPE] + SAVE_TYPES if layered else SAVE_TYPES + [PROJECT_TYPE]
-        path = filedialog.asksaveasfilename(parent=self.root, filetypes=types,
+        path = filedialog.asksaveasfilename(parent=self.root, filetypes=types, initialdir=self._dir_for(),
                                             defaultextension=PROJECT_EXT if layered else ".png",
                                             initialfile=base + ("" if self.path and self.path.lower().endswith(PROJECT_EXT)
                                                                 else "_edited") + (PROJECT_EXT if layered else ".png"))
@@ -3104,6 +3400,9 @@ class ImageForge:
         except Exception as ex:
             messagebox.showerror(APP_NAME, "Cannot save %s:\n%s" % (path, ex))
             return
+        add_recent(self.settings, path)
+        self._remember_dir(path)
+        self._rebuild_recent()
         if project or not self.hist.layers:
             self.save_path, self.dirty = path, False
             self._status("Saved %s." % path, ok=True)
@@ -3115,6 +3414,13 @@ class ImageForge:
         if self._confirm_discard():
             if self._after is not None:
                 self.root.after_cancel(self._after)
+            try:
+                self.settings['zoomed'] = self.root.state() == 'zoomed'
+                if not self.settings['zoomed']:
+                    self.settings['geometry'] = self.root.geometry()
+            except tk.TclError:
+                pass
+            save_settings(self.settings)
             self.root.destroy()
 
     # ---- history / selection ---------------------------------------------------------------------------
@@ -3210,6 +3516,319 @@ class ImageForge:
         outer.bind('<Enter>', lambda e: outer.bind_all('<MouseWheel>', wheel))
         outer.bind('<Leave>', lambda e: outer.unbind_all('<MouseWheel>'))
         return outer, inner
+
+    def _build_history_tab(self, tab, bg):
+        tk.Label(tab, text="Every step of this picture. Click one to go back (or forward) to it; a new step then replaces the "
+                 "steps after it. \u25cf = a recipe can repeat it on other pictures.", bg=bg, fg='#555555', font=('Arial', 8),
+                 wraplength=290, justify='left', anchor='w').pack(fill=tk.X, padx=8, pady=(6, 2))
+        row = tk.Frame(tab, bg=bg)
+        row.pack(fill=tk.X, side=tk.BOTTOM, padx=6, pady=6)
+        tk.Button(row, text="Save recipe...", command=self.save_recipe_dialog).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
+        tk.Button(row, text="Run on a folder...", command=self.batch_dialog).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
+        self.htree = ttk.Treeview(tab, columns=('rec',), show='tree headings', selectmode='browse')
+        self.htree.heading('#0', text="Step")
+        self.htree.heading('rec', text="Recipe")
+        self.htree.column('#0', width=210)
+        self.htree.column('rec', width=50, anchor='center')
+        self.htree.tag_configure('future', foreground='#999999')
+        self.htree.pack(fill=tk.BOTH, expand=True, padx=6)
+        self.htree.bind('<<TreeviewSelect>>', lambda e: self._on_history_select())
+        self._hkey = None
+
+    def _refresh_history(self):
+        h = self.hist
+        key = None if h is None else (tuple(st[0] for st in h.states), h.index, tuple(st is not None for st in h.steps))
+        if key == self._hkey:
+            return
+        self._hkey = key
+        self._hsync = True
+        try:
+            self.htree.delete(*self.htree.get_children())
+            if h is not None:
+                for i, st in enumerate(h.states):
+                    mark = "" if i == 0 else "\u25cf" if h.steps[i] is not None else "\u2013"
+                    self.htree.insert('', tk.END, iid=str(i), text="%d  %s" % (i, st[0]), values=(mark,), tags=('future',) if i > h.index else ())
+                self.htree.selection_set(str(h.index))
+                self.htree.see(str(h.index))
+        finally:
+            self._hsync = False
+
+    def _on_history_select(self):
+        if getattr(self, '_hsync', False) or self.hist is None:
+            return
+        sel = self.htree.selection()
+        if sel and int(sel[0]) != self.hist.index:
+            self.jump_to(int(sel[0]))
+
+    def jump_to(self, i):
+        """Go to step `i` of the history (as many Undos or Redos at once)."""
+        if self.hist is None or not 0 <= i < len(self.hist.states) or i == self.hist.index:
+            return
+        before = self.hist.current.shape[:2]
+        label = self.hist.states[i][0]
+        self.hist.index = i
+        self.preview, self.lprev, self.dirty = None, None, True
+        if self.hist.current.shape[:2] != before:
+            self.sel = None
+            self.fit_view()
+        self._refresh_layers()
+        self._update_state()
+        self._redraw()
+        self._status("Went to step %d: %s." % (i, label), ok=True)
+
+    # ---- recipes and batch -----------------------------------------------------------------------------------------------
+    def _current_recipe(self):
+        steps, skipped = self.hist.recipe()
+        return steps, skipped
+
+    def save_recipe_dialog(self):
+        if not self._need_image():
+            return
+        steps, skipped = self._current_recipe()
+        if not steps:
+            self._status("No step that a recipe can repeat yet: apply tools to the whole picture (or a rectangle) first.")
+            return
+        path = filedialog.asksaveasfilename(parent=self.root, defaultextension=RECIPE_EXT, initialdir=self._dir_for('recipe_dir'),
+                                            filetypes=[("ImageForge recipe", "*" + RECIPE_EXT)], title="Save the recipe")
+        if not path:
+            return
+        try:
+            save_recipe(path, steps, "from %s" % os.path.basename(self.path or "a picture"))
+        except Exception as ex:
+            messagebox.showerror(APP_NAME, "Cannot save the recipe:\n%s" % ex)
+            return
+        self._remember_dir(path, 'recipe_dir')
+        extra = ""
+        if skipped:
+            extra += " Not in it (cannot be repeated on another picture): %s." % ", ".join(sorted(set(skipped)))
+        if self.hist.lost:
+            extra += " The oldest steps were dropped by the memory limit: the recipe starts later than the picture did."
+        self._status("Recipe of %d step(s) saved to %s.%s" % (len(steps), path, extra), ok=True)
+
+    def run_recipe_here(self):
+        if not self._need_image():
+            return
+        path = filedialog.askopenfilename(parent=self.root, filetypes=[("ImageForge recipe", "*" + RECIPE_EXT), ("All files", "*.*")],
+                                          initialdir=self._dir_for('recipe_dir'), title="Run a recipe on this picture")
+        if not path:
+            return
+        try:
+            steps = load_recipe(path)
+        except ValueError as ex:
+            messagebox.showerror(APP_NAME, "Cannot use %s:\n%s" % (path, ex))
+            return
+        if self.hist.layers and not messagebox.askyesno(APP_NAME, "The layers are merged into the background first. Continue?"):
+            return
+        try:
+            out = run_recipe(self._flat(), steps)
+        except Exception as ex:
+            self._status("The recipe failed: %s" % ex)
+            return
+        self.active = None
+        self._commit("Recipe: " + os.path.splitext(os.path.basename(path))[0], out, ())
+        self._status("Ran %d step(s) of %s." % (len(steps), os.path.basename(path)), ok=True)
+
+    def batch_dialog(self):
+        """Recipe > Run a recipe on a folder: every picture of the folder goes through the recipe and is saved in another folder."""
+        steps_now = self.hist.recipe()[0] if self.hist is not None else []
+        w = tk.Toplevel(self.root)
+        w.title("Run a recipe on a folder - " + APP_NAME)
+        w.transient(self.root)
+        v = dict(use_now=tk.BooleanVar(value=bool(steps_now)), recipe=tk.StringVar(), src=tk.StringVar(), out=tk.StringVar(),
+                 sub=tk.BooleanVar(value=False), fmt=tk.StringVar(value='same'), q=tk.IntVar(value=95), suffix=tk.StringVar(value="_edited"),
+                 over=tk.BooleanVar(value=False))
+        pad = dict(padx=6, pady=3)
+        r = 0
+        tk.Radiobutton(w, text="the %d step(s) of this picture so far" % len(steps_now), variable=v['use_now'], value=True,
+                       state=tk.NORMAL if steps_now else tk.DISABLED).grid(row=r, column=0, columnspan=3, sticky='w', **pad)
+        r += 1
+        tk.Radiobutton(w, text="a recipe file:", variable=v['use_now'], value=False).grid(row=r, column=0, sticky='w', **pad)
+        tk.Entry(w, textvariable=v['recipe'], width=44).grid(row=r, column=1, **pad)
+        tk.Button(w, text="Browse...", command=lambda: self._browse_file(v['recipe'], v['use_now'])).grid(row=r, column=2, **pad)
+        r += 1
+        tk.Label(w, text="Pictures in:").grid(row=r, column=0, sticky='w', **pad)
+        tk.Entry(w, textvariable=v['src'], width=44).grid(row=r, column=1, **pad)
+        tk.Button(w, text="Browse...", command=lambda: self._browse_dir(v['src'], v['out'])).grid(row=r, column=2, **pad)
+        r += 1
+        tk.Checkbutton(w, text="also the sub-folders", variable=v['sub']).grid(row=r, column=1, sticky='w', **pad)
+        r += 1
+        tk.Label(w, text="Save in:").grid(row=r, column=0, sticky='w', **pad)
+        tk.Entry(w, textvariable=v['out'], width=44).grid(row=r, column=1, **pad)
+        tk.Button(w, text="Browse...", command=lambda: self._browse_dir(v['out'])).grid(row=r, column=2, **pad)
+        r += 1
+        row = tk.Frame(w)
+        row.grid(row=r, column=0, columnspan=3, sticky='w', **pad)
+        tk.Label(row, text="Format").pack(side=tk.LEFT)
+        ttk.Combobox(row, textvariable=v['fmt'], values=('same', 'png', 'jpg', 'tif'), width=6, state='readonly').pack(side=tk.LEFT, padx=4)
+        tk.Label(row, text="JPEG quality").pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Spinbox(row, from_=10, to=100, textvariable=v['q'], width=4).pack(side=tk.LEFT, padx=4)
+        tk.Label(row, text="Add to the name").pack(side=tk.LEFT, padx=(8, 0))
+        tk.Entry(row, textvariable=v['suffix'], width=10).pack(side=tk.LEFT, padx=4)
+        r += 1
+        tk.Checkbutton(w, text="replace files that already exist in the output folder (otherwise a free name is used)",
+                       variable=v['over']).grid(row=r, column=0, columnspan=3, sticky='w', **pad)
+        r += 1
+        self.b_batch = tk.Button(w, text="Run", bg='#2ecc71', fg='white', font=('Arial', 10, 'bold'), width=10)
+        self.b_batch.grid(row=r, column=0, **pad)
+        self.l_batch = tk.Label(w, text="", anchor='w')
+        self.l_batch.grid(row=r, column=1, columnspan=2, sticky='we', **pad)
+        r += 1
+        log = tk.Text(w, height=10, width=78, state=tk.DISABLED, font=('Consolas', 8))
+        log.grid(row=r, column=0, columnspan=3, padx=6, pady=(0, 6))
+        state = dict(stop=False, running=False)
+        w.protocol('WM_DELETE_WINDOW', lambda: (state.update(stop=True), w.destroy()))
+        self.b_batch.config(command=lambda: self._batch_run(w, v, steps_now, log, state))
+
+    def _browse_file(self, var, flag):
+        path = filedialog.askopenfilename(parent=self.root, filetypes=[("ImageForge recipe", "*" + RECIPE_EXT), ("All files", "*.*")],
+                                          initialdir=self._dir_for('recipe_dir'))
+        if path:
+            var.set(path)
+            flag.set(False)
+
+    def _browse_dir(self, var, follow=None):
+        d = filedialog.askdirectory(parent=self.root, initialdir=self._dir_for('batch_dir'))
+        if d:
+            var.set(d)
+            self.settings['batch_dir'] = d
+            if follow is not None and not follow.get():
+                follow.set(os.path.join(d, "processed"))
+
+    def _batch_run(self, w, v, steps_now, log, state):
+        def say(text):
+            log.config(state=tk.NORMAL)
+            log.insert(tk.END, text + "\n")
+            log.see(tk.END)
+            log.config(state=tk.DISABLED)
+        if state['running']:
+            return
+        try:
+            steps = steps_now if v['use_now'].get() else load_recipe(v['recipe'].get())
+        except ValueError as ex:
+            messagebox.showerror(APP_NAME, "The recipe cannot be used:\n%s" % ex, parent=w)
+            return
+        src, out = v['src'].get().strip(), v['out'].get().strip()
+        if not steps or not os.path.isdir(src) or not out:
+            messagebox.showerror(APP_NAME, "Choose a recipe (or do some steps first), a folder of pictures and a folder to save in.", parent=w)
+            return
+        out_abs = os.path.abspath(out)
+        files = [q for q in list_images(src, v['sub'].get()) if not os.path.abspath(q).startswith(out_abs + os.sep)]
+        if not files:
+            messagebox.showinfo(APP_NAME, "There are no pictures in that folder.", parent=w)
+            return
+        state.update(running=True, stop=False)
+        self.b_batch.config(state=tk.DISABLED)
+        counts = dict(ok=0, bad=0)
+
+        def one(i):
+            if state['stop'] or not w.winfo_exists():
+                return
+            if i >= len(files):
+                state['running'] = False
+                self.b_batch.config(state=tk.NORMAL)
+                self.l_batch.config(text="Done: %d saved, %d failed." % (counts['ok'], counts['bad']))
+                say("Done: %d saved, %d failed." % (counts['ok'], counts['bad']))
+                return
+            self.l_batch.config(text="%d / %d  %s" % (i + 1, len(files), os.path.basename(files[i])))
+            w.update_idletasks()
+            res = run_batch(steps, [files[i]], out, v['fmt'].get(), v['suffix'].get(), v['over'].get(), int(v['q'].get()),
+                            src if v['sub'].get() else None)[0]
+            counts['ok' if res[1] else 'bad'] += 1
+            say(("ok   %s  ->  %s" % (res[0], res[1])) if res[1] else ("FAIL %s  (%s)" % (res[0], res[2])))
+            w.after(5, lambda: one(i + 1))
+
+        say("%d picture(s), %d step(s)." % (len(files), len(steps)))
+        one(0)
+
+    # ---- clipboard and export ---------------------------------------------------------------------------------------------------
+    def paste_clipboard(self):
+        """Ctrl+V: a picture on the clipboard becomes a new layer (or, with nothing open, the picture itself); copied files are opened."""
+        try:
+            from PIL import ImageGrab
+            data = ImageGrab.grabclipboard()
+        except Exception as ex:
+            self._status("The clipboard cannot be read here: %s" % ex)
+            return
+        if data is None:
+            self._status("There is no picture on the clipboard.")
+            return
+        if isinstance(data, list):
+            files = [q for q in data if isinstance(q, str) and q.lower().endswith(IMAGE_EXTS + (PROJECT_EXT,))]
+            if files:
+                self.open_path(files[0])
+            else:
+                self._status("The clipboard holds files that are not pictures.")
+            return
+        rgba = np.array(data.convert('RGBA'))
+        if self.hist is None:
+            h, w = rgba.shape[:2]
+            bg = np.full((h, w, 3), 255, np.uint8)
+            blend_rgba(bg, rgba, 0, 0)
+            self.hist, self.path, self.dpi, self.save_path = History(bg), None, None, None
+            self.sel, self.preview, self.dirty, self.active, self.lprev, self._comp = None, None, True, None, None, None
+            self._refresh_layers()
+            self.root.update_idletasks()
+            self.fit_view()
+            self._update_state()
+            self._redraw()
+            self._status("Opened the picture from the clipboard.", ok=True)
+            return
+        h, w = self.hist.current.shape[:2]
+        L = Layer('image', "Pasted", (w - rgba.shape[1]) // 2, (h - rgba.shape[0]) // 2, rgba=rgba)
+        self._commit_layers("Paste", list(self.hist.layers) + [L], len(self.hist.layers))
+        self.tree.selection_set("Move layer")
+        self._status("Pasted as a new layer (%d x %d): drag it into place." % (rgba.shape[1], rgba.shape[0]), ok=True)
+
+    def export_dialog(self):
+        """File > Export: the picture as seen (layers merged) in a chosen format with its quality, size and dpi; the project is untouched."""
+        if not self._need_image():
+            return
+        path = filedialog.asksaveasfilename(parent=self.root, title="Export the picture", initialdir=self._dir_for('export_dir'),
+                                            filetypes=SAVE_TYPES, defaultextension=".png",
+                                            initialfile=os.path.splitext(os.path.basename(self.path or "image"))[0])
+        if not path:
+            return
+        ext = os.path.splitext(path)[1].lower()
+        img = self._flat()
+        h, w = img.shape[:2]
+        w_ = tk.Toplevel(self.root)
+        w_.title("Export options")
+        w_.transient(self.root)
+        w_.grab_set()
+        q, lvl = tk.IntVar(value=self.settings.get('jpeg_quality', 92)), tk.IntVar(value=self.settings.get('png_level', 6))
+        longest = tk.IntVar(value=0)
+        dpi = tk.IntVar(value=int(self.dpi[0]) if self.dpi else 0)
+        pad = dict(padx=8, pady=3)
+        tk.Label(w_, text="%s   (%d x %d px)" % (os.path.basename(path), w, h), font=('Arial', 9, 'bold')).grid(row=0, column=0, columnspan=2, **pad)
+        tk.Label(w_, text="JPEG / WebP quality (higher = bigger file)").grid(row=1, column=0, sticky='w', **pad)
+        ttk.Spinbox(w_, from_=10, to=100, textvariable=q, width=5, state=tk.NORMAL if ext in ('.jpg', '.jpeg', '.webp') else tk.DISABLED).grid(row=1, column=1, **pad)
+        tk.Label(w_, text="PNG compression 0-9 (same picture, smaller file, slower)").grid(row=2, column=0, sticky='w', **pad)
+        ttk.Spinbox(w_, from_=0, to=9, textvariable=lvl, width=5, state=tk.NORMAL if ext == '.png' else tk.DISABLED).grid(row=2, column=1, **pad)
+        tk.Label(w_, text="Longest side in pixels (0 = as it is)").grid(row=3, column=0, sticky='w', **pad)
+        ttk.Spinbox(w_, from_=0, to=100000, textvariable=longest, width=7).grid(row=3, column=1, **pad)
+        tk.Label(w_, text="Resolution in dpi written in the file (0 = none)").grid(row=4, column=0, sticky='w', **pad)
+        ttk.Spinbox(w_, from_=0, to=5000, textvariable=dpi, width=7).grid(row=4, column=1, **pad)
+        done = []
+
+        def go():
+            done.append(True)
+            w_.destroy()
+        tk.Button(w_, text="Export", command=go, bg='#2ecc71', fg='white', width=10).grid(row=5, column=0, columnspan=2, pady=8)
+        self.root.wait_window(w_)
+        if not done:
+            return
+        try:
+            if longest.get() and max(h, w) != longest.get():
+                k = longest.get() / float(max(h, w))
+                img = cv2.resize(img, (max(1, round(w * k)), max(1, round(h * k))), interpolation=cv2.INTER_AREA if k < 1 else cv2.INTER_CUBIC)
+            d = (float(dpi.get()), float(dpi.get())) if dpi.get() else None
+            save_image(img, path, d, int(q.get()), int(lvl.get()))
+        except Exception as ex:
+            messagebox.showerror(APP_NAME, "Cannot export %s:\n%s" % (path, ex))
+            return
+        self.settings.update(jpeg_quality=int(q.get()), png_level=int(lvl.get()))
+        self._remember_dir(path, 'export_dir')
+        self._status("Exported %s (%d x %d px). The project and its layers are unchanged." % (path, img.shape[1], img.shape[0]), ok=True)
 
     def _build_layers_tab(self, tab, bg):
         tk.Label(tab, text="Top of the list = on top of the picture. Double-click a layer to edit or move it.", bg=bg,
@@ -3356,11 +3975,20 @@ class ImageForge:
             else "Move layer" if (kw['x'], kw['y']) != (L.x, L.y) else "Rename layer"
         self._commit_layers(what, layers)
 
-    def _commit_layers(self, label, layers, active=-1, base=None):
+    def _commit_layers(self, label, layers, active=-1, base=None, step=None):
         """A history step that changes the layers (and, for a merge, the background)."""
         if active != -1:
             self.active = active
-        self._commit(label, self.hist.current if base is None else base, tuple(layers))
+        self._commit(label, self.hist.current if base is None else base, tuple(layers), step)
+
+    def _recipe_step_for(self, params):
+        """The recipe step for the tool just applied to the Background, or None when a recipe could not repeat it on another
+        picture (a shape selection belongs to this picture only)."""
+        if self.tool is None or self.tool.interactive or self.tool.layer:
+            return None
+        if self.sel is not None and region_mask(self.sel, self.hist.current.shape) is not None:
+            return None
+        return tool_step(self.tool.name, params, None if self.tool.geometry else self.sel)
 
     def layer_up(self):
         i, layers = self.active, list(self._cur_layers())
@@ -3495,7 +4123,7 @@ class ImageForge:
             self._status("The %s layer is updated. Select 'Background' in the Layers tab to add another one." % kind['tag'], ok=True)
         else:
             layers.append(new)
-            self._commit_layers("Add %s layer" % kind['tag'], layers, len(layers) - 1)
+            self._commit_layers("Add %s layer" % kind['tag'], layers, len(layers) - 1, step=layer_step(self.tool.name, params, self.scale))
             self._status("Added as a %s layer: change the boxes and press Update layer to edit it." % kind['tag'], ok=True)
 
     # ---- moving a layer with the mouse --------------------------------------------------------------------
@@ -4902,10 +5530,72 @@ class ImageForge:
         self.root.title("%s%s - %s" % (name, "*" if self.dirty else "", APP_NAME) if name else APP_NAME)
         self.b_apply.config(text="Update layer" if self._edit_index() is not None else
                             "Add as layer" if self.tool is not None and self.tool.layer else "Apply")
+        self._refresh_history()
         self._set_info()
 
 
+def cli(argv):
+    """Command line without a window. Returns an exit code, or None when the arguments are not a batch / list request.
+
+        python ImageForge.pyw --list-tools
+        python ImageForge.pyw --batch INPUT_FOLDER OUTPUT_FOLDER (--recipe FILE | --apply "Tool:box=value,box=value" ...)
+                              [--format png|jpg|tif] [--suffix _x] [--quality 95] [--recursive] [--overwrite]
+    """
+    import argparse
+    ap = argparse.ArgumentParser(prog="ImageForge.pyw", add_help=True)
+    ap.add_argument('--list-tools', action='store_true')
+    ap.add_argument('--batch', nargs=2, metavar=('INPUT', 'OUTPUT'))
+    ap.add_argument('--recipe')
+    ap.add_argument('--apply', action='append', default=[])
+    ap.add_argument('--format', choices=('same', 'png', 'jpg', 'tif'), default='same')
+    ap.add_argument('--suffix', default="")
+    ap.add_argument('--quality', type=int, default=95)
+    ap.add_argument('--recursive', action='store_true')
+    ap.add_argument('--overwrite', action='store_true')
+    ap.add_argument('image', nargs='?')
+    ns = ap.parse_args(argv)
+    if ns.list_tools:
+        for t in TOOLS.values():
+            if t.interactive or t.layer:
+                continue
+            print("%s  [%s]" % (t.name, t.group))
+            for p in t.params:
+                extra = "choices: " + ", ".join(p.choices) if p.kind == 'choice' else "%s..%s" % (p.lo, p.hi) if p.lo is not None else p.kind
+                print("    %s = %r   (%s)" % (p.key, p.default, extra))
+        return 0
+    if not ns.batch:
+        return None
+    try:
+        steps = load_recipe(ns.recipe) if ns.recipe else []
+        steps += [parse_step_text(t) for t in ns.apply]
+        validate_steps(steps)
+    except ValueError as ex:
+        print("error: %s" % ex)
+        return 2
+    if not steps:
+        print("error: give a recipe (--recipe FILE) or at least one --apply")
+        return 2
+    src, out = ns.batch
+    if not os.path.isdir(src):
+        print("error: %s is not a folder" % src)
+        return 2
+    out_abs = os.path.abspath(out)
+    files = [q for q in list_images(src, ns.recursive) if not os.path.abspath(q).startswith(out_abs + os.sep)]
+    results = run_batch(steps, files, out, ns.format, ns.suffix, ns.overwrite, ns.quality, src if ns.recursive else None,
+                        progress=lambda i, n, f: print("[%d/%d] %s" % (i + 1, n, f)))
+    bad = [r for r in results if r[1] is None]
+    for r in bad:
+        print("FAILED %s: %s" % (r[0], r[2]))
+    print("%d saved, %d failed" % (len(results) - len(bad), len(bad)))
+    return 1 if bad else 0
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1].startswith("--"):
+        load_plugins()
+        code = cli(sys.argv[1:])
+        if code is not None:
+            sys.exit(code)
     root = TkinterDnD.Tk() if HAS_DND else tk.Tk()
     app = ImageForge(root)
     if len(sys.argv) > 1 and os.path.isfile(sys.argv[1]):

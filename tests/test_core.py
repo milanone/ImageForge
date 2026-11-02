@@ -1451,6 +1451,183 @@ class CleanCorrectTests(unittest.TestCase):
         self.assertEqual(zoomed.shape, img.shape)
 
 
+class WorkflowTests(unittest.TestCase):
+    """History steps and recipes, running a recipe on a folder, parsing a step from text, settings and recent files."""
+
+    def test_history_records_steps_and_recipe_follows_undo(self):
+        h = il.History(np.zeros((10, 10, 3), np.uint8))
+        h.push("Levels", np.ones((10, 10, 3), np.uint8), None, il.tool_step("Levels", dict(gamma=2.0)))
+        h.push("Eraser brush", np.full((10, 10, 3), 2, np.uint8))
+        h.push("Invert", np.full((10, 10, 3), 3, np.uint8), None, il.tool_step("Invert", {}))
+        steps, skipped = h.recipe()
+        self.assertEqual([st['tool'] for st in steps], ["Levels", "Invert"])
+        self.assertEqual(skipped, ["Eraser brush"])
+        h.undo()
+        self.assertEqual([st['tool'] for st in h.recipe()[0]], ["Levels"])                   # an undone step leaves the recipe
+        h.push("Blur (Gaussian)", np.full((10, 10, 3), 4, np.uint8), None, il.tool_step("Blur (Gaussian)", dict(radius=2.0)))
+        self.assertEqual([st['tool'] for st in h.recipe()[0]], ["Levels", "Blur (Gaussian)"])  # a new step after an undo replaces the old branch
+        self.assertEqual(len(h.steps), len(h.states))
+
+    def test_history_limit_keeps_steps_aligned_and_counts_the_loss(self):
+        h = il.History(np.zeros((100, 100, 3), np.uint8), limit_bytes=70000)
+        for i in range(6):
+            h.push("s%d" % i, np.full((100, 100, 3), i + 1, np.uint8), None, il.tool_step("Invert", {}))
+        self.assertEqual(len(h.steps), len(h.states))
+        self.assertGreater(h.lost, 0)
+
+    def test_recipe_file_roundtrip_and_validation(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "r.ifr")
+        steps = [il.tool_step("Levels", dict(in_black=20, gamma=1.3)), il.tool_step("Invert", {}, (0, 0, 5, 5))]
+        il.save_recipe(path, steps, "demo")
+        self.assertEqual(il.load_recipe(path), steps)
+        self.assertFalse(os.path.exists(path + ".tmp"))
+        with self.assertRaises(ValueError):
+            il.save_recipe(path, [il.tool_step("No such tool", {})])
+        with self.assertRaises(ValueError):
+            il.save_recipe(path, [il.tool_step("Eraser brush", {})])                          # a brush cannot run on its own
+        bad = os.path.join(d, "bad.ifr")
+        with open(bad, "w") as f:
+            f.write("{not json")
+        with self.assertRaises(ValueError):
+            il.load_recipe(bad)
+        other = os.path.join(d, "other.ifr")
+        with open(other, "w") as f:
+            f.write('{"format": "something else", "steps": []}')
+        with self.assertRaises(ValueError):
+            il.load_recipe(other)
+        newer = os.path.join(d, "newer.ifr")
+        with open(newer, "w") as f:
+            f.write('{"format": "ImageForge recipe", "version": 99, "steps": []}')
+        with self.assertRaises(ValueError):
+            il.load_recipe(newer)
+
+    def test_run_recipe_matches_applying_the_tools_by_hand(self):
+        img = gradient(40, 60)
+        steps = [il.tool_step("Levels", dict(in_black=30, in_white=220, gamma=1.4)), il.tool_step("Invert", {}),
+                 il.tool_step("Resize", dict(width=30, height=20))]
+        by_hand = il.apply_tool("Resize", il.apply_tool("Invert", il.apply_tool("Levels", img, dict(in_black=30, in_white=220, gamma=1.4)), {}),
+                                dict(width=30, height=20))
+        out = il.run_recipe(img, steps)
+        self.assertTrue(np.array_equal(out, by_hand) and out.shape[:2] == (20, 30))
+        self.assertTrue(np.array_equal(il.run_recipe(img, []), img))
+
+    def test_run_recipe_region_is_clipped_to_the_picture(self):
+        img = np.full((20, 20, 3), 100, np.uint8)
+        out = il.run_recipe(img, [il.tool_step("Invert", {}, (10, 10, 500, 500))])
+        self.assertTrue((out[10:, 10:] == 155).all() and (out[:10] == 100).all())
+        self.assertTrue(np.array_equal(il.run_recipe(img, [il.tool_step("Invert", {}, (30, 30, 40, 40))]), img))
+
+    def test_run_recipe_with_layers_and_geometry(self):
+        img = np.full((60, 100, 3), 200, np.uint8)
+        bar = il.layer_step("Scale bar", dict(length=20.0, label='', label_pos='none', thickness=6, color='#000000', size=12, font='default',
+                                               opacity=100, units_per_px=0.0, x=10, y=40), (1.0, "um"))
+        out = il.run_recipe(img, [bar])
+        self.assertTrue((out[42:46, 12:30] == 0).all() and (out[:30] == 200).all())          # the bar (1 px of margin round it) is merged into the picture
+        moved = il.run_recipe(img, [bar, il.tool_step("Canvas size", dict(left=5, top=7, fill='white'))])
+        self.assertEqual(moved.shape[:2], (67, 105))
+        self.assertTrue((moved[49:53, 17:35] == 0).all())                                     # a layer moves with the canvas
+        flipped = il.run_recipe(img, [bar, il.tool_step("Flip", dict(axis='horizontal'))])
+        self.assertTrue((flipped[42:46, 70:88] == 0).all())                                   # a geometry tool merges the layers first
+
+    def test_parse_step_text(self):
+        st = il.parse_step_text("levels: gamma=1.5, in_black=20")
+        self.assertEqual((st['tool'], st['params']), ("Levels", dict(gamma=1.5, in_black=20)))
+        self.assertEqual(il.parse_step_text("Invert")['params'], {})
+        self.assertIs(il.parse_step_text("Auto straighten:expand=false")['params']['expand'], False)
+        self.assertEqual(il.parse_step_text("Hue / saturation:hue=30")['tool'], "Hue / saturation")
+        with self.assertRaises(ValueError):
+            il.parse_step_text("Nope:x=1")
+        with self.assertRaises(ValueError):
+            il.parse_step_text("Levels:wrong=1")
+
+    def test_batch_on_a_folder(self):
+        d = tempfile.mkdtemp()
+        src, out = os.path.join(d, "in"), os.path.join(d, "out")
+        os.makedirs(os.path.join(src, "sub"))
+        for name in ("a.png", "b.jpg", os.path.join("sub", "c.png")):
+            Image.fromarray(gradient(30, 40)).save(os.path.join(src, name))
+        with open(os.path.join(src, "notes.txt"), "w") as f:
+            f.write("not a picture")
+        with open(os.path.join(src, "broken.png"), "wb") as f:
+            f.write(b"not a png")
+        self.assertEqual([os.path.basename(q) for q in il.list_images(src)], ["a.png", "b.jpg", "broken.png"])
+        self.assertEqual(len(il.list_images(src, recursive=True)), 4)
+        steps = [il.tool_step("Invert", {}), il.tool_step("Resize", dict(width=20, height=10))]
+        seen = []
+        res = il.run_batch(steps, il.list_images(src, True), out, fmt="png", suffix="_x", root_dir=src, progress=lambda i, n, s: seen.append((i, n)))
+        self.assertEqual(seen[0], (0, 4))
+        ok = [r for r in res if r[2] == "ok"]
+        self.assertEqual(len(ok), 3)
+        self.assertEqual([r[0] for r in res if r[1] is None], [os.path.join(src, "broken.png")])
+        self.assertTrue(os.path.isfile(os.path.join(out, "a_x.png")) and os.path.isfile(os.path.join(out, "b_x.png")))
+        self.assertTrue(os.path.isfile(os.path.join(out, "sub", "c_x.png")))                  # the sub-folder is kept
+        got = np.array(Image.open(os.path.join(out, "a_x.png")))
+        self.assertEqual(got.shape[:2], (10, 20))
+        again = il.run_batch(steps, [os.path.join(src, "a.png")], out, fmt="png", suffix="_x", root_dir=src)
+        self.assertTrue(again[0][1].endswith("a_x_1.png"))                                    # no overwrite: a free name
+        over = il.run_batch(steps, [os.path.join(src, "a.png")], out, fmt="png", suffix="_x", overwrite=True, root_dir=src)
+        self.assertTrue(over[0][1].endswith("a_x.png"))
+        same = il.batch_output_path(os.path.join(src, "a.png"), src, "same", "", False)
+        self.assertNotEqual(os.path.normcase(same), os.path.normcase(os.path.join(src, "a.png")))      # never over the original
+
+    def test_settings_and_recent_files(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "deep", "settings.json")
+        self.assertEqual(il.load_settings(path), {})
+        files = []
+        for n in range(12):
+            f = os.path.join(d, "f%d.png" % n)
+            open(f, "wb").close()
+            files.append(f)
+        st = {}
+        for f in files:
+            il.add_recent(st, f)
+        il.add_recent(st, files[3])
+        self.assertEqual(len(st['recent']), 10)
+        self.assertEqual(st['recent'][0], os.path.abspath(files[3]))
+        self.assertEqual(len(set(st['recent'])), 10)
+        st['geometry'] = "1200x800+10+10"
+        self.assertTrue(il.save_settings(st, path))
+        self.assertEqual(il.load_settings(path), st)
+        os.remove(files[3])
+        self.assertNotIn(os.path.abspath(files[3]), il.recent_files(st))
+        with open(path, "w") as f:
+            f.write("{broken")
+        self.assertEqual(il.load_settings(path), {})
+        self.assertFalse(il.save_settings({"a": 1}, os.path.join(d, "f0.png", "x", "s.json")))      # a path that cannot exist: ignored
+
+    def test_command_line(self):
+        d = tempfile.mkdtemp()
+        src, out = os.path.join(d, "in"), os.path.join(d, "out")
+        os.makedirs(src)
+        Image.fromarray(gradient(30, 40)).save(os.path.join(src, "a.png"))
+        self.assertEqual(il.cli(["--batch", src, out, "--apply", "Invert", "--format", "png", "--suffix", "_i"]), 0)
+        got = np.array(Image.open(os.path.join(out, "a_i.png")))
+        self.assertTrue(np.array_equal(got, 255 - gradient(30, 40)))
+        self.assertEqual(il.cli(["--batch", src, out, "--apply", "No such tool"]), 2)
+        self.assertEqual(il.cli(["--batch", src, out]), 2)                                   # nothing to do
+        self.assertEqual(il.cli(["--batch", os.path.join(d, "missing"), out, "--apply", "Invert"]), 2)
+        self.assertIsNone(il.cli([]))
+        rp = os.path.join(d, "r.ifr")
+        il.save_recipe(rp, [il.tool_step("Invert", {})])
+        self.assertEqual(il.cli(["--batch", src, os.path.join(d, "out2"), "--recipe", rp, "--apply", "Invert"]), 0)
+        again = np.array(Image.open(os.path.join(d, "out2", "a.png")))
+        self.assertTrue(np.array_equal(again, gradient(30, 40)))                             # two inversions give the original back
+
+    def test_save_image_png_level_and_jpeg_quality(self):
+        d = tempfile.mkdtemp()
+        img = np.random.RandomState(0).randint(0, 255, (60, 60, 3), np.uint8)
+        a, b = os.path.join(d, "a.png"), os.path.join(d, "b.png")
+        il.save_image(img, a, None, 95, 1)
+        il.save_image(img, b, None, 95, 9)
+        self.assertTrue(np.array_equal(np.array(Image.open(a)), img) and np.array_equal(np.array(Image.open(b)), img))
+        j1, j2 = os.path.join(d, "q10.jpg"), os.path.join(d, "q95.jpg")
+        il.save_image(img, j1, None, 10)
+        il.save_image(img, j2, None, 95)
+        self.assertLess(os.path.getsize(j1), os.path.getsize(j2))
+
+
 class PickedColourFillTests(unittest.TestCase):
     def test_erase_colours_can_paint_with_a_picked_colour(self):
         img = np.full((20, 40, 3), 235, np.uint8)
