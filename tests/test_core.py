@@ -1066,6 +1066,122 @@ class MaskSelectionTests(unittest.TestCase):
         self.assertTrue(xs.min() <= 10.6 and xs.max() >= 29 and ys.min() <= 10.6 and ys.max() >= 19)
 
 
+class ToneColourTests(unittest.TestCase):
+    """Levels, Curves, Auto contrast, CLAHE, Even out illumination, Hue / saturation, Colour balance, White balance."""
+
+    def ramp(self):
+        x = np.linspace(0, 255, 256, dtype=np.uint8)
+        return np.repeat(np.stack([x] * 3, axis=-1)[None, :, :], 8, axis=0)
+
+    def test_defaults_change_nothing(self):
+        img = gradient()
+        for name in ("Levels", "Curves", "Hue / saturation", "Colour balance", "White balance"):
+            self.assertIs(il.apply_tool(name, img, {}), img, name)
+
+    def test_levels_stretch_gamma_and_channel(self):
+        r = self.ramp()
+        out = il.apply_tool("Levels", r, dict(in_black=50, in_white=200))
+        row = out[0, :, 0]
+        self.assertEqual((int(row[50]), int(row[200]), int(row[0]), int(row[255])), (0, 255, 0, 255))
+        self.assertLess(abs(int(row[125]) - 128), 3)
+        self.assertGreater(int(il.apply_tool("Levels", r, dict(gamma=2.0))[0, 100, 0]), 100)
+        self.assertLess(int(il.apply_tool("Levels", r, dict(gamma=0.5))[0, 100, 0]), 100)
+        red = il.apply_tool("Levels", r, dict(channel='Red', in_black=100))
+        self.assertTrue(np.array_equal(red[..., 1:], r[..., 1:]) and int(red[0, 100, 0]) == 0)
+        low = il.apply_tool("Levels", r, dict(out_black=100, out_white=150))
+        self.assertEqual((int(low[0, 0, 0]), int(low[0, 255, 0])), (100, 150))
+
+    def test_curve_goes_through_its_points_and_is_monotone(self):
+        c = il.monotone_curve([0, 64, 128, 192, 255], [0, 40, 128, 220, 255])
+        self.assertEqual([int(c[i]) for i in (0, 64, 128, 192, 255)], [0, 40, 128, 220, 255])
+        self.assertTrue((np.diff(c.astype(int)) >= 0).all())
+        flat = il.monotone_curve([0, 64, 128, 192, 255], [10, 10, 10, 10, 10])
+        self.assertTrue((flat == 10).all())
+
+    def test_curves_lighten_and_darken(self):
+        r = self.ramp()
+        self.assertGreater(int(il.apply_tool("Curves", r, dict(mid=160))[0, 128, 0]), 150)
+        self.assertLess(int(il.apply_tool("Curves", r, dict(mid=90))[0, 128, 0]), 100)
+        inv = il.apply_tool("Curves", r, dict(black=255, white=0, shadows=191, mid=127, high=63))
+        self.assertLess(abs(int(inv[0, 0, 0]) - 255) + abs(int(inv[0, 255, 0])), 3)
+
+    def test_auto_contrast_stretches(self):
+        img = (np.random.RandomState(0).rand(40, 40, 3) * 60 + 80).astype(np.uint8)
+        out = il.apply_tool("Auto contrast", img, dict(clip=0.5))
+        self.assertGreater(int(out.max()) - int(out.min()), 240)
+        cast = img.copy()
+        cast[..., 0] = np.clip(cast[..., 0].astype(int) + 60, 0, 255)
+        fixed = il.apply_tool("Auto contrast", cast, dict(clip=0.5, per_channel=True))
+        means = fixed.reshape(-1, 3).mean(axis=0)
+        self.assertLess(float(means.max() - means.min()), 12.0)
+        flat = np.full((10, 10, 3), 100, np.uint8)
+        self.assertIs(il.apply_tool("Auto contrast", flat, {}), flat)
+
+    def test_clahe_raises_local_contrast(self):
+        rs = np.random.RandomState(1)
+        img = np.clip(110 + rs.randn(64, 64, 3) * 4, 0, 255).astype(np.uint8)
+        out = il.apply_tool("Local contrast (CLAHE)", img, dict(clip_limit=4.0, tiles=4))
+        self.assertEqual(out.shape, img.shape)
+        self.assertGreater(float(out.std()), float(img.std()) * 1.5)
+
+    def test_even_illumination_flattens_a_gradient(self):
+        x = np.linspace(0.4, 1.0, 200, dtype=np.float32)[None, :, None]
+        img = _u8 = np.clip(np.ones((100, 200, 3), np.float32) * 200 * x, 0, 255).astype(np.uint8)
+        out = il.apply_tool("Even out illumination", img, dict(radius=60))
+        self.assertLess(float(out.mean(axis=(0, 2)).std()), 0.4 * float(img.mean(axis=(0, 2)).std()))
+        self.assertIs(il.apply_tool("Even out illumination", img, dict(strength=0)), img)
+
+    def test_hue_saturation(self):
+        red = np.full((4, 4, 3), (200, 40, 40), np.uint8)
+        grey = il.apply_tool("Hue / saturation", red, dict(saturation=-100))
+        self.assertLess(int(grey.max(axis=2).max() - grey.min(axis=2).min()), 4)
+        cyan = il.apply_tool("Hue / saturation", red, dict(hue=180))
+        self.assertTrue(int(cyan[0, 0, 0]) < int(cyan[0, 0, 1]) and int(cyan[0, 0, 0]) < int(cyan[0, 0, 2]))
+        self.assertTrue((il.apply_tool("Hue / saturation", red, dict(lightness=100)) == 255).all())
+        self.assertTrue((il.apply_tool("Hue / saturation", red, dict(lightness=-100)) == 0).all())
+
+    def test_colour_balance_ranges(self):
+        r = self.ramp()
+        out = il.apply_tool("Colour balance", r, dict(tones='shadows', red=100))
+        self.assertGreater(int(out[0, 20, 0]) - int(r[0, 20, 0]), 20)
+        self.assertLess(int(out[0, 250, 0]) - int(r[0, 250, 0]), 6)
+        hi = il.apply_tool("Colour balance", r, dict(tones='highlights', blue=-100))
+        self.assertLess(int(hi[0, 250, 2]), 215)
+        self.assertEqual(int(hi[0, 5, 2]), int(r[0, 5, 2]))
+
+    def test_white_balance(self):
+        img = np.zeros((20, 20, 3), np.uint8)
+        img[...] = (150, 120, 100)
+        out = il.apply_tool("White balance", img, dict(method='picked neutral', neutral='#967864'))
+        self.assertLess(int(out.max() - out.min()), 3)
+        half = il.apply_tool("White balance", img, dict(method='picked neutral', neutral='#967864', strength=50))
+        self.assertTrue(int(half[0, 0].max() - half[0, 0].min()) < int(img[0, 0].max() - img[0, 0].min()))
+        rs = np.random.RandomState(2)
+        tinted = np.clip(rs.rand(30, 30, 3) * 120 + np.array([60, 20, 0]), 0, 255).astype(np.uint8)
+        gw = il.apply_tool("White balance", tinted, dict(method='gray world'))
+        m = gw.reshape(-1, 3).mean(axis=0)
+        self.assertLess(float(m.max() - m.min()), 4.0)
+        bright = il.apply_tool("White balance", tinted, dict(method='brightest areas'))
+        self.assertEqual(bright.shape, tinted.shape)
+        self.assertIs(il.apply_tool("White balance", img, dict(method='picked neutral', neutral='')), img)
+
+    def test_tools_respect_a_working_area(self):
+        r = self.ramp()
+        out = il.apply_tool("Levels", r, dict(gamma=2.0), (0, 0, 100, 8))
+        self.assertTrue(np.array_equal(out[:, 100:], r[:, 100:]) and not np.array_equal(out[:, :100], r[:, :100]))
+
+    def test_histogram_counts(self):
+        img = np.zeros((10, 10, 3), np.uint8)
+        img[:5] = (255, 0, 128)
+        h = il.histogram_counts(img)
+        self.assertEqual(h.shape, (3, 256))
+        self.assertEqual((int(h[0, 255]), int(h[0, 0]), int(h[2, 128]), int(h.sum(axis=1)[0])), (50, 50, 50, 100))
+        mask = np.zeros((10, 10), bool)
+        mask[:5] = True
+        self.assertEqual(int(il.histogram_counts(img, mask)[0, 0]), 0)
+        self.assertEqual(int(il.histogram_counts(img, np.zeros((10, 10), bool)).sum()), 0)
+
+
 class PickedColourFillTests(unittest.TestCase):
     def test_erase_colours_can_paint_with_a_picked_colour(self):
         img = np.full((20, 40, 3), 235, np.uint8)

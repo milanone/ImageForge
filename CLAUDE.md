@@ -254,6 +254,20 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   selection selects everything but the shape. Tests: `MaskSelectionTests`; real window: `examples/selection_session.py`.
   Not done: moving a shape's content (Move area is rectangular), saving the selection, selection from a layer's alpha, rotation.
 
+- **Tone and colour tools** (group Tone / Colour; all pure numpy / cv2 functions of `img`, each returning `img` itself at its
+  defaults so 'no change' is recognised): `levels` (`levels_lut`, a 256-value LUT per call, `apply_lut` for one channel),
+  `curves` (`monotone_curve`: Fritsch-Carlson cubic through 5 points, it cannot overshoot, so a rising set of points never makes
+  an inverted band; a hand-drawn curve widget was left out on purpose: five sliders are enough and fit the Param machinery),
+  `auto_contrast` (percentiles over the WHOLE picture, not the working area: the tool function gets no region), `clahe` (L of
+  LAB), `even_illumination` (the blur is made on a copy shrunk by radius/12, then enlarged: same look, far faster; 'divide'
+  by the luminance of the background estimate so colours stay), `hue_saturation` (cv2 HSV, hue in degrees, lightness blends to
+  white / black), `colour_balance` (weights by luminance: shadows (1-y)^2, highlights y^2, midtones 1-|2y-1|), `white_balance`
+  (gains = target / reference per channel; the neutral colour has a `pick='color1'`, so Ctrl+click picks it). Histogram window
+  (`show_histogram`, `_hist_schedule` / `_hist_refresh`, `histogram_counts`): a Toplevel that redraws 90 ms after a `_redraw` or a
+  parameter change, only when its key (id of the shown array, selection, options, Levels marks) changed; the top of the scale is the
+  99.7th percentile of the counts so a spike at 0 or 255 does not flatten the rest. Tests: `ToneColourTests`; real window:
+  `examples/tone_session.py`. Not done: a curve editor widget, per-colour-range hue/saturation, 16-bit histograms.
+
 ## Adding a tool
 
 Prefer a plug-in file when it is an experiment, `@tool` in `ImageForge.pyw` when it is a standard feature (and add a
@@ -284,7 +298,7 @@ Nothing here is promised; Francesco adds tools as he needs them. Ordered roughly
 **Tools**
 - From SpectrumDigitizer: manual link of a broken line (`draw_link`), magnifier next to the cursor, strip ticks inside a frame
   (`strip_inner_ticks`), frame finder (`find_frame`), erase along a polyline (`erase_mask_along`).
-- Levels / curves, hue-saturation, colour balance, auto-contrast, white balance, histogram view; noise reduction (median,
+- Noise reduction (median,
   bilateral, non-local means), morphological operations (open/close, dilate/erode), edge detection.
 - Perspective correction (four clicked corners), automatic deskew (Hough / projection profile), lens distortion.
 - Crop with a fixed aspect ratio or to a size in cm at a dpi; canvas size (add borders); rulers, grid, guides, snapping;

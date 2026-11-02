@@ -231,6 +231,206 @@ def invert(img):
     return 255 - img
 
 
+# ---- tone and colour ------------------------------------------------------------------------------------------
+CHANNELS = ('RGB', 'Red', 'Green', 'Blue')
+
+
+def apply_lut(img, lut, channel='RGB'):
+    """Map the values of `img` through `lut` (256 uint8 values): all channels, or only the Red / Green / Blue one."""
+    if channel == 'RGB':
+        return cv2.LUT(img, lut)
+    out = img.copy()
+    k = CHANNELS.index(channel) - 1
+    out[..., k] = lut[img[..., k]]
+    return out
+
+
+def levels_lut(in_black, in_white, gamma, out_black, out_white):
+    """The 256-value table of a Levels adjustment: the input range [in_black, in_white] is stretched to 0..1, raised to
+    1 / gamma (gamma > 1 brightens the midtones) and mapped to [out_black, out_white]."""
+    x = np.arange(256, dtype=np.float32)
+    t = np.clip((x - in_black) / max(1.0, float(in_white - in_black)), 0.0, 1.0) ** (1.0 / max(gamma, 1e-3))
+    return _to_u8(out_black + t * (out_white - out_black))
+
+
+@tool("Levels", "Tone", [
+    Param('channel', "Channel", 'choice', 'RGB', choices=CHANNELS),
+    Param('in_black', "Input black point", 'int', 0, 0, 254, slider=True),
+    Param('in_white', "Input white point", 'int', 255, 1, 255, slider=True),
+    Param('gamma', "Midtones (gamma)", 'float', 1.0, 0.1, 5.0, step=0.01, slider=True),
+    Param('out_black', "Output black", 'int', 0, 0, 255, slider=True),
+    Param('out_white', "Output white", 'int', 255, 0, 255, slider=True)],
+    doc="Slide the input black / white points towards the ends of the histogram to stretch the contrast; gamma above 1 lightens "
+        "the midtones, below 1 darkens them. The Output values lower the contrast the other way. Choose a single channel to "
+        "correct a colour cast. View > Histogram shows where the values lie.")
+def levels(img, channel, in_black, in_white, gamma, out_black, out_white):
+    if in_white <= in_black:
+        in_white = in_black + 1
+    if (in_black, in_white, out_black, out_white) == (0, 255, 0, 255) and abs(gamma - 1.0) < 1e-6:
+        return img
+    return apply_lut(img, levels_lut(in_black, in_white, gamma, out_black, out_white), channel)
+
+
+def monotone_curve(xs, ys):
+    """The 256 values of the smooth monotone curve (Fritsch-Carlson cubic) through the points (xs, ys): it never overshoots
+    between points, so a curve through rising points always rises."""
+    xs, ys = np.asarray(xs, np.float64), np.asarray(ys, np.float64)
+    h, d = np.diff(xs), np.diff(ys) / np.diff(xs)
+    m = np.zeros(len(xs))
+    m[0], m[-1] = d[0], d[-1]
+    for i in range(1, len(xs) - 1):
+        m[i] = 0.0 if d[i - 1] * d[i] <= 0 else 2.0 / (1.0 / d[i - 1] + 1.0 / d[i])
+    x = np.arange(256, dtype=np.float64)
+    idx = np.clip(np.searchsorted(xs, x, side='right') - 1, 0, len(xs) - 2)
+    t = (x - xs[idx]) / h[idx]
+    h00, h10, h01, h11 = 2 * t ** 3 - 3 * t ** 2 + 1, t ** 3 - 2 * t ** 2 + t, -2 * t ** 3 + 3 * t ** 2, t ** 3 - t ** 2
+    y = h00 * ys[idx] + h10 * h[idx] * m[idx] + h01 * ys[idx + 1] + h11 * h[idx] * m[idx + 1]
+    return _to_u8(y)
+
+
+@tool("Curves", "Tone", [
+    Param('channel', "Channel", 'choice', 'RGB', choices=CHANNELS),
+    Param('black', "Black ends at", 'int', 0, 0, 255, slider=True),
+    Param('shadows', "Shadows (input 64) becomes", 'int', 64, 0, 255, slider=True),
+    Param('mid', "Midtones (input 128) becomes", 'int', 128, 0, 255, slider=True),
+    Param('high', "Highlights (input 192) becomes", 'int', 192, 0, 255, slider=True),
+    Param('white', "White ends at", 'int', 255, 0, 255, slider=True)],
+    doc="A smooth tone curve through five points (input 0, 64, 128, 192, 255): raise a point to lighten that part of the range, "
+        "lower it to darken it. A gentle S (shadows down, highlights up) adds contrast without clipping.")
+def curves(img, channel, black, shadows, mid, high, white):
+    if (black, shadows, mid, high, white) == (0, 64, 128, 192, 255):
+        return img
+    return apply_lut(img, monotone_curve([0, 64, 128, 192, 255], [black, shadows, mid, high, white]), channel)
+
+
+@tool("Auto contrast", "Tone", [
+    Param('clip', "Ignore the darkest and lightest (%)", 'float', 0.5, 0.0, 10.0, step=0.1, slider=True),
+    Param('per_channel', "Each colour channel on its own (also removes a colour cast)", 'bool', False)],
+    doc="Stretches the values so that the darkest and the lightest ends of the picture reach black and white. By default one "
+        "stretch is used for the three colours (keeps the colours); 'each channel' fixes a colour cast but can change hues. "
+        "The ends are measured over the whole picture, not only the working area.")
+def auto_contrast(img, clip, per_channel):
+    f = img.astype(np.float32)
+    chans = [f[..., k] for k in range(3)] if per_channel else [f]
+    out = f.copy()
+    for k, ch in enumerate(chans):
+        lo, hi = np.percentile(ch, [clip, 100.0 - clip])
+        if hi - lo < 1.0:
+            continue
+        scaled = (ch - lo) * (255.0 / (hi - lo))
+        if per_channel:
+            out[..., k] = scaled
+        else:
+            out = scaled
+    return img if np.array_equal(_to_u8(out), img) else _to_u8(out)
+
+
+@tool("Local contrast (CLAHE)", "Tone", [
+    Param('clip_limit', "Strength", 'float', 2.0, 0.5, 10.0, step=0.1, slider=True),
+    Param('tiles', "Tiles across (more = more local)", 'int', 8, 2, 32, slider=True)],
+    doc="Adaptive histogram equalisation of the lightness: brings out detail in dim and washed-out parts of a picture (microscopy, "
+        "gels, scans) without blowing out the rest. Raise the strength carefully: noise grows with it.")
+def clahe(img, clip_limit, tiles):
+    lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB)
+    lab[..., 0] = cv2.createCLAHE(clipLimit=float(clip_limit), tileGridSize=(int(tiles), int(tiles))).apply(lab[..., 0])
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+
+
+@tool("Even out illumination", "Tone", [
+    Param('radius', "Scale of the uneven light (px)", 'int', 80, 5, 600, slider=True, progressive=True),
+    Param('strength', "Strength (%)", 'int', 100, 0, 100, slider=True),
+    Param('mode', "Correct by", 'choice', 'divide', choices=('divide', 'subtract'))],
+    doc="Removes a slow brightness gradient (a vignette, an unevenly lit scan or microscope field): the large-scale light is "
+        "estimated with a very wide blur and taken out, keeping the colours. Set the scale larger than the objects of "
+        "interest. 'divide' suits a bright background; 'subtract' a dark one.")
+def even_illumination(img, radius, strength, mode):
+    if strength == 0:
+        return img
+    h, w = img.shape[:2]
+    k = max(1.0, radius / 12.0)                                     # the blur is done on a small copy: same look, far faster
+    small = cv2.resize(img, (max(1, int(w / k)), max(1, int(h / k))), interpolation=cv2.INTER_AREA).astype(np.float32)
+    bg = cv2.GaussianBlur(small, (0, 0), max(0.5, radius / k), borderType=cv2.BORDER_REFLECT)
+    bg = cv2.resize(bg, (w, h), interpolation=cv2.INTER_CUBIC)
+    lum = bg.mean(axis=2, keepdims=True)
+    f = img.astype(np.float32)
+    if mode == 'divide':
+        out = f * (float(lum.mean()) / np.maximum(lum, 1.0))
+    else:
+        out = f - (lum - float(lum.mean()))
+    return _to_u8(f + (out - f) * (strength / 100.0))
+
+
+@tool("Hue / saturation", "Colour", [
+    Param('hue', "Hue shift (deg)", 'int', 0, -180, 180, slider=True),
+    Param('saturation', "Saturation (%)", 'int', 0, -100, 100, slider=True),
+    Param('lightness', "Lightness (%)", 'int', 0, -100, 100, slider=True)],
+    doc="Rotates the hues, scales the colour intensity (-100 = grey, +100 = twice as intense) and lightens or darkens towards "
+        "white or black.")
+def hue_saturation(img, hue, saturation, lightness):
+    if (hue, saturation, lightness) == (0, 0, 0):
+        return img
+    hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV).astype(np.float32)
+    hsv[..., 0] = (hsv[..., 0] + hue / 2.0) % 180.0
+    hsv[..., 1] = np.clip(hsv[..., 1] * (1.0 + saturation / 100.0), 0, 255)
+    out = cv2.cvtColor(_to_u8(hsv), cv2.COLOR_HSV2RGB).astype(np.float32)
+    if lightness > 0:
+        out = out + (255.0 - out) * (lightness / 100.0)
+    elif lightness < 0:
+        out = out * (1.0 + lightness / 100.0)
+    return _to_u8(out)
+
+
+@tool("Colour balance", "Colour", [
+    Param('tones', "Tones to change", 'choice', 'midtones', choices=('shadows', 'midtones', 'highlights', 'all')),
+    Param('red', "Cyan  <->  Red", 'int', 0, -100, 100, slider=True),
+    Param('green', "Magenta  <->  Green", 'int', 0, -100, 100, slider=True),
+    Param('blue', "Yellow  <->  Blue", 'int', 0, -100, 100, slider=True)],
+    doc="Shifts the colour of the shadows, midtones or highlights (or everything) towards red / green / blue or their opposites "
+        "cyan / magenta / yellow. A small move is enough: a colour cast of the whole picture is best removed with White balance.")
+def colour_balance(img, tones, red, green, blue):
+    if (red, green, blue) == (0, 0, 0):
+        return img
+    f = img.astype(np.float32)
+    y = (0.299 * f[..., 0] + 0.587 * f[..., 1] + 0.114 * f[..., 2]) / 255.0
+    w = {'shadows': (1.0 - y) ** 2, 'highlights': y ** 2, 'midtones': 1.0 - np.abs(2.0 * y - 1.0), 'all': np.ones_like(y)}[tones]
+    shift = np.array([red, green, blue], np.float32) * 0.6
+    return _to_u8(f + w[..., None] * shift)
+
+
+@tool("White balance", "Colour", [
+    Param('method', "Method", 'choice', 'picked neutral', choices=('picked neutral', 'gray world', 'brightest areas')),
+    Param('neutral', "Neutral colour (Pick or Ctrl+click on grey / white)", 'colors', '', pick='color1'),
+    Param('strength', "Strength (%)", 'int', 100, 0, 100, slider=True)],
+    doc="Removes a colour cast. 'picked neutral': click on something that should be grey or white and every colour is scaled "
+        "so that it becomes neutral. 'gray world' assumes the picture averages to grey; 'brightest areas' assumes the lightest "
+        "pixels are white. Without a picked colour the first method does nothing.")
+def white_balance(img, method, neutral, strength):
+    f = img.astype(np.float32)
+    if method == 'picked neutral':
+        cols = parse_colors(neutral)
+        if not cols:
+            return img
+        ref = np.asarray(cols[0], np.float32)
+        target = float(ref.mean())
+    elif method == 'gray world':
+        ref = f.reshape(-1, 3).mean(axis=0)
+        target = float(ref.mean())
+    else:
+        ref = np.percentile(f.reshape(-1, 3), 99.0, axis=0).astype(np.float32)
+        target = float(ref.max())
+    gains = target / np.maximum(ref, 1.0)
+    gains = 1.0 + (gains - 1.0) * (strength / 100.0)
+    if np.allclose(gains, 1.0, atol=1e-3):
+        return img
+    return _to_u8(f * gains)
+
+
+def histogram_counts(img, mask=None):
+    """(3, 256) counts of the values of each channel; `mask` (bool, same height and width) restricts it."""
+    px = img[mask] if mask is not None else img.reshape(-1, 3)
+    return np.stack([np.bincount(px[:, k], minlength=256) for k in range(3)]) if len(px) else np.zeros((3, 256), np.int64)
+
+
 @tool("Sharpen (unsharp mask)", "Filters", [
     Param('amount', "Amount (%)", 'int', 100, 0, 500, slider=True),
     Param('radius', "Radius (px)", 'float', 1.5, 0.1, 30.0, step=0.1, slider=True),
@@ -1627,6 +1827,7 @@ class ImageForge:
         self._mv = None                  # (press point, selection, copy?, original image) while moving the content
         self._placing = False            # a click/drag is setting the x, y of a 'place' tool
         self._grab = None                # (handle, press point in image pixels, selection at press) while dragging it
+        self._hist_win, self._hist_pending, self._hist_key = None, False, None      # the Histogram window
         self._lasso = []                 # image points of the lasso being drawn, and the modifier of its first press
         self._lasso_mod, self._lasso_down, self._lasso_t = 'replace', False, 0.0
         self._outline = (None, [])       # (mask, polylines): the outline of a mask selection, computed once per mask
@@ -1714,6 +1915,8 @@ class ImageForge:
         v.add_command(label="Fit to window", accelerator="Ctrl+0", command=self.fit_view)
         v.add_command(label="Center", command=self.center_view)
         v.add_command(label="Actual size (100%)", accelerator="Ctrl+1", command=self.actual_size)
+        v.add_separator()
+        v.add_command(label="Histogram...", accelerator="Ctrl+H", command=self.show_histogram)
 
     def _build_ui(self):
         paned = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, sashwidth=5, bg='#bbbbbb')
@@ -1868,6 +2071,7 @@ class ImageForge:
         for seq, fn in (("<Control-o>", self.open_dialog), ("<Control-s>", self.save),
                         ("<Control-S>", self.save_as), ("<Control-z>", self.undo), ("<Control-y>", self.redo),
                         ("<Control-a>", self.select_all), ("<Control-d>", self.deselect), ("<Control-i>", self.invert_sel),
+                        ("<Control-h>", self.show_histogram),
                         ("<Control-X>", self.crop_to_selection), ("<Control-j>", lambda: self.selection_to_layer(False)),
                         ("<Control-J>", lambda: self.selection_to_layer(True)), ("<Control-0>", self.fit_view),
                         ("<Control-1>", self.actual_size), ("<Control-plus>", lambda: self._zoom_step(1.25)),
@@ -2025,6 +2229,7 @@ class ImageForge:
     def _params_changed(self):
         if not self._params_ready or self.tool is None:
             return
+        self._hist_schedule()
         self._clone_off = None if self._clone_source() != self._clone_last else self._clone_off
         self._draw_clone_marker()
         if self._after is not None:
@@ -2782,6 +2987,7 @@ class ImageForge:
         self._draw_selection()
         self._draw_clone_marker()
         self._set_info()
+        self._hist_schedule()
 
     def _draw_selection(self, rect=None):
         c = self.canvas
@@ -3590,6 +3796,103 @@ class ImageForge:
             self._set_info()
 
     # ---- status ----------------------------------------------------------------------------------------
+    # ---- histogram window ------------------------------------------------------------------------------
+    HIST_W, HIST_H = 512, 200
+
+    def show_histogram(self):
+        """View > Histogram: the distribution of the values of the picture as it is shown now (preview included), per colour
+        and as lightness, optionally only inside the working area; while Levels is open its black / white points are drawn."""
+        if not self._need_image():
+            return
+        if self._hist_win is not None and self._hist_win.winfo_exists():
+            self._hist_win.lift()
+            self._hist_key = None
+            self._hist_refresh()
+            return
+        w = tk.Toplevel(self.root)
+        w.title("Histogram - " + APP_NAME)
+        w.resizable(False, False)
+        self._hist_win = w
+        self.v_hist_log, self.v_hist_area = tk.BooleanVar(value=False), tk.BooleanVar(value=False)
+        self.c_hist = tk.Canvas(w, width=self.HIST_W + 20, height=self.HIST_H + 26, bg='#fafafa', highlightthickness=0)
+        self.c_hist.pack(padx=6, pady=(6, 0))
+        row = tk.Frame(w)
+        row.pack(fill=tk.X, padx=6)
+        tk.Checkbutton(row, text="Logarithmic", variable=self.v_hist_log, command=self._hist_force).pack(side=tk.LEFT)
+        tk.Checkbutton(row, text="Working area only", variable=self.v_hist_area, command=self._hist_force).pack(side=tk.LEFT)
+        self.l_hist = tk.Label(w, text="", anchor='w', font=('Consolas', 8), justify='left')
+        self.l_hist.pack(fill=tk.X, padx=8, pady=(0, 6))
+        w.protocol('WM_DELETE_WINDOW', self._hist_close)
+        self._hist_key = None
+        self._hist_refresh()
+
+    def _hist_close(self):
+        if self._hist_win is not None:
+            self._hist_win.destroy()
+        self._hist_win = None
+
+    def _hist_force(self):
+        self._hist_key = None
+        self._hist_refresh()
+
+    def _hist_schedule(self):
+        if self._hist_win is None or self._hist_pending or self.hist is None:
+            return
+        self._hist_pending = True
+        self.root.after(90, self._hist_refresh)
+
+    def _hist_refresh(self):
+        self._hist_pending = False
+        if self._hist_win is None or not self._hist_win.winfo_exists() or self.hist is None:
+            return
+        img = self._shown()
+        marks = ()
+        if self.tool is not None and self.tool.name == 'Levels' and self.pvars:
+            try:
+                marks = (int(float(self.pvars['in_black'].get())), int(float(self.pvars['in_white'].get())))
+            except (tk.TclError, ValueError, KeyError):
+                marks = ()
+        key = (id(img), self.sel and tuple(self.sel), id(getattr(self.sel, 'mask', None)), self.v_hist_log.get(),
+               self.v_hist_area.get(), marks)
+        if key == self._hist_key:
+            return
+        self._hist_key = key
+        mask = None
+        if self.v_hist_area.get() and self.sel is not None:
+            mask = region_mask(self.sel, img.shape) > 0.5 if region_mask(self.sel, img.shape) is not None else None
+            if mask is None:
+                mask = np.zeros(img.shape[:2], bool)
+                x0, y0, x1, y1 = self.sel
+                mask[y0:y1, x0:x1] = True
+        counts = histogram_counts(img, mask)
+        gray = cv2.cvtColor(np.ascontiguousarray(img), cv2.COLOR_RGB2GRAY)
+        lum = np.bincount(gray[mask] if mask is not None else gray.ravel(), minlength=256).astype(np.float64)
+        c, W, H = self.c_hist, self.HIST_W, self.HIST_H
+        c.delete('all')
+        data = counts.astype(np.float64)
+        if self.v_hist_log.get():
+            data, lum = np.log1p(data), np.log1p(lum)
+        top = max(float(np.percentile(np.concatenate([data.ravel(), lum]), 99.7)), 1.0)    # a spike at 0 or 255 must not flatten the rest
+        def ys(v):
+            return 10 + H - min(1.0, v / top) * (H - 6)
+        pts = [10, 10 + H] + [v for i in range(256) for v in (10 + i * W / 255.0, ys(lum[i]))] + [10 + W, 10 + H]
+        c.create_polygon(*pts, fill='#d8d8d8', outline='')
+        for k, col in enumerate(('#e03030', '#20a020', '#3050e0')):
+            line = [v for i in range(256) for v in (10 + i * W / 255.0, ys(data[k, i]))]
+            c.create_line(*line, fill=col)
+        c.create_rectangle(10, 10, 10 + W, 10 + H, outline='#888888')
+        for i in range(0, 256, 64):
+            c.create_text(10 + i * W / 255.0, 10 + H + 10, text=str(i), font=('Arial', 7), fill='#555555')
+        c.create_text(10 + W, 10 + H + 10, text="255", font=('Arial', 7), fill='#555555', anchor='e')
+        for v, name in zip(marks, ("black", "white")):
+            c.create_line(10 + v * W / 255.0, 10, 10 + v * W / 255.0, 10 + H, fill='#000000', dash=(3, 3))
+        px = img[mask] if mask is not None else img.reshape(-1, 3)
+        if len(px):
+            self.l_hist.config(text="pixels %d   mean R %.0f  G %.0f  B %.0f   min %d  max %d" % (
+                len(px), px[:, 0].mean(), px[:, 1].mean(), px[:, 2].mean(), px.min(), px.max()))
+        else:
+            self.l_hist.config(text="nothing selected")
+
     def _need_image(self):
         if self.hist is None:
             self._status("Open an image first (Ctrl+O).")

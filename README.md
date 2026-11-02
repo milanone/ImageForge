@@ -57,6 +57,12 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
 - **Ctrl+click as a shortcut for Pick**: with a tool that has a Pick / Set source button, Ctrl+click on the picture does what the button
   does, without pressing it: the Clone stamp source, a colour to find (Erase / keep colours, Remove marks: added to the list), the
   colour to paint with (Eraser brush, Erase rectangle, Add text), and Ctrl+Shift+click the *paint with* colour of Erase / keep colours.
+  - Tone and colour: **Levels** (per channel or all; black / white points, gamma, output range), **Curves** (smooth monotone curve
+    through five points), **Auto contrast** (with a clip percentage, one stretch or per channel), **Local contrast (CLAHE)**,
+    **Even out illumination** (removes a slow brightness gradient), **Hue / saturation**, **Colour balance** (shadows / midtones /
+    highlights) and **White balance** (pick a grey, gray world or brightest areas). *View > Histogram* (Ctrl+H) shows the values of
+    the picture as it is now, preview included, per colour and as lightness, with log scale and a *working area only* option; with
+    Levels open its black and white points are drawn on it.
   - Clean (ported from SpectrumDigitizer): erase / keep colours (**Pick** colours on the image, with tolerance and an
     optional widening of the area; paint with white, black, a **picked colour** (Pick it from the picture, or choose it), transparent or **inpaint**, which rebuilds the erased pixels from
     their surroundings so a line over a gradient or a photo fades into it - keep the area narrow, a wide hole gets smeared),
