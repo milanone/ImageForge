@@ -4375,7 +4375,30 @@ class ImageForge:
         if sel and sel[0] in TOOLS:
             self.select_tool(sel[0])
 
+    def _pending_preview(self):
+        """True when the tool in use shows a live preview that has not been applied: a one-shot tool (not a brush, a layer tool or an external program) whose
+        preview differs from the picture. Sliders need not have been moved: what is on screen is what is applied (a tool's default preview too)."""
+        t, cur = self.tool, self.hist.current if self.hist is not None else None
+        if t is None or cur is None or t.interactive or t.layer or t.external or self.preview is None or self.preview is cur:
+            return False
+        return not (self.preview.shape == cur.shape and np.array_equal(self.preview, cur))
+
+    def _commit_pending(self, why):
+        """Apply the preview that is on screen, silently: what the user sees is what he gets, and Undo takes it back, so there is no question to answer.
+        Called before anything that would use or replace the picture without the preview (another tool, Save, Export, Crop). Returns True if it applied."""
+        if not self._pending_preview():
+            return False
+        name = self.tool.name
+        n = len(self.hist.states)
+        self.apply()
+        if len(self.hist.states) > n:
+            self._status("%s applied (it was a preview) %s. Undo takes it back." % (name, why), ok=True)
+            return True
+        return False
+
     def select_tool(self, name):
+        if self.tool is not None and self.tool.name != name:
+            self._commit_pending("when you switched tool")
         self.cancel_mode()
         self._measure_cancel()
         self.tool = TOOLS[name]
@@ -4977,6 +5000,7 @@ class ImageForge:
         plain image file would lose them."""
         if not self._need_image():
             return
+        self._commit_pending("before saving")
         if self.save_path is None or (self.hist.layers and not self.save_path.lower().endswith(PROJECT_EXT)):
             return self.save_as()
         self._write(self.save_path)
@@ -4984,6 +5008,7 @@ class ImageForge:
     def save_as(self):
         if not self._need_image():
             return
+        self._commit_pending("before saving")
         base = os.path.splitext(os.path.basename(self.path or "image"))[0]
         layered = bool(self.hist.layers)
         types = [PROJECT_TYPE] + SAVE_TYPES if layered else SAVE_TYPES + [PROJECT_TYPE]
@@ -5034,6 +5059,11 @@ class ImageForge:
 
     # ---- history / selection ---------------------------------------------------------------------------
     def undo(self):
+        if self._pending_preview():                                   # Undo of something not yet applied: just drop the preview
+            self.preview = None
+            self._redraw()
+            self._status("Preview discarded (it was not applied).")
+            return
         if self.hist is not None and self.hist.can_undo():
             self._step(self.hist.undo, "Undone")
 
@@ -5095,6 +5125,7 @@ class ImageForge:
     def crop_to_selection(self):
         if not self._need_image():
             return
+        self._commit_pending("before cropping")
         if self.sel is None:
             self._status("Drag a rectangle on the image first.")
             return
@@ -5399,6 +5430,7 @@ class ImageForge:
         """File > Export: the picture as seen (layers merged) in a chosen format with its quality, size and dpi; the project is untouched."""
         if not self._need_image():
             return
+        self._commit_pending("before exporting")
         path = filedialog.asksaveasfilename(parent=self.root, title="Export the picture", initialdir=self._dir_for('export_dir'),
                                             filetypes=SAVE_TYPES, defaultextension=".png",
                                             initialfile=os.path.splitext(os.path.basename(self.path or "image"))[0])
