@@ -64,7 +64,7 @@ TOOL_LAYOUT = {
     'Size and orientation': ['Resize', 'Enlarge (AI)', 'Canvas size', 'Crop to aspect ratio', 'Auto-crop borders', 'Rotate 90 / 180', 'Rotate (any angle)', 'Flip', 'Auto straighten', 'Perspective correction', 'Lens distortion'],
     'Adjustments': ['Brightness / contrast', 'Levels', 'Curves', 'Auto contrast', 'Local contrast (CLAHE)', 'Even out illumination', 'Hue / saturation', 'Colour balance', 'White balance', 'Portrait retouch', 'Grayscale', 'Invert', 'Threshold (black & white)'],
     'Filters': ['Sharpen (unsharp mask)', 'Blur (Gaussian)', 'Reduce noise', 'Morphology', 'Find edges'],
-    'Clean-up': ['Erase / keep colours', 'Remove marks', 'Remove object (AI)', 'Remove object (generative)', 'Despeckle', 'Flatten ink to one colour', 'Join dashed lines'],
+    'Clean-up': ['Erase / keep colours', 'Remove marks', 'Remove object (local, free)', 'Remove object (API, paid)', 'Despeckle', 'Flatten ink to one colour', 'Join dashed lines'],
 }          # the order of the groups and of the tools in the lists; a group of a plug-in comes after them, in registration order
 TOOL_NOTES = {}                     # name -> a sentence a tool leaves about what it just did (shown after Apply)
 
@@ -1222,15 +1222,16 @@ def lama_remove(img, region, grow=12, grain=True, model=None):
         full[Y0:Y1, X0:X1] = piece
         out = _lama_fill(sess, out, full, grain)
         done += 1
-    TOOL_NOTES["Remove object (AI)"] = "%d piece%s removed" % (done, "" if done == 1 else "s")
+    TOOL_NOTES["Remove object (local, free)"] = "%d piece%s removed" % (done, "" if done == 1 else "s")
     return out if done else img
 
 
-@tool("Remove object (AI)", "Clean-up", [
+@tool("Remove object (local, free)", "Clean-up", [
     Param('grow', "Widen the selection by (% of the object's size)", 'int', 12, 0, 60, slider=True),
     Param('grain', "Add the picture's grain to the fill", 'bool', True)],
     preview=False, external=True, takes_region=True,
-    doc="Removes what is inside the working area and rebuilds it from the surroundings with the LaMa neural network (a 'magic eraser'). Select the "
+    doc="FREE and LOCAL: nothing leaves this computer. Removes what is inside the working area and rebuilds it from the surroundings with the LaMa "
+        "neural network (a 'magic eraser'; for a paid online model that invents more, see Remove object (API, paid)). Select the "
         "object first with the Lasso, the Magic wand or the Rectangle (several separate pieces are removed one after the other), then press Apply: it "
         "takes about ten seconds per piece on the CPU and the window stays usable (Esc stops it). Widening the selection by about 10-15 % is "
         "important for transparent or shiny things (a bottle, glass, a reflection): their tint and reflection lie outside the outline. The model "
@@ -1434,11 +1435,11 @@ def generative_remove(img, region, what, model=GEN_MODELS[0], grow=8, key=None, 
             OR_STATE['credit'] = max(0.0, OR_STATE['credit'] - c)
         out = out.copy() if out is img else out
         out[y0:y0 + S, x0:x0 + S] = gen_paste(crop, sent, gen, pc['hole'], pc['grow_px'])
-    TOOL_NOTES["Remove object (generative)"] = "%d request%s, %.4f USD" % (calls, "" if calls == 1 else "s", spent)
+    TOOL_NOTES["Remove object (API, paid)"] = "%d request%s, %.4f USD" % (calls, "" if calls == 1 else "s", spent)
     return out
 
 
-@tool("Remove object (generative)", "Clean-up", [
+@tool("Remove object (API, paid)", "Clean-up", [
     Param('what', "What to remove (describe it; empty = the object at the centre)", 'text', ""),
     Param('model', "Model", 'choice', GEN_MODELS[0], choices=GEN_MODELS),
     Param('grow', "Widen the selection by (% of the object's size)", 'int', 8, 0, 40, slider=True)],
@@ -1452,7 +1453,8 @@ def remove_object_generative(img, what, model, grow, region=None):
 
 OBJECT_GUIDE = """REMOVING OBJECTS AND MARKS: WHICH TOOL, AND HOW
 
-Four tools take things out of a picture. Pick the simplest one that works.
+Four tools take things out of a picture. Pick the simplest one that works. Both "Remove object" tools use a neural network; what differs is WHERE it
+runs and what it costs: (local, free) runs on this computer and sends nothing anywhere; (API, paid) sends a crop to an online service and is charged.
 
 1. Clean brush (Retouch, in the toolbox) - free, instant.
    For a scratch, a speck, a stray mark or a thin line over a plain or smooth area. Paint over it; it is rebuilt from the edge of the hole.
@@ -1460,17 +1462,17 @@ Four tools take things out of a picture. Pick the simplest one that works.
 2. Remove marks (Clean-up) - free, instant.
    For many small marks of one colour over a drawing (stars, stamps, dots on a figure). Pick the colour, press Apply.
 
-3. Remove object (AI) (Clean-up) - free, on this computer, a few seconds per object.
-   Good for plain backgrounds: a wall, a table, a floor, the sky, a cable. It continues what is around the hole. It cannot invent things (an arm
-   or a hand behind the object comes out smooth) and the fill is a little softer than the photograph. Needs the LaMa model and onnxruntime
+3. Remove object (local, free) (Clean-up) - free, on this computer (nothing is sent anywhere), a few seconds per object.
+   Good for plain backgrounds: a wall, a table, a floor, the sky, a cable. A small neural network (LaMa) continues what is around the hole. It
+   cannot invent much (an arm or a hand behind the object comes out smooth) and the fill is a little softer than the photograph. Needs the LaMa model and onnxruntime
    (see the README). The first use of a session loads the model: about a minute.
 
-4. Remove object (generative) (Clean-up) - COSTS MONEY, about 0.04 USD per object, a few seconds.
+4. Remove object (API, paid) (Clean-up) - COSTS MONEY, about 0.04 USD per object, a few seconds; a crop of the picture goes to an online service.
    For what the other tools cannot do: an object in front of something with structure (a bottle in front of an arm, a person in a crowd, a sign on a
-   building). A generative model redraws what was behind it. On a test photo it kept the surroundings as they were and rebuilt a partly hidden
+   building). A large generative model redraws what was behind it. On a test photo it kept the surroundings as they were and rebuilt a partly hidden
    hair band and an arm faithfully; but what it adds is always a plausible guess, so look at the result.
 
-HOW TO USE "REMOVE OBJECT (GENERATIVE)"
+HOW TO USE "REMOVE OBJECT (API, PAID)"
 
 1. Select the object: Lasso, Magic wand or Rectangle (the toolbox, top left). It does not need to be precise: it tells the program where the object is.
 2. Describe it in the box "What to remove", in words, as you would to a person: 'the transparent green water bottle', 'the man in the red jacket'.
@@ -4448,12 +4450,12 @@ class ImageForge:
                               command=lambda k=p.key: self.start_pick('point', k), bg='#cdeefc').pack(fill=tk.X, pady=(2, 0))
             var.trace_add('write', lambda *a: self._params_changed())
             self.pvars[p.key] = var
-        if self.tool.name == "Remove object (generative)":
+        if self.tool.name == "Remove object (API, paid)":
             self._build_or_panel()
         self._params_ready = True
 
     def _build_or_panel(self):
-        """Under the parameters of Remove object (generative): the OpenRouter credit as far as the program knows, a button to read it from the account, and
+        """Under the parameters of Remove object (API, paid): the OpenRouter credit as far as the program knows, a button to read it from the account, and
         the guide. The credit is read once per program run, when the tool is first selected and a key exists."""
         bg = '#f0f4f7'
         f = tk.Frame(self.params_frame, bg=bg)
@@ -4719,18 +4721,18 @@ class ImageForge:
         if t.takes_region and region is None:
             self._status("%s needs a selection: draw the object with the Lasso, the Magic wand or the Rectangle (the toolbox, top left), then press Apply." % t.name)
             return
-        if t.name == "Remove object (AI)":
+        if t.name == "Remove object (local, free)":
             try:
                 import onnxruntime                                                  # noqa: F401
             except ImportError:
-                messagebox.showwarning(APP_NAME, "Remove object (AI) needs the Python package onnxruntime. Install it with:\n\n    pip install onnxruntime")
+                messagebox.showwarning(APP_NAME, "Remove object (local, free) needs the Python package onnxruntime. Install it with:\n\n    pip install onnxruntime")
                 return
             if find_ai_model("lama") is None:
                 if not messagebox.askyesno(APP_NAME, "The LaMa model (lama_fp32.onnx) is not set up yet. Choose the folder that holds it now?"):
                     return
                 if not self.choose_ai_dir() or find_ai_model("lama") is None:
                     return
-        if t.name == "Remove object (generative)":
+        if t.name == "Remove object (API, paid)":
             key = openrouter_key()
             if not key:
                 messagebox.showwarning(APP_NAME, "No OpenRouter key was found. Set the environment variable OPENROUTER_API_KEY (once, in PowerShell):\n\n"
@@ -4803,7 +4805,7 @@ class ImageForge:
     def _poll_external(self, box, base, flatten, params):
         name, th, t0 = self._busy
         if th.is_alive():
-            hint = " The model is being loaded: about a minute the first time." if name == "Remove object (AI)" and not _LAMA else ""
+            hint = " The model is being loaded: about a minute the first time." if name == "Remove object (local, free)" and not _LAMA else ""
             self._status("%s is running... %d s.%s (Esc stops it; the window stays usable)" % (name, time.time() - t0, hint))
             self._busy_after = self.root.after(500, lambda: self._poll_external(box, base, flatten, params))
             return

@@ -94,13 +94,13 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
     yourself and which need a GPU with Vulkan; *Tools > AI programs folder...* tells ImageForge where they are). It runs in the background (the window stays
     usable, Esc stops it) and can take minutes: about 2.5 min per megapixel with Real-ESRGAN on an integrated Intel GPU. The detail it adds is invented, not
     recovered. It does **not** remove objects.
-  - Clean-up: **Remove object (AI)** is a 'magic eraser': select the object with the Lasso, Magic wand or Rectangle and press Apply; the selection (widened
+  - Clean-up: **Remove object (local, free)** is a 'magic eraser' (a neural network, LaMa, that runs on your computer and sends nothing anywhere): select the object with the Lasso, Magic wand or Rectangle and press Apply; the selection (widened
     by about 12 % so the tint and reflection of glass or a bottle go too) is rebuilt from its surroundings by the LaMa neural network, on the CPU. It needs
     `pip install onnxruntime` and the LaMa model (`lama_fp32.onnx`, about 208 MB, e.g. the ONNX conversion at huggingface.co/Carve/LaMa-ONNX; check its
     licence before redistributing it), which you put with the other AI programs; *Tools > AI programs folder...* tells ImageForge where and remembers it.
     The first run of a session spends about a minute loading the model, then about ten seconds per piece; the window stays usable and Esc stops it. The fill
     is invented, plausible rather than true, and a little smoother than the photograph.
-  - Clean-up: **Remove object (generative)** redraws what was behind an object with a generative model (Google Gemini image models through
+  - Clean-up: **Remove object (API, paid)** is the other 'magic eraser': it sends a crop to an online service and redraws what was behind an object with a large generative model (Google Gemini image models through
     [OpenRouter](https://openrouter.ai)). **It costs money**: about 0.04 USD per object, charged to your OpenRouter credit, which the panel shows (*Refresh
     credit*). Select the object, describe it in words (or leave the box empty: the object at the centre of the crop, which is the one you selected, is removed), press Apply: a window shows what will be sent (only a crop around the object, never the whole picture; you
     are warned if a face is in it), the estimated cost and your credit, and nothing is sent until you say yes. The answer is aligned to the original and pasted

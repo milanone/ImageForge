@@ -1,4 +1,4 @@
-"""Scripted check of Remove object (AI) in the real window with the REAL LaMa model: a shape selection is made (two pieces), Apply runs in the
+"""Scripted check of Remove object (local, free) in the real window with the REAL LaMa model: a shape selection is made (two pieces), Apply runs in the
 background, the window stays alive, the objects are gone, only the widened areas changed, Undo restores. Needs onnxruntime and lama*.onnx in the folder
 given as the argument (or IMAGEFORGE_AI_DIR). Uses a photo of a desk with two bottles if one is passed as the second argument; otherwise a synthetic picture.
 
@@ -31,7 +31,7 @@ os.environ["IMAGEFORGE_SETTINGS"] = os.path.join(tempfile.gettempdir(), "remove_
 root = m.TkinterDnD.Tk() if m.HAS_DND else m.tk.Tk()
 a = m.ImageForge(root); root.geometry("1250x940+40+20"); root.attributes('-topmost', True); root.update(); a.dirty = False; a.open_path(f); root.update()
 m.set_ai_dir(folder); orig = a.hist.current; h, w = orig.shape[:2]
-a.tree.selection_set("Remove object (AI)"); root.update()
+a.tree.selection_set("Remove object (local, free)"); root.update()
 print("tool:", a.tool.name, "| group:", a.tool.group)
 a.apply(); root.update(); print("no selection -> nothing runs, says so:", a._busy is None, "|", a.status.cget('text')[:70])
 if photo and os.path.exists(photo):                       # the two bottles of the desk photo, as two lasso outlines (read off a half-size crop of the photo)

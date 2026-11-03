@@ -395,7 +395,7 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   waifu2x photo 2x 56 s; Real-ESRGAN gives the most detail and slightly waxy skin, waifu2x is gentler. Real window with the real programs: `examples/enlarge_ai_session.py`.
   These are enlargers and denoisers: NOT inpainting, they cannot remove objects (that would need a model such as LaMa or MI-GAN, not added).
 
-- **Remove object (AI)** (`lama_remove`, `_lama_fill`, `_lama_session`, `region_bool`, `find_ai_model`, `Tool.takes_region`; group Clean-up, `external=True`): the working area
+- **Remove object (local, free)** (`lama_remove`, `_lama_fill`, `_lama_session`, `region_bool`, `find_ai_model`, `Tool.takes_region`; group Clean-up, `external=True`): the working area
   IS the input (`takes_region` tools get `region=` from `apply_tool` and are not merged afterwards; `_recipe_step_for` skips them, a selection belongs to one
   picture). LaMa (Carve/LaMa-ONNX `lama_fp32.onnx`, 208 MB, fixed 512 x 512 input `image` (0..1) + `mask`, output 0..255; the model blanks the masked pixels itself:
   blanking them in advance changed nothing) runs through `onnxruntime` on the CPU. Each connected piece of the selection is dilated by `grow` % of ITS size
@@ -409,7 +409,7 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   lost its print. Not done: a GPU provider, a lower-resolution tile mode for huge holes, blending several runs, a second pass option, an MI-GAN (30 MB) variant.
   The model and `onnxruntime` are NOT dependencies: the tool says what is missing (`ToolUnavailable`). Tests with a fake session: `RemoveObjectTests`; real
   window with the real model: `examples/remove_object_session.py <folder> [photo]`.
-- **Remove object (generative)** (`generative_remove`, `gen_pieces`, `gen_edit`, `align_to`, `gen_paste`, `gen_estimate`, `gen_prices`, `or_call`, `or_credit`, `openrouter_key`,
+- **Remove object (API, paid)** (`generative_remove`, `gen_pieces`, `gen_edit`, `align_to`, `gen_paste`, `gen_estimate`, `gen_prices`, `or_call`, `or_credit`, `openrouter_key`,
   `OBJECT_GUIDE`, `_build_or_panel`, `show_object_guide`; group Clean-up, `external` + `takes_region`): PAID. The selection is split into connected pieces, one request each
   (the model gets WORDS, not a mask: `what` describes the object, `gen_prompt`); a square crop 1.5 x the piece (+ widening, at least 384, at most GEN_MAX_SIDE = 1024 when sent)
   goes to OpenRouter chat completions (`modalities: [image, text]`, `usage.include`) with the picture as a data URI; the answer comes back ~1 MP and slightly rescaled and

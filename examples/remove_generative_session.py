@@ -1,4 +1,4 @@
-"""Scripted check of Remove object (generative) in the real window.
+"""Scripted check of Remove object (API, paid) in the real window.
 
     python examples/remove_generative_session.py            FREE: a fake OpenRouter answers, on a synthetic picture with two red squares
     python examples/remove_generative_session.py --real PHOTO.jpg
@@ -56,7 +56,7 @@ def ask(title, text):                                            # the confirmat
     return True
 m.messagebox.askyesno = ask; m.messagebox.showwarning = lambda t, x: dialogs.append("WARNING DIALOG: " + x)
 orig = a.hist.current; h, w = orig.shape[:2]
-a.tree.selection_set("Remove object (generative)"); root.update()
+a.tree.selection_set("Remove object (API, paid)"); root.update()
 print("tool:", a.tool.name, "| group:", a.tool.group, "| credit line:", a.l_or.cget('text'))
 a.apply(); root.update(); print("no selection / no words -> nothing sent:", a._busy is None and not dialogs, "|", a.status.cget('text')[:80])
 def select(polys):

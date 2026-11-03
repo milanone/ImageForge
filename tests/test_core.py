@@ -1736,7 +1736,7 @@ class AITests(unittest.TestCase):
 
 
 class GenerativeTests(unittest.TestCase):
-    """Remove object (generative): a fake OpenRouter stands in for the paid service. Checks the request, the alignment of the answer, the paste (only over
+    """Remove object (API, paid): a fake OpenRouter stands in for the paid service. Checks the request, the alignment of the answer, the paste (only over
     the object), the cost bookkeeping, the stops (no key, no words, no selection, the money limit) and that errors never contain the key."""
     KEY = "sk-or-test-secret"
 
@@ -1810,7 +1810,7 @@ class GenerativeTests(unittest.TestCase):
         self.assertTrue(np.array_equal(out[:, 300:410], self.img[:, 300:410]))                                      # far from the object: identical
         self.assertTrue(np.array_equal(out[:60], self.img[:60]))
         self.assertTrue((out[170:230, 420:480] == (255, 0, 0)).all())                                              # the second object was not selected
-        self.assertIn("1 request, 0.0391 USD", il.TOOL_NOTES["Remove object (generative)"])
+        self.assertIn("1 request, 0.0391 USD", il.TOOL_NOTES["Remove object (API, paid)"])
         self.assertAlmostEqual(il.OR_STATE['credit'], 5.0 - 0.0391, places=4)
         self.assertIn("remove the red square", self.last_body["messages"][0]["content"][0]["text"])
         self.assertEqual(self.last_body["model"], "google/gemini-2.5-flash-image")
@@ -1825,11 +1825,11 @@ class GenerativeTests(unittest.TestCase):
         two = self.sel((115, 165, 185, 235), (415, 165, 485, 235))
         il.generative_remove(self.img, two, "a red square", grow=10)
         self.assertEqual(len(self.chat_calls()), 2)
-        self.assertIn("2 requests", il.TOOL_NOTES["Remove object (generative)"])
+        self.assertIn("2 requests", il.TOOL_NOTES["Remove object (API, paid)"])
         self.calls.clear()
         il.generative_remove(self.img, two, "a red square", grow=10, max_cost=0.05)
         self.assertEqual(len(self.chat_calls()), 1)                                                                  # a second request would pass the limit
-        self.assertIn("1 request", il.TOOL_NOTES["Remove object (generative)"])
+        self.assertIn("1 request", il.TOOL_NOTES["Remove object (API, paid)"])
 
     def test_stops_before_spending(self):
         with self.assertRaises(ValueError):
@@ -1893,16 +1893,16 @@ class GenerativeTests(unittest.TestCase):
             self.assertIsNone(real())
 
     def test_tool_registration_and_guide(self):
-        t = il.TOOLS["Remove object (generative)"]
+        t = il.TOOLS["Remove object (API, paid)"]
         self.assertTrue(t.external and t.takes_region and not t.preview)
-        self.assertIn("Remove object (generative)", il.TOOL_LAYOUT["Clean-up"])
+        self.assertIn("Remove object (API, paid)", il.TOOL_LAYOUT["Clean-up"])
         self.assertIn("COSTS MONEY", t.doc)
-        for needle in ("OPENROUTER_API_KEY", "MONEY AND PRIVACY", "Clean brush", "Remove marks", "Remove object (AI)", "Undo"):
+        for needle in ("OPENROUTER_API_KEY", "MONEY AND PRIVACY", "Clean brush", "Remove marks", "Remove object (local, free)", "Undo"):
             self.assertIn(needle, il.OBJECT_GUIDE)
 
 
 class RemoveObjectTests(unittest.TestCase):
-    """Remove object (AI): the selection is the input, every separate piece is filled on its own, only the widened hole changes."""
+    """Remove object (local, free): the selection is the input, every separate piece is filled on its own, only the widened hole changes."""
 
     class FakeSession:
         calls = 0
@@ -1952,7 +1952,7 @@ class RemoveObjectTests(unittest.TestCase):
         mask = np.zeros((400, 600), np.float32); mask[50:90, 50:90] = 1; mask[300:340, 500:540] = 1
         out = il.lama_remove(self.img, il.MaskRegion((50, 50, 540, 340), mask), grow=10, grain=False)
         self.assertEqual(RemoveObjectTests.FakeSession.calls, 2)
-        self.assertIn("2 pieces", il.TOOL_NOTES["Remove object (AI)"])
+        self.assertIn("2 pieces", il.TOOL_NOTES["Remove object (local, free)"])
         self.assertTrue(np.array_equal(out[150:250, 200:400], self.img[150:250, 200:400]))   # nothing in between
 
     def test_grain_adds_noise_at_the_level_of_the_surroundings(self):
@@ -1964,11 +1964,11 @@ class RemoveObjectTests(unittest.TestCase):
         self.assertGreater(grainy[160:200, 210:250].astype(float).std(axis=(0, 1)).mean(), 2.0)
 
     def test_tool_through_apply_tool_gets_the_area_and_does_not_merge(self):
-        out = il.apply_tool("Remove object (AI)", self.img, {'grow': 0, 'grain': False}, (100, 100, 140, 140))
+        out = il.apply_tool("Remove object (local, free)", self.img, {'grow': 0, 'grain': False}, (100, 100, 140, 140))
         self.assertTrue((out[120, 120] != 120).any())
-        t = il.TOOLS["Remove object (AI)"]
+        t = il.TOOLS["Remove object (local, free)"]
         self.assertTrue(t.external and t.takes_region and not t.preview)
-        self.assertIn("Remove object (AI)", il.TOOL_LAYOUT["Clean-up"])
+        self.assertIn("Remove object (local, free)", il.TOOL_LAYOUT["Clean-up"])
 
 
 class PortraitTests(unittest.TestCase):
