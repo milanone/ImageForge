@@ -395,6 +395,23 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   waifu2x photo 2x 56 s; Real-ESRGAN gives the most detail and slightly waxy skin, waifu2x is gentler. Real window with the real programs: `examples/enlarge_ai_session.py`.
   These are enlargers and denoisers: NOT inpainting, they cannot remove objects (that would need a model such as LaMa or MI-GAN, not added).
 
+- **Remove object (AI)** (`lama_remove`, `_lama_fill`, `_lama_session`, `region_bool`, `find_ai_model`, `Tool.takes_region`; group Clean-up, `external=True`): the working area
+  IS the input (`takes_region` tools get `region=` from `apply_tool` and are not merged afterwards; `_recipe_step_for` skips them, a selection belongs to one
+  picture). LaMa (Carve/LaMa-ONNX `lama_fp32.onnx`, 208 MB, fixed 512 x 512 input `image` (0..1) + `mask`, output 0..255; the model blanks the masked pixels itself:
+  blanking them in advance changed nothing) runs through `onnxruntime` on the CPU. Each connected piece of the selection is dilated by `grow` % of ITS size
+  (cv2 ellipse, done in a padded box, not on the whole picture), then a square crop of 1.3 x the piece (at least 256 px) is shrunk to 512, filled, enlarged
+  (cubic) and pasted back through a soft mask, always taking the model's pixels inside the hole; `grain` adds noise at the level of a ring round the hole
+  (the output is smoother than a photo). Why the widening: the fringe of a transparent object (a bottle's green tint, its reflection on the table) is outside
+  any outline you draw and the model copied it back (green ghosts at a 25 px growth; gone at about 12 % = 140 px on a 1160 px bottle). What we measured on the
+  desk photo (3072 x 4080, Intel laptop CPU): loading the session takes about 60-70 s whatever the graph optimisation level (and also from an already
+  optimised copy or from bytes: not the disk, not Google Drive), kept in `_LAMA` for the rest of the program run (the status line says so); one piece about
+  6-8 s. Result: thermos and bottle gone, table clean, the forearm behind the bottle plausible but its lower edge a little dark, a cup behind the thermos
+  lost its print. Not done: a GPU provider, a lower-resolution tile mode for huge holes, blending several runs, a second pass option, an MI-GAN (30 MB) variant.
+  The model and `onnxruntime` are NOT dependencies: the tool says what is missing (`ToolUnavailable`). Tests with a fake session: `RemoveObjectTests`; real
+  window with the real model: `examples/remove_object_session.py <folder> [photo]`.
+- **AI folder memory**: settings key `ai_dir` (`set_ai_dir`, `choose_ai_dir`, saved at once with `save_settings`, not only on close); `find_ai_program` and `find_ai_model`
+  look in `ai_dir`, `IMAGEFORGE_AI_DIR` and one level down (`_ai_spots`): the user keeps Real-ESRGAN, waifu2x and `lama-onnx` together in one folder.
+
 - **Automatic fit** (`self.autofit`, `_set_autofit`, `_on_canvas_resize`): `fit_view` turns it on (so opening a picture, an Undo that changes the size
   and the Fit button all do), `_zoom_at` (wheel, Ctrl +/-, 100%) and `_on_pan` turn it off, Center leaves it alone; the canvas `<Configure>` event
   refits while it is on and just redraws otherwise, so it also follows the panel divider and the first real window size (the first fit at

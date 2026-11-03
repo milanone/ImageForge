@@ -1734,6 +1734,76 @@ class AITests(unittest.TestCase):
         self.assertIn("Enlarge (AI)", il.TOOL_LAYOUT["Size and orientation"])
 
 
+class RemoveObjectTests(unittest.TestCase):
+    """Remove object (AI): the selection is the input, every separate piece is filled on its own, only the widened hole changes."""
+
+    class FakeSession:
+        calls = 0
+
+        def run(self, names, feeds):
+            RemoveObjectTests.FakeSession.calls += 1
+            img = feeds["image"][0]                                       # (3, 512, 512) in 0..1
+            out = np.zeros_like(img)
+            out[...] = np.array([0.1, 0.8, 0.1], np.float32)[:, None, None]     # a flat green: easy to find
+            return [out[None] * 255.0]
+
+    def setUp(self):
+        self.old = (il._lama_session, il.find_ai_model)
+        il._lama_session = lambda path: RemoveObjectTests.FakeSession()
+        il.find_ai_model = lambda prefix, folder=None: __file__
+        RemoveObjectTests.FakeSession.calls = 0
+        self.img = np.full((400, 600, 3), 120, np.uint8)
+
+    def tearDown(self):
+        il._lama_session, il.find_ai_model = self.old
+
+    def test_region_bool(self):
+        self.assertIsNone(il.region_bool(None, (10, 10, 3)))
+        r = il.region_bool((2, 3, 5, 7), (10, 10, 3))
+        self.assertEqual((int(r.sum()), bool(r[3, 2]), bool(r[7, 5])), (12, True, False))
+        mask = np.zeros((10, 10), np.float32); mask[:, :4] = 1
+        self.assertEqual(int(il.region_bool(il.MaskRegion((0, 0, 4, 10), mask), (10, 10, 3)).sum()), 40)
+
+    def test_no_selection_and_no_model(self):
+        with self.assertRaises(ValueError):
+            il.lama_remove(self.img, None)
+        il.find_ai_model = lambda prefix, folder=None: None
+        with self.assertRaises(il.ToolUnavailable):
+            il.lama_remove(self.img, (10, 10, 50, 50))
+
+    def test_only_the_widened_hole_changes(self):
+        out = il.lama_remove(self.img, (100, 100, 140, 140), grow=0, grain=False)
+        self.assertEqual(out.shape, self.img.shape)
+        self.assertTrue((out[120, 120] != 120).any())                         # the hole took the model's output
+        self.assertTrue(np.array_equal(out[:60], self.img[:60]))               # far away: untouched
+        self.assertTrue(np.array_equal(out[:, 300:], self.img[:, 300:]))
+        wide = il.lama_remove(self.img, (100, 100, 140, 140), grow=50, grain=False)
+        self.assertTrue((wide[100 - 15, 120] != 120).any())                    # widening by 50 % of 40 px reaches 20 px outside
+        self.assertFalse((out[100 - 15, 120] != 120).any())
+
+    def test_each_piece_is_filled_on_its_own(self):
+        mask = np.zeros((400, 600), np.float32); mask[50:90, 50:90] = 1; mask[300:340, 500:540] = 1
+        out = il.lama_remove(self.img, il.MaskRegion((50, 50, 540, 340), mask), grow=10, grain=False)
+        self.assertEqual(RemoveObjectTests.FakeSession.calls, 2)
+        self.assertIn("2 pieces", il.TOOL_NOTES["Remove object (AI)"])
+        self.assertTrue(np.array_equal(out[150:250, 200:400], self.img[150:250, 200:400]))   # nothing in between
+
+    def test_grain_adds_noise_at_the_level_of_the_surroundings(self):
+        rng = np.random.default_rng(0)
+        noisy = np.clip(120 + rng.normal(0, 6, (400, 600, 3)), 0, 255).astype(np.uint8)
+        flat = il.lama_remove(noisy, (200, 150, 260, 210), grow=0, grain=False)
+        grainy = il.lama_remove(noisy, (200, 150, 260, 210), grow=0, grain=True)
+        self.assertLess(flat[160:200, 210:250].astype(float).std(axis=(0, 1)).mean(), 1.0)
+        self.assertGreater(grainy[160:200, 210:250].astype(float).std(axis=(0, 1)).mean(), 2.0)
+
+    def test_tool_through_apply_tool_gets_the_area_and_does_not_merge(self):
+        out = il.apply_tool("Remove object (AI)", self.img, {'grow': 0, 'grain': False}, (100, 100, 140, 140))
+        self.assertTrue((out[120, 120] != 120).any())
+        t = il.TOOLS["Remove object (AI)"]
+        self.assertTrue(t.external and t.takes_region and not t.preview)
+        self.assertIn("Remove object (AI)", il.TOOL_LAYOUT["Clean-up"])
+
+
 class PortraitTests(unittest.TestCase):
     """Portrait retouch: smooth only the skin, light on the face, darker surroundings; faces found or given."""
 

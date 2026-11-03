@@ -2,3 +2,5 @@ numpy
 pillow>=10.1
 opencv-python
 tkinterdnd2  # optional: drag-and-drop of an image onto the window
+# optional: Remove object (AI) (also needs the LaMa .onnx model, see the README)
+# onnxruntime

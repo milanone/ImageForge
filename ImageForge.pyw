@@ -61,7 +61,7 @@ TOOL_LAYOUT = {
     'Size and orientation': ['Resize', 'Enlarge (AI)', 'Canvas size', 'Crop to aspect ratio', 'Auto-crop borders', 'Rotate 90 / 180', 'Rotate (any angle)', 'Flip', 'Auto straighten', 'Perspective correction', 'Lens distortion'],
     'Adjustments': ['Brightness / contrast', 'Levels', 'Curves', 'Auto contrast', 'Local contrast (CLAHE)', 'Even out illumination', 'Hue / saturation', 'Colour balance', 'White balance', 'Portrait retouch', 'Grayscale', 'Invert', 'Threshold (black & white)'],
     'Filters': ['Sharpen (unsharp mask)', 'Blur (Gaussian)', 'Reduce noise', 'Morphology', 'Find edges'],
-    'Clean-up': ['Erase / keep colours', 'Remove marks', 'Despeckle', 'Flatten ink to one colour', 'Join dashed lines'],
+    'Clean-up': ['Erase / keep colours', 'Remove marks', 'Remove object (AI)', 'Despeckle', 'Flatten ink to one colour', 'Join dashed lines'],
 }          # the order of the groups and of the tools in the lists; a group of a plug-in comes after them, in registration order
 TOOL_NOTES = {}                     # name -> a sentence a tool leaves about what it just did (shown after Apply)
 
@@ -116,23 +116,24 @@ class Tool:
     with `layer` ('text') makes (or, if one is selected, edits) a Layer of that kind instead of changing the pixels."""
 
     def __init__(self, name, group, func, params, geometry, preview, doc, interactive=None, place=False, layer=None,
-                 layer_geometry=None, layer_shift=None, external=False):
+                 layer_geometry=None, layer_shift=None, external=False, takes_region=False):
         self.name, self.group, self.func, self.params = name, group, func, tuple(params)
         self.geometry, self.preview, self.doc, self.interactive, self.place = geometry, preview, doc, interactive, place
         self.layer = layer
         self.layer_geometry = layer_geometry          # None, or how it may transform one layer: 'exact' / 'resample'
         self.layer_shift = layer_shift                # None, or f(params, old shape) -> (dx, dy): the layers move with the canvas
         self.external = external                      # runs another program and can take minutes: the editor runs it in the background
+        self.takes_region = takes_region              # the function gets the working area as `region=` (it IS the input, e.g. the object to remove)
 
 
 def tool(name, group, params=(), geometry=False, preview=True, doc="", interactive=None, place=False,
-         layer=None, layer_geometry=None, layer_shift=None, external=False):
+         layer=None, layer_geometry=None, layer_shift=None, external=False, takes_region=False):
     """Register `func(img, **params) -> img` as a tool. `img` is an (H, W, 3) uint8 array that must not be
     modified in place (it belongs to the Undo history); return a new array, or `img` itself for 'no change'.
     The keys of `params` are the keyword arguments."""
     def deco(func):
         TOOLS[name] = Tool(name, group, func, params, geometry, preview, doc or (func.__doc__ or "").strip(),
-                           interactive, place, layer, layer_geometry, layer_shift, external)
+                           interactive, place, layer, layer_geometry, layer_shift, external, takes_region)
         return func
     return deco
 
@@ -347,6 +348,8 @@ def apply_tool(name, img, params=None, region=None):
             values[p.key] = p.coerce(params[p.key])
     if values.get('fill') == 'transparent':           # only a layer has transparency: pixels have to be white here
         values['fill'] = 'white'
+    if t.takes_region:                                  # the tool uses the area itself (and leaves everything outside it as it is)
+        return t.func(img, region=region, **values)
     out = t.func(img, **values)
     if region is not None and not t.geometry and out is not img:
         return masked_merge(img, out, region)
@@ -1021,25 +1024,43 @@ def set_ai_dir(path):
     AI_DIR = path or None
 
 
+def _ai_spots(prefix, folder=None):
+    """The folders where something called `prefix...` may be: `folder`, IMAGEFORGE_AI_DIR and AI_DIR themselves, and the folders inside them whose name
+    starts with `prefix` (one level down)."""
+    spots = []
+    for d in (folder, os.environ.get("IMAGEFORGE_AI_DIR"), AI_DIR):
+        if not d or not os.path.isdir(d):
+            continue
+        spots.append(d)
+        try:
+            spots += [os.path.join(d, n) for n in sorted(os.listdir(d)) if n.lower().startswith(prefix) and os.path.isdir(os.path.join(d, n))]
+        except OSError:
+            pass
+    return spots
+
+
 def find_ai_program(kind, folder=None):
     """Path of the executable of `kind` ('realesrgan' or 'waifu2x'), or None. Looked for in `folder`, in IMAGEFORGE_AI_DIR and in AI_DIR, each
     either the program's own folder or a folder that contains it one level down, then on the PATH."""
     base = AI_PROGRAMS[kind]
-    names = (base + ".exe", base)
-    for d in (folder, os.environ.get("IMAGEFORGE_AI_DIR"), AI_DIR):
-        if not d or not os.path.isdir(d):
-            continue
-        spots = [d]
-        try:
-            spots += [os.path.join(d, n) for n in sorted(os.listdir(d)) if n.lower().startswith(base)]
-        except OSError:
-            pass
-        for sp in spots:
-            for n in names:
-                f = os.path.join(sp, n)
-                if os.path.isfile(f):
-                    return f
+    for sp in _ai_spots(base, folder):
+        for n in (base + ".exe", base):
+            f = os.path.join(sp, n)
+            if os.path.isfile(f):
+                return f
     return shutil.which(base)
+
+
+def find_ai_model(prefix, folder=None):
+    """Path of a model file `<prefix>*.onnx` (for example 'lama' -> lama_fp32.onnx) in the same places as the programs, or None."""
+    for sp in _ai_spots(prefix, folder):
+        try:
+            names = sorted(n for n in os.listdir(sp) if n.lower().startswith(prefix) and n.lower().endswith(".onnx"))
+        except OSError:
+            continue
+        if names:
+            return os.path.join(sp, names[0])
+    return None
 
 
 def ai_command(method, exe, src, dst, scale, denoise):
@@ -1107,6 +1128,114 @@ def enlarge_ai(img, method, scale, denoise):
     out = ai_enlarge(img, method, int(scale[0]), denoise)
     TOOL_NOTES["Enlarge (AI)"] = "%dx%d -> %dx%d px" % (img.shape[1], img.shape[0], out.shape[1], out.shape[0])
     return out
+
+
+# ---- removing an object with a neural network (LaMa, ONNX) ---------------------------------------------------------------------------------
+_LAMA = {}                                  # model path -> onnxruntime session (loading takes a second or two)
+
+
+def region_bool(region, shape):
+    """The working area `region` (rectangle or MaskRegion) as a bool mask of the picture, or None when there is none."""
+    if region is None:
+        return None
+    h, w = shape[:2]
+    m = region_mask(region, shape)
+    if m is not None:
+        return m > 0.5
+    x0, y0, x1, y1 = region
+    out = np.zeros((h, w), bool)
+    out[max(0, y0):min(h, y1), max(0, x0):min(w, x1)] = True
+    return out
+
+
+def _lama_session(path):
+    """The onnxruntime session of the LaMa model at `path` (CPU), kept for the next call; ToolUnavailable when onnxruntime is missing."""
+    if path not in _LAMA:
+        try:
+            import onnxruntime as ort
+        except ImportError:
+            raise ToolUnavailable("onnxruntime is not installed: run  pip install onnxruntime  (in the Python that runs ImageForge).")
+        _LAMA[path] = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+    return _LAMA[path]
+
+
+def _lama_fill(sess, img, mask, grain=True):
+    """`img` with the bool `mask` rebuilt by LaMa. The model works on 512 x 512 pictures, so a square crop around the hole (1.3 x its size, at
+    least 256 px) is shrunk to that, filled, enlarged again and pasted back only where the mask is (soft edge). With `grain`, noise of the
+    level found in a ring round the hole is added to the fill, because the model's output is smoother than a photograph."""
+    ys, xs = np.nonzero(mask)
+    x0, x1, y0, y1 = xs.min(), xs.max() + 1, ys.min(), ys.max() + 1
+    h, w = img.shape[:2]
+    S = int(min(max(max(x1 - x0, y1 - y0) * 1.3, 256), min(h, w)))
+    cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+    X0, Y0 = int(np.clip(cx - S // 2, 0, w - S)), int(np.clip(cy - S // 2, 0, h - S))
+    crop = img[Y0:Y0 + S, X0:X0 + S]
+    mc = mask[Y0:Y0 + S, X0:X0 + S].astype(np.uint8)
+    a = cv2.resize(crop, (512, 512), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
+    mm = (cv2.resize(mc, (512, 512), interpolation=cv2.INTER_NEAREST) > 0).astype(np.float32)
+    out = sess.run(None, {"image": a.transpose(2, 0, 1)[None], "mask": mm[None, None]})[0][0].transpose(1, 2, 0)
+    out = np.clip(out if out.max() > 2 else out * 255.0, 0, 255)
+    big = cv2.resize(out, (S, S), interpolation=cv2.INTER_CUBIC).astype(np.float32)
+    if grain:
+        k = max(3, int(0.04 * S) | 1)
+        ring = (cv2.dilate(mc, np.ones((k, k), np.uint8)) > 0) & (mc == 0)
+        if ring.sum() > 50:
+            hp = crop.astype(np.float32) - cv2.GaussianBlur(crop.astype(np.float32), (0, 0), 1.5)
+            sd = float(hp[ring].std())
+            noise = np.random.default_rng(1).normal(0.0, sd * 0.8, big.shape).astype(np.float32)
+            big = big + cv2.GaussianBlur(noise, (0, 0), 0.6)
+    soft = cv2.GaussianBlur(mc.astype(np.float32), (0, 0), max(1.5, S / 512.0 * 1.5))[..., None]
+    soft = np.maximum(soft, mc[..., None].astype(np.float32))          # the hole itself is always the model's
+    res = img.copy()
+    res[Y0:Y0 + S, X0:X0 + S] = np.clip(crop * (1 - soft) + big * soft, 0, 255).astype(np.uint8)
+    return res
+
+
+def lama_remove(img, region, grow=12, grain=True, model=None):
+    """`img` with the area `region` (rectangle or MaskRegion) removed and rebuilt from its surroundings by the LaMa model (`model` = path of the .onnx
+    file, else a lama*.onnx found in the AI programs folder). Every separate piece of the selection is filled on its own, after widening it by
+    `grow` % of its size: the widening matters, because the fringe of a transparent or shiny object (a bottle's green tint and reflection) is
+    outside the outline you draw and the model would copy it. ValueError when there is no selection; ToolUnavailable when the model is missing."""
+    mask = region_bool(region, img.shape)
+    if mask is None or not mask.any():
+        raise ValueError("Select the object first (Lasso, Magic wand or Rectangle), then press Apply.")
+    path = model or find_ai_model("lama")
+    if path is None or not os.path.isfile(path):
+        raise ToolUnavailable("The LaMa model (lama_fp32.onnx) was not found. Put it in the AI programs folder and use Tools > AI programs folder...")
+    sess = _lama_session(path)
+    h, w = img.shape[:2]
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    order = sorted(range(1, n), key=lambda i: -stats[i, cv2.CC_STAT_AREA])
+    out, done = img, 0
+    for i in order:
+        x, y, bw, bh, area = (int(v) for v in stats[i])
+        if area < 4:
+            continue
+        g = max(3, int(round(grow / 100.0 * max(bw, bh))))
+        X0, Y0, X1, Y1 = max(0, x - g - 2), max(0, y - g - 2), min(w, x + bw + g + 2), min(h, y + bh + g + 2)
+        piece = (lab[Y0:Y1, X0:X1] == i).astype(np.uint8)
+        piece = cv2.dilate(piece, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * g + 1, 2 * g + 1))) > 0
+        full = np.zeros((h, w), bool)
+        full[Y0:Y1, X0:X1] = piece
+        out = _lama_fill(sess, out, full, grain)
+        done += 1
+    TOOL_NOTES["Remove object (AI)"] = "%d piece%s removed" % (done, "" if done == 1 else "s")
+    return out if done else img
+
+
+@tool("Remove object (AI)", "Clean-up", [
+    Param('grow', "Widen the selection by (% of the object's size)", 'int', 12, 0, 60, slider=True),
+    Param('grain', "Add the picture's grain to the fill", 'bool', True)],
+    preview=False, external=True, takes_region=True,
+    doc="Removes what is inside the working area and rebuilds it from the surroundings with the LaMa neural network (a 'magic eraser'). Select the "
+        "object first with the Lasso, the Magic wand or the Rectangle (several separate pieces are removed one after the other), then press Apply: it "
+        "takes about ten seconds per piece on the CPU and the window stays usable (Esc stops it). Widening the selection by about 10-15 % is "
+        "important for transparent or shiny things (a bottle, glass, a reflection): their tint and reflection lie outside the outline. The model "
+        "works at 512 x 512 on a crop around the object, so the fill is a little smoother than the photograph (the grain option adds it back); "
+        "what is invented is plausible, not true: do not use it on pictures that must stay faithful. Needs the LaMa model (lama*.onnx in the AI "
+        "programs folder) and the Python package onnxruntime.")
+def remove_object(img, grow, grain, region=None):
+    return lama_remove(img, region, grow, grain)
 
 
 @tool("Canvas size", "Size and orientation", [
@@ -3798,19 +3927,20 @@ class ImageForge:
         self._build_chips(order)
 
     def choose_ai_dir(self, ask=True):
-        """Tools > AI programs folder...: where Real-ESRGAN / waifu2x are (the folder that holds them, or one of them). Remembered in the settings.
+        """Tools > AI programs folder...: where Real-ESRGAN / waifu2x / the LaMa model are (the folder that holds them, or one of them). Remembered in the settings.
         Returns True when at least one of the programs is found there."""
         d = filedialog.askdirectory(parent=self.root, title="Folder with realesrgan-ncnn-vulkan and / or waifu2x-ncnn-vulkan",
                                     initialdir=AI_DIR or self.settings.get('last_dir') or os.path.expanduser("~")) if ask else None
         if not d:
             return False
-        if not any(find_ai_program(k, d) for k in AI_PROGRAMS):
-            messagebox.showwarning(APP_NAME, "Neither realesrgan-ncnn-vulkan nor waifu2x-ncnn-vulkan was found in that folder (or in the folders "
-                                   "inside it).")
+        found = [AI_PROGRAMS[k] for k in AI_PROGRAMS if find_ai_program(k, d)] + (["the LaMa model"] if find_ai_model("lama", d) else [])
+        if not found:
+            messagebox.showwarning(APP_NAME, "Neither realesrgan-ncnn-vulkan, waifu2x-ncnn-vulkan nor a lama*.onnx model was found in that folder (or "
+                                   "in the folders inside it).")
             return False
         self.settings['ai_dir'] = d
         set_ai_dir(d)
-        found = [AI_PROGRAMS[k] for k in AI_PROGRAMS if find_ai_program(k, d)]
+        save_settings(self.settings)                              # remembered at once, not only when the program is closed
         self._status("AI programs folder set: found %s." % " and ".join(found), ok=True)
         return True
 
@@ -4248,6 +4378,20 @@ class ImageForge:
         """Run an `external` tool (a program that can take minutes) in a worker thread: the window stays alive, the status line counts the
         seconds, Esc stops it (AI_CANCEL). The result is committed in the Tk thread when it is done, unless the history moved on meanwhile."""
         t = self.tool
+        if t.takes_region and region is None:
+            self._status("%s needs a selection: draw the object with the Lasso, the Magic wand or the Rectangle (the toolbox, top left), then press Apply." % t.name)
+            return
+        if t.name == "Remove object (AI)":
+            try:
+                import onnxruntime                                                  # noqa: F401
+            except ImportError:
+                messagebox.showwarning(APP_NAME, "Remove object (AI) needs the Python package onnxruntime. Install it with:\n\n    pip install onnxruntime")
+                return
+            if find_ai_model("lama") is None:
+                if not messagebox.askyesno(APP_NAME, "The LaMa model (lama_fp32.onnx) is not set up yet. Choose the folder that holds it now?"):
+                    return
+                if not self.choose_ai_dir() or find_ai_model("lama") is None:
+                    return
         if t.name == "Enlarge (AI)":
             kind = AI_METHODS.get(params.get('method'), ('realesrgan',))[0]
             if find_ai_program(kind) is None:
@@ -4284,7 +4428,8 @@ class ImageForge:
     def _poll_external(self, box, base, flatten, params):
         name, th, t0 = self._busy
         if th.is_alive():
-            self._status("%s is running... %d s (Esc stops it; the window stays usable)." % (name, time.time() - t0))
+            hint = " The model is being loaded: about a minute the first time." if name == "Remove object (AI)" and not _LAMA else ""
+            self._status("%s is running... %d s.%s (Esc stops it; the window stays usable)" % (name, time.time() - t0, hint))
             self._busy_after = self.root.after(500, lambda: self._poll_external(box, base, flatten, params))
             return
         self._busy, self._busy_after = None, None
@@ -5055,7 +5200,7 @@ class ImageForge:
     def _recipe_step_for(self, params):
         """The recipe step for the tool just applied to the Background, or None when a recipe could not repeat it on another
         picture (a shape selection belongs to this picture only)."""
-        if self.tool is None or self.tool.interactive or self.tool.layer:
+        if self.tool is None or self.tool.interactive or self.tool.layer or self.tool.takes_region:
             return None
         if self.sel is not None and region_mask(self.sel, self.hist.current.shape) is not None:
             return None

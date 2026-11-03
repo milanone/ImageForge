@@ -94,6 +94,12 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
     yourself and which need a GPU with Vulkan; *Tools > AI programs folder...* tells ImageForge where they are). It runs in the background (the window stays
     usable, Esc stops it) and can take minutes: about 2.5 min per megapixel with Real-ESRGAN on an integrated Intel GPU. The detail it adds is invented, not
     recovered. It does **not** remove objects.
+  - Clean-up: **Remove object (AI)** is a 'magic eraser': select the object with the Lasso, Magic wand or Rectangle and press Apply; the selection (widened
+    by about 12 % so the tint and reflection of glass or a bottle go too) is rebuilt from its surroundings by the LaMa neural network, on the CPU. It needs
+    `pip install onnxruntime` and the LaMa model (`lama_fp32.onnx`, about 208 MB, e.g. the ONNX conversion at huggingface.co/Carve/LaMa-ONNX; check its
+    licence before redistributing it), which you put with the other AI programs; *Tools > AI programs folder...* tells ImageForge where and remembers it.
+    The first run of a session spends about a minute loading the model, then about ten seconds per piece; the window stays usable and Esc stops it. The fill
+    is invented, plausible rather than true, and a little smoother than the photograph.
   - Adjustments: **Portrait retouch**, a one-step portrait finish: it finds the faces (OpenCV's frontal-face detector). When it misses some (a profile, a tilted or
     partly cut face), **Find faces** writes what it found in a list, **Mark faces** (or Ctrl+click) adds the ones you click on, and the list can be
     edited by hand; yellow outlines show the faces on the picture, smooths the skin only where the colour is skin (eyes, lips, hair and glasses stay sharp), lifts
