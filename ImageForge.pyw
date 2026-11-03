@@ -51,7 +51,7 @@ PROJECT_TYPE = ("ImageForge project (layers kept)", "*.ifl")
 TOOLS = {}                          # name -> Tool, in registration order (which is the order of the tool list)
 TOOL_LAYOUT = {
     'Draw': ['Pencil', 'Paintbrush', 'Eraser brush', 'Fill bucket', 'Gradient'],
-    'Retouch': ['Clone stamp', 'Clean brush', 'Erase rectangle', 'Move area'],
+    'Retouch': ['Clone stamp', 'Clean brush', 'Dodge / burn', 'Erase rectangle', 'Move area'],
     'Annotate': ['Add text', 'Shapes', 'Scale bar', 'Measure'],
     'Layers': ['Move layer'],
     'Size and orientation': ['Resize', 'Canvas size', 'Crop to aspect ratio', 'Auto-crop borders', 'Rotate 90 / 180', 'Rotate (any angle)', 'Flip', 'Auto straighten', 'Perspective correction', 'Lens distortion'],
@@ -135,7 +135,7 @@ def tool(name, group, params=(), geometry=False, preview=True, doc="", interacti
 TOOLBOX = [
     ("Select", ["Rectangle", "Magic wand", "Lasso", "Hand"]),
     ("Draw", ["Pencil", "Paintbrush", "Eraser brush", "Fill bucket", "Gradient"]),
-    ("Retouch", ["Clone stamp", "Clean brush", "Erase rectangle", "Move area"]),
+    ("Retouch", ["Clone stamp", "Clean brush", "Dodge / burn", "Erase rectangle", "Move area"]),
     ("Annotate", ["Add text", "Shapes", "Scale bar", "Measure"]),
     ("Layers", ["Move layer"]),
 ]
@@ -194,6 +194,10 @@ def tool_icon(name, size=26):
             g = int(40 + i * 17)
             d.rectangle(P(3 + i * 20 / 12.0, 5, 3 + (i + 1) * 20 / 12.0, 21), fill=(g, g, g, 255))
         box((3, 5, 23, 21), None, ink)
+    elif name == "Dodge / burn":
+        d.ellipse(P(3, 3, 23, 23), fill=(235, 238, 244, 255), outline=ink, width=w)
+        d.pieslice(P(3, 3, 23, 23), 90, 270, fill=ink)
+        d.ellipse(P(3, 3, 23, 23), outline=ink, width=w)
     elif name == "Clone stamp":
         d.ellipse(P(8.5, 3, 17.5, 12), fill=ink)
         box((11, 11, 15, 16), ink, ink)
@@ -1639,6 +1643,26 @@ def flood_fill(img, x, y, color, tolerance=32, contiguous=True, opacity=100, gro
     return img if np.array_equal(out, img) else out
 
 
+TONE_EFFECTS = ('dodge (lighten)', 'burn (darken)')
+TONE_RANGES = ('midtones', 'shadows', 'highlights', 'all')
+
+
+def tone_paint(orig, weight, effect, tones='midtones', exposure=30):
+    """`orig` ((h, w, 3) RGB or (h, w, 4) RGBA) lightened (dodge) or darkened (burn) where `weight` (h, w, 0..1) is: a pixel moves
+    towards white (dodge) or black (burn) by weight * exposure % * how much of `tones` it is (judged on the ORIGINAL pixel, so
+    a stroke does not feed itself). Moving a fraction of the way keeps colours and cannot clip; alpha is left alone and a see-through
+    pixel changes less. Returns a new array."""
+    f = orig[..., :3].astype(np.float32)
+    y = (0.299 * f[..., 0] + 0.587 * f[..., 1] + 0.114 * f[..., 2]) / 255.0
+    r = {'shadows': (1.0 - y) ** 2, 'highlights': y ** 2, 'midtones': 1.0 - np.abs(2.0 * y - 1.0), 'all': np.ones_like(y)}[tones]
+    a = np.clip(np.asarray(weight, np.float32), 0.0, 1.0) * (exposure / 100.0) * r
+    if orig.shape[2] == 4:
+        a = a * (orig[..., 3].astype(np.float32) / 255.0)
+    a = a[..., None]
+    rgb = _to_u8(f + (255.0 - f) * a) if effect.startswith('dodge') else _to_u8(f * (1.0 - a))
+    return rgb if orig.shape[2] == 3 else np.concatenate([rgb, orig[..., 3:4]], axis=2)
+
+
 GRADIENT_KINDS = ('linear', 'radial', 'reflected', 'angle')
 GRADIENT_COLOURS = ('foreground to background', 'foreground to transparent', 'background to foreground')
 
@@ -1703,6 +1727,22 @@ def pencil(img, size, shape, opacity):
         "picks it, Ctrl+Shift+click the background colour, X swaps them). A stroke never gets darker where it crosses itself: the "
         "opacity is that of the whole stroke. Shift+click draws a straight line from where the last stroke ended.")
 def paintbrush(img, size, hardness, opacity):
+    return img
+
+
+@tool("Dodge / burn", "Retouch", [
+    Param('effect', "Effect", 'choice', 'dodge (lighten)', choices=TONE_EFFECTS),
+    Param('tones', "Works on", 'choice', 'midtones', choices=TONE_RANGES),
+    Param('exposure', "Exposure (%)", 'int', 30, 1, 100, slider=True),
+    Param('size', "Size (px)", 'int', 60, 1, 500, slider=True, progressive=True),
+    Param('hardness', "Hardness (%)", 'int', 0, 0, 100, slider=True)],
+    preview=False, interactive='paint',
+    doc="Drag to lighten (dodge) or darken (burn) parts of the picture by hand, as in a darkroom: faces, eyes, folds, the corner of a "
+        "frame. 'Works on' limits the effect to the midtones, the shadows or the highlights, so a dodge lifts the shadows without "
+        "washing out the lights. The exposure is that of the whole stroke (it does not build up where the stroke crosses itself): go "
+        "over the same place again, with a new stroke, to add more; a low exposure and a soft edge look natural. Colours are kept. "
+        "Shift+click draws a straight line. Limited to the selection if there is one; on an image layer it works in that layer.")
+def dodge_burn(img, effect, tones, exposure, size, hardness):
     return img
 
 
@@ -5213,7 +5253,7 @@ class ImageForge:
         both). Returns True when the click was used."""
         if self.tool is None or not (e.state & 0x4):
             return False
-        if self.tool.interactive in ('paint', 'fill', 'gradient'):         # the drawing tools use the two colours above the picture
+        if self.tool.interactive in ('paint', 'fill', 'gradient') and self.tool.name != "Dodge / burn":     # the drawing tools use the two colours above the picture
             x, y = self._img_xy(e.x, e.y)
             img = self._flat()
             ix, iy = int(math.floor(x)), int(math.floor(y))
@@ -5395,7 +5435,11 @@ class ImageForge:
                 rw = region_weight_box(region, self._stroke.shape, box)
                 if rw is not None:
                     weight = weight * rw
-                self._stroke[box[1]:box[3], box[0]:box[2]] = paint_over(self._stroke_orig[box[1]:box[3], box[0]:box[2]], self.fg, weight)
+                part = self._stroke_orig[box[1]:box[3], box[0]:box[2]]
+                if 'effect' in p:                               # Dodge / burn: lightens or darkens instead of painting the colour
+                    self._stroke[box[1]:box[3], box[0]:box[2]] = tone_paint(part, weight, p['effect'], p['tones'], int(p['exposure']))
+                else:
+                    self._stroke[box[1]:box[3], box[0]:box[2]] = paint_over(part, self.fg, weight)
         else:                                                  # 'clean': the mask, and a red trace to see it
             paint_segment(self._stroke_mask, lp, tp, size, (255,), region)
             paint_segment(self._stroke, lp, tp, size, (255, 60, 60) + ((255,) if L is not None else ()), region)

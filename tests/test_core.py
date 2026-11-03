@@ -1628,6 +1628,69 @@ class WorkflowTests(unittest.TestCase):
         self.assertLess(os.path.getsize(j1), os.path.getsize(j2))
 
 
+class DodgeBurnTests(unittest.TestCase):
+    """Dodge / burn: lighten or darken by hand, limited to a tonal range, colours kept, alpha untouched."""
+
+    def grad(self):
+        g = np.tile(np.linspace(0, 255, 256).astype(np.uint8), (8, 1))
+        return np.stack([g, g, g], axis=2)
+
+    def test_dodge_lightens_burn_darkens(self):
+        img = np.full((6, 6, 3), 100, np.uint8)
+        w = np.ones((6, 6), np.float32)
+        self.assertTrue((il.tone_paint(img, w, 'dodge (lighten)', 'all', 50) > 100).all())
+        self.assertTrue((il.tone_paint(img, w, 'burn (darken)', 'all', 50) < 100).all())
+
+    def test_zero_weight_changes_nothing(self):
+        img = self.grad()
+        self.assertTrue(np.array_equal(il.tone_paint(img, np.zeros(img.shape[:2], np.float32), 'dodge (lighten)', 'all', 100), img))
+
+    def test_exposure_scales_the_effect(self):
+        img = np.full((4, 4, 3), 100, np.uint8)
+        w = np.ones((4, 4), np.float32)
+        weak, strong = (int(il.tone_paint(img, w, 'dodge (lighten)', 'all', e)[0, 0, 0]) for e in (20, 80))
+        self.assertTrue(100 < weak < strong <= 255)
+        self.assertEqual(int(il.tone_paint(img, w, 'dodge (lighten)', 'all', 100)[0, 0, 0]), 255)
+
+    def test_ranges(self):
+        img = self.grad()
+        w = np.ones(img.shape[:2], np.float32)
+        d = il.tone_paint(img, w, 'dodge (lighten)', 'shadows', 100).astype(int) - img
+        self.assertGreater(d[0, 20, 0], 0)                       # shadows move
+        self.assertLess(d[0, 250, 0], d[0, 20, 0])               # highlights hardly move under 'shadows'
+        h = il.tone_paint(img, w, 'burn (darken)', 'highlights', 100).astype(int) - img
+        self.assertLess(h[0, 240, 0], h[0, 20, 0])               # highlights darken, shadows stay
+        self.assertEqual(h[0, 0, 0], 0)
+
+    def test_black_and_white_cannot_overflow(self):
+        for v in (0, 255):
+            img = np.full((3, 3, 3), v, np.uint8)
+            for eff in il.TONE_EFFECTS:
+                out = il.tone_paint(img, np.ones((3, 3), np.float32), eff, 'all', 100)
+                self.assertEqual(out.dtype, np.uint8)
+                self.assertEqual(out.shape, img.shape)
+
+    def test_colour_is_kept(self):
+        img = np.full((3, 3, 3), (200, 60, 60), np.uint8)
+        out = il.tone_paint(img, np.ones((3, 3), np.float32), 'burn (darken)', 'all', 50).astype(float)
+        self.assertAlmostEqual(out[0, 0, 0] / out[0, 0, 1], 200 / 60.0, delta=0.15)
+
+    def test_rgba_keeps_alpha_and_invisible_pixels(self):
+        img = np.zeros((2, 2, 4), np.uint8)
+        img[..., :3] = 100
+        img[0, 0, 3] = 255
+        out = il.tone_paint(img, np.ones((2, 2), np.float32), 'dodge (lighten)', 'all', 50)
+        self.assertEqual(out.shape, (2, 2, 4))
+        self.assertTrue(np.array_equal(out[..., 3], img[..., 3]))
+        self.assertGreater(out[0, 0, 0], 100)
+        self.assertEqual(out[1, 1, 0], 100)                      # transparent: nothing to see, nothing changed
+
+    def test_tool_is_registered_in_retouch(self):
+        t = il.TOOLS["Dodge / burn"]
+        self.assertEqual((t.group, t.interactive), ("Retouch", 'paint'))
+        self.assertIn("Dodge / burn", il.TOOL_LAYOUT["Retouch"])
+
+
 class DrawingTests(unittest.TestCase):
     """Pencil and paintbrush strokes, fill bucket and gradient: pure functions, on RGB and RGBA, with a rectangle or a shape selection."""
 

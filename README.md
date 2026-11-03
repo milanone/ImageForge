@@ -64,7 +64,7 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
   size and place, the last folders and the recent files are remembered in `%APPDATA%\ImageForge\settings.json` (written when you
   close the program).
 - **Where things are**: the mouse tools are in the **toolbox** at the left of the picture, as icon buttons in groups of two columns (hover for the
-  name): **Select** (Rectangle for the working area, Magic wand, Lasso, Hand) at the top, then **Draw** (Pencil, Paintbrush, Eraser brush, Fill bucket, Gradient), **Retouch** (Clone stamp, Clean brush, Erase rectangle, Move area),
+  name): **Select** (Rectangle for the working area, Magic wand, Lasso, Hand) at the top, then **Draw** (Pencil, Paintbrush, Eraser brush, Fill bucket, Gradient), **Retouch** (Clone stamp, Clean brush, Dodge / burn, Erase rectangle, Move area),
   **Annotate** (Add text, Shapes, Scale bar, Measure) and **Layers** (Move layer). The one-shot
   operations with a preview and an Apply button are in the *Tools* tab of the panel: four buttons choose the group (**Size** = size and
   orientation, **Adjust**, **Filters**, **Clean-up**) and the list under them shows its tools; the box above them **finds a tool** by typing
@@ -90,6 +90,9 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
     go: soft edge, opacity, *Aligned* keeps the offset between strokes) and **Clean brush** (paint over a spot, scratch or stray
     mark, it shows red; when you let go it is rebuilt from its surroundings). Both are limited to the selection and work on the
     selected layer's pixels.
+  - Retouch: **Dodge / burn** lightens or darkens by hand, as in a darkroom (faces, eyes, folds): choose *dodge* or *burn*, the tones it
+    works on (midtones, shadows, highlights, all), the exposure, the size and the softness of the brush. The exposure belongs to the whole
+    stroke; a second stroke adds more. Colours are kept and nothing clips.
   - Areas: **Erase rectangle** (drag a rectangle, what is inside is erased on release: white, black, a colour **picked from the
     picture** (Pick) or chosen with a dialog (...), transparent on a layer, or inpainted) and **Move area** (drag a rectangle round something, then drag inside it to move it; Shift or its
     *Copy* box copies; the old place is filled as the *leaves* box says; on an image layer it works inside that layer)
