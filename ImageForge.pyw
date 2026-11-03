@@ -4077,7 +4077,7 @@ class ImageForge:
         c.bind('<x>', lambda e: self.swap_colours())
         c.bind('<d>', lambda e: self.reset_colours())
         c.bind('<Return>', lambda e: (self._lasso_close() if self.mode == 'lasso' else None, self._measure_enter()))
-        c.bind('<Leave>', lambda e: (self._set_info(""), c.delete('brush')))
+        c.bind('<Leave>', lambda e: (self._set_info(), c.delete('brush')))
         if HAS_DND:
             for w in (self.canvas, panel):
                 w.drop_target_register(DND_FILES)
@@ -7340,18 +7340,25 @@ class ImageForge:
     def _status(self, text, ok=False):
         self.status.config(text=text, bg='#d4edda' if ok else '#fff3c4')
 
+    def _size_text(self):
+        """The size of the picture in pixels, with the megapixels once it is a megapixel or more: '3072 x 4080 px (12.5 MP)'. Always the first thing in the
+        info line, also while the pointer is over the picture, so the effect of Resize / Upscale / Crop can be seen at any moment."""
+        h, w = self.hist.current.shape[:2]
+        return "%d x %d px" % (w, h) + (" (%.1f MP)" % (w * h / 1e6) if w * h >= 1e6 else "")
+
     def _set_info(self, text=None):
-        if text is None:
-            if self.hist is None:
-                text = ""
-            else:
-                h, w = self._shown().shape[:2]
-                text = "%d x %d px   zoom %d%%" % (w, h, round(self.zoom * 100))
-                if self.scale:
-                    text += "   1 px = %.4g %s" % self.scale
-                if self.sel:
-                    x0, y0, x1, y1 = self.sel
-                    text += "   selection %d x %d" % (x1 - x0, y1 - y0)
+        if self.hist is None:
+            self.info.config(text=text or "")
+            return
+        if not text:                                              # the default line: size, zoom, scale, selection
+            text = self._size_text() + "   zoom %d%%" % round(self.zoom * 100)
+            if self.scale:
+                text += "   1 px = %.4g %s" % self.scale
+            if self.sel:
+                x0, y0, x1, y1 = self.sel
+                text += "   selection %d x %d" % (x1 - x0, y1 - y0)
+        else:                                                     # a message of the moment (pointer, move, selection ...): the size stays in front
+            text = self._size_text() + "   |   " + text
         self.info.config(text=text)
 
     def _update_state(self):

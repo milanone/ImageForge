@@ -450,6 +450,7 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   transparency on a layer / foreground colour; weights follow the working area, feathered masks included), Shift+wheel scrolls sideways
   (`_on_wheel`). Beware when testing: `widget.event_generate('<KeyPress-x>', state=0)` is NOT delivered on Windows, leave `state` out.
   Trap found the hard way: in Tk `<Control-1>` is Control + MOUSE BUTTON 1 (digits 1-5 are buttons), so the Ctrl+1 shortcut was bound to every Ctrl+click and reset the zoom while the key did nothing; the key is `<Control-Key-1>` (`KeyBindingTests` greps the source for this). Known gaps against the usual editors: no single-key tool shortcuts (B, E, ...), no Ctrl+N / Ctrl+W. Check: `examples/keys_session.py`.
+  **Info line** (`_set_info`, `_size_text`): the grey line under the picture always starts with the size in pixels (`3072 x 4080 px (12.5 MP)`, MP from 1 MP up), also while the pointer is over the picture (`x=.. y=.. RGB=..` follows after a `|`): before, the pointer text replaced the whole line and the size was never visible while working, so the effect of Upscale / Resize / Crop could not be seen. Checks: `examples/ctrl_click_session.py`, `examples/upscale_ai_session.py`.
 
 - **Tool list layout, toolbox, search** (`TOOL_LAYOUT`, `TOOLBOX`, `tool_icon`, `search_tools`, `_fill_tool_tree`, `_build_toolbox`, `_build_chips`,
   `_refill_ops`): the order of the groups and of the tools inside them is the table `TOOL_LAYOUT`, not the order of registration (a test checks the

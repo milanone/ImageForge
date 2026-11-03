@@ -35,6 +35,8 @@ print("finished in %.1f s | window kept ticking meanwhile: %d ticks" % (time.tim
 cur = a.hist.current
 print("result:", cur.shape, "(expected (220, 320, 3)) | one new step:", a.hist.states[-1][0], "| Apply enabled again:", str(a.b_apply.cget('state')) == 'normal')
 print("status:", a.status.cget('text'))
+ev_h, ev_w = a.hist.current.shape[:2]; a.canvas.event_generate('<Motion>', x=200, y=200); root.update()
+print("the info line shows the new size (also under the pointer):", a.info.cget('text').startswith("%d x %d px" % (ev_w, ev_h)), "|", a.info.cget('text'))
 a.undo(); print("Undo restores the size:", a.hist.current.shape == orig.shape)
 # Esc stops a run (Real-ESRGAN x4 on a bigger picture takes long enough)
 if m.find_ai_program('realesrgan', folder):

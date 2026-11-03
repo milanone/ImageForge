@@ -45,4 +45,6 @@ a.tree.selection_set("Clone stamp"); root.update(); ev('<ButtonPress-1>', 300, 3
 print("Ctrl+click leaves the zoom and the view alone:", a.zoom == z0 and (a.ox, a.oy) == o0, "| and sets the clone source:", a.pvars['src_x'].get() >= 0)
 c.focus_set(); c.event_generate('<Control-Key-1>'); root.update(); print("the key Ctrl+1 gives 100 %:", abs(a.zoom - 1.0) < 1e-9)
 c.event_generate('<Control-Key-0>'); root.update(); print("the key Ctrl+0 fits the picture:", a.autofit)
+hh, ww = a.hist.current.shape[:2]
+ev('<Motion>', 300, 300); print("the info line keeps the size in front while the pointer is over the picture:", a.info.cget('text').startswith("%d x %d px" % (ww, hh)), "|", a.info.cget('text'))
 a.dirty = False; root.destroy()
