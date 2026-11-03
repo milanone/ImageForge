@@ -430,8 +430,11 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   the paid command; the request format, the alignment and the paste were verified earlier with standalone scripts on the live service (4 requests, 0.185 USD), and the editor
   path only with the fake. Not done: sending a mask or a drawn outline (untested whether Gemini follows it), a free-text extra instruction, other providers, a per-run spending
   limit setting in the UI (the code supports `max_cost`).
-- **AI folder memory**: settings key `ai_dir` (`set_ai_dir`, `choose_ai_dir`, saved at once with `save_settings`, not only on close); `find_ai_program` and `find_ai_model`
-  look in `ai_dir`, `IMAGEFORGE_AI_DIR` and one level down (`_ai_spots`): the user keeps Real-ESRGAN, waifu2x and `lama-onnx` together in one folder.
+- **AI folder memory**: settings key `ai_dirs` (a LIST; `saved_ai_dirs` also reads the single `ai_dir` older versions wrote; `add_ai_dir` puts a new folder first and keeps the others;
+  `set_ai_dir`, `choose_ai_dir`, saved at once with `save_settings`, not only on close). `find_ai_program` and `find_ai_model` look (`_ai_spots`) in each of them, in the folders inside them
+  whose name starts with the program's name, and in the same in their PARENT (sibling folders). Why both: the user keeps Real-ESRGAN, waifu2x and `lama-onnx` together in one folder, and
+  the first version remembered ONE folder, so choosing `lama-onnx` for the model made the app forget the folder with the other two ('not set up' again); a list alone would not have rescued
+  the settings already written with only `lama-onnx`, the sibling search does.
 
 - **Automatic fit** (`self.autofit`, `_set_autofit`, `_on_canvas_resize`): `fit_view` turns it on (so opening a picture, an Undo that changes the size
   and the Fit button all do), `_zoom_at` (wheel, Ctrl +/-, 100%) and `_on_pan` turn it off, Center leaves it alone; the canvas `<Configure>` event
