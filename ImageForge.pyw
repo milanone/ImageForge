@@ -156,6 +156,16 @@ NO_TOOL_DOC = ("Select and move (no tool): drag to select a rectangle; the handl
 GROUP_SHORT = {"Size and orientation": "Size", "Adjustments": "Adjust", "Clean-up": "Clean-up", "Filters": "Filters"}
 
 
+def uniform_scale(old_shape, new_shape, tol=0.02):
+    """The factor new / old when the picture only changed SIZE in proportion (Resize, Upscale, and their Undo), else None (a crop, a canvas change, a
+    rotation of the canvas): then the view cannot keep its scale and is refitted."""
+    oh, ow, nh, nw = old_shape[0], old_shape[1], new_shape[0], new_shape[1]
+    if min(oh, ow, nh, nw) < 1 or (oh, ow) == (nh, nw):
+        return None
+    rw, rh = nw / float(ow), nh / float(oh)
+    return rw if abs(rw - rh) <= tol * max(rw, rh) else None
+
+
 def search_tools(query, tools=None):
     """Names of the tools that match `query` (every word of it is somewhere in the tool's name or group, without regard to case), the
     ones whose name starts with the first word first, then in the order of the list. An empty query matches nothing."""
@@ -296,6 +306,7 @@ SHORTCUTS = [
     ("View", "Hand button in the toolbox", "The left button moves the picture", "standard (tool)"),
     ("Tools", "Select / move button (the arrow)", "No tool: drag selects a rectangle, drag inside it moves what is inside (Shift copies, Ctrl moves the frame only)", "standard (tool)"),
     ("Tools", "Click the tool in use again", "Deselects it: back to Select / move", "common"),
+    ("View", "\\ (hold) or the Before button", "Shows the picture as it was before the last step (or without the preview), at the same scale", "like Lightroom"),
     ("View", "Ctrl+H", "Histogram window", "ours"),
     ("Selections with the mouse", "Drag", "Draw a rectangle; drag inside it to move it, drag a handle to resize", "standard"),
     ("Selections with the mouse", "Shift + click", "Magic wand and Lasso: add to the selection", "standard"),
@@ -3799,6 +3810,8 @@ class ImageForge:
         self._comp = None                # cache of the last composite (base, layers, image)
         self._mv = None                  # (press point, selection, copy?, original image) while moving the content
         self._busy, self._busy_after = None, None     # (tool name, thread, start time) while an `external` tool runs in the background
+        self.v_compare = tk.BooleanVar(value=False)   # 'Before': show the picture as it was before the last step (or without the preview), at the same scale
+        self._before_cache = None
         self._placing = False            # a click/drag is setting the x, y of a 'place' tool
         self._grab = None                # (handle, press point in image pixels, selection at press) while dragging it
         self._hist_win, self._hist_pending, self._hist_key = None, False, None      # the Histogram window
@@ -3956,6 +3969,11 @@ class ImageForge:
             b.pack(side=tk.LEFT, padx=(4, 0), pady=2)
             if text == "Fit":
                 self.b_fit = b
+        self.b_before = tk.Checkbutton(bar, text="Before", variable=self.v_compare, indicatoron=False, width=7, selectcolor='#ffd98a',
+                                       command=self._compare_changed)
+        self.b_before.pack(side=tk.LEFT, padx=(10, 0), pady=2)
+        self._tip(self.b_before, "Before: the picture as it was before the last step (or without the preview), at the same scale. Hold \\ to peek. "
+                                 "Undo / Redo (Ctrl+Z / Ctrl+Y) also flip between the two at the same scale.")
         self.v_hand = tk.BooleanVar(value=False)                      # the Hand button is in the toolbox (and the H key)
         tk.Label(bar, text="Move the picture: hold Space and drag, or drag with the right button (the Hand in the toolbox: H)",
                  bg='#e8e8e8', fg='#666666', font=('Arial', 8)).pack(side=tk.LEFT, padx=10)
@@ -3992,6 +4010,8 @@ class ImageForge:
         self.c_preview = tk.Checkbutton(row, text="Preview", variable=self.v_preview, bg=bg,
                                         command=self._params_changed)
         self.c_preview.pack(side=tk.LEFT)
+        self._tip(self.c_preview, "Preview: show the result of the tool live, before applying. Greyed out for tools that cannot preview (Upscale, Resize, brushes ...). "
+                                  "To compare after applying, use the Before button or Undo / Redo.")
         tk.Button(row, text="Reset", command=self.reset_params).pack(side=tk.LEFT, padx=6)
         self.b_apply = tk.Button(row, text="Apply", command=self.apply, bg='#2ecc71', fg='white',
                                  font=('Arial', 10, 'bold'))
@@ -4132,6 +4152,8 @@ class ImageForge:
         r.bind('<KeyPress-bracketleft>', lambda e: self._bracket(-1, e))
         r.bind('<KeyPress-bracketright>', lambda e: self._bracket(1, e))
         r.bind('<KeyPress-h>', self._hand_key)
+        r.bind('<KeyPress-backslash>', self._before_key)
+        r.bind('<KeyRelease-backslash>', self._before_key_up)
         for key in ('Delete', 'BackSpace'):
             r.bind('<KeyPress-%s>' % key, self._delete_key)
             r.bind('<Shift-KeyPress-%s>' % key, lambda e: self._delete_key(e, True))
@@ -4176,6 +4198,74 @@ class ImageForge:
             self.pvars['size'].set(new)
             self._status("%s size %d px." % (self.tool.name, new), ok=True)
         return "break"
+
+    def _before_image(self):
+        """The picture to show in 'Before' mode, or None when there is nothing to compare with: with a preview on screen, the picture without it; else the
+        state before the last step. A state of another SIZE (before an Upscale) is put at the current size so that it covers the same area (nearest
+        neighbour when enlarged: the real pixels)."""
+        h = self.hist
+        if h is None:
+            return None
+        cur = h.current
+        if self.preview is not None and self.preview is not cur:
+            base, layers = cur, h.layers
+        elif h.can_undo():
+            _, base, layers = h.states[h.index - 1][:3]
+        else:
+            return None
+        key = (id(base), tuple(id(L) for L in layers), cur.shape[:2], id(cur))
+        if self._before_cache is not None and self._before_cache[0] == key:
+            return self._before_cache[2]
+        img = composite(base, tuple(layers))
+        if img.shape[:2] != cur.shape[:2]:
+            enlarged = cur.shape[0] * cur.shape[1] > img.shape[0] * img.shape[1]
+            img = cv2.resize(np.ascontiguousarray(img), (cur.shape[1], cur.shape[0]), interpolation=cv2.INTER_NEAREST if enlarged else cv2.INTER_AREA)
+        self._before_cache = (key, (base, tuple(layers), cur), img)                   # the objects are kept so their ids stay valid
+        return img
+
+    def _compare_changed(self):
+        if self.v_compare.get() and self._before_image() is None:
+            self.v_compare.set(False)
+            self._status("Nothing to compare: there is no earlier step.")
+        elif self.v_compare.get():
+            self._status("BEFORE: the picture as it was before the last step, at the same scale. Click Before again (or release \\) to see the result.", ok=True)
+        self._redraw()
+
+    def _compare_off(self):
+        if self.v_compare.get():
+            self.v_compare.set(False)
+
+    def _before_key(self, event):
+        """\\ held down: peek at the picture before the last step (like Lightroom)."""
+        if self._typing(event) or self.hist is None:
+            return None
+        if not self.v_compare.get():
+            self.v_compare.set(True)
+            self._compare_changed()
+        return "break"
+
+    def _before_key_up(self, event):
+        if self.v_compare.get():
+            self.v_compare.set(False)
+            self._redraw()
+        return "break"
+
+    def _update_preview_check(self):
+        """The Preview box only means something for a tool that can show a preview: grey it out for the others (Upscale, Resize, brushes ...)."""
+        t = self.tool
+        ok = t is not None and (t.layer or (t.preview and not t.interactive and not t.external))
+        self.c_preview.config(state=tk.NORMAL if ok else tk.DISABLED)
+
+    def _view_after_resize(self, old_shape, new_shape):
+        """After a step that changed the size of the picture in proportion (Resize, Upscale, their Undo): when the view is fitted it stays fitted; when the user
+        had zoomed, the picture keeps its size on the screen (the zoom is divided by the factor), so before and after can be compared at the same scale. Any other
+        change of size refits, as before."""
+        f = uniform_scale(old_shape, new_shape)
+        if self.autofit or f is None:
+            self.fit_view()
+            return
+        self.zoom = min(64.0, max(0.01, self.zoom / f))
+        self._redraw()
 
     def _hand_key(self, event):
         """H: the Hand (the left button moves the picture) on / off, as in most editors."""
@@ -4474,6 +4564,7 @@ class ImageForge:
         finally:
             self._ops_sync = False
         self.l_doc.config(text=NO_TOOL_DOC)
+        self._update_preview_check()
         self._sync_toolbox()
         self._update_state()
         self._redraw()
@@ -4483,6 +4574,7 @@ class ImageForge:
             self._commit_pending("when you switched tool")
         self.cancel_mode()
         self._measure_cancel()
+        self._compare_off()
         self.tool = TOOLS[name]
         self._sync_toolbox()
         if not self.v_find.get().strip() and self.tool.group in getattr(self, '_chip_groups', []) and self.v_group.get() != self.tool.group:
@@ -4501,6 +4593,7 @@ class ImageForge:
         if ei is not None:
             self._load_layer_into_tool(self.hist.layers[ei])
         self._update_state()
+        self._update_preview_check()
         self._params_changed()
 
     def _build_params(self):
@@ -4990,13 +5083,15 @@ class ImageForge:
     def _commit(self, label, img, layers=None, step=None):
         """Put a new state on the history (`layers` None keeps the current ones). Size changes drop the selection and
         refit the view. `step` is the recipe step that makes this state, when a recipe can repeat it."""
-        resized = img.shape[:2] != self.hist.current.shape[:2]
+        old_shape = self.hist.current.shape[:2]
+        resized = img.shape[:2] != old_shape
+        self._compare_off()
         self.hist.push(label, img, layers, step)
         self.preview = self.lprev = None
         self.dirty = True
         if resized:
             self.sel = None
-            self.fit_view()
+            self._view_after_resize(old_shape, img.shape[:2])
         self._refresh_layers()
         self._update_state()
         self._redraw()
@@ -5187,11 +5282,12 @@ class ImageForge:
     def _step(self, fn, word):
         before = self.hist.current.shape[:2]
         label = self.hist.undo_label() if fn == self.hist.undo else self.hist.redo_label()
+        self._compare_off()
         fn()
         self.preview, self.lprev, self.dirty = None, None, True
         if self.hist.current.shape[:2] != before:
             self.sel = None
-            self.fit_view()
+            self._view_after_resize(before, self.hist.current.shape[:2])
         self._refresh_layers()
         self._update_state()
         self._redraw()
@@ -5205,6 +5301,10 @@ class ImageForge:
 
     def escape(self):
         """Esc: stop a running tool, else end a pick in progress, else drop the selection."""
+        if self.v_compare.get():
+            self._compare_off()
+            self._redraw()
+            return
         if self._busy:
             AI_CANCEL.set()
             self._status("Stopping %s..." % self._busy[0])
@@ -5921,6 +6021,10 @@ class ImageForge:
         """The picture as seen: background (or its preview) with the layers (or their preview) blended over it."""
         if self.hist is None:
             return None
+        if self.v_compare.get():                                    # 'Before'
+            b = self._before_image()
+            if b is not None:
+                return b
         base = self.preview if self.preview is not None else self.hist.current
         return self._composite_cached(base, self.lprev if self.lprev is not None else self.hist.layers)
 
@@ -6015,6 +6119,10 @@ class ImageForge:
             self._photo = ImageTk.PhotoImage(sub)
             c.create_image(round(x0 * z + self.ox), round(y0 * z + self.oy), anchor='nw', image=self._photo, tags='img')
             c.tag_lower('img')
+        c.delete('cmp')
+        if self.v_compare.get():
+            c.create_rectangle(8, 8, 78, 30, fill='#222222', outline='#ffd400', tags='cmp')
+            c.create_text(43, 19, text="BEFORE", fill='#ffd400', font=('Arial', 10, 'bold'), tags='cmp')
         self._draw_selection()
         self._draw_faces_marker()
         self._draw_clone_marker()

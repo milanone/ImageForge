@@ -1943,6 +1943,17 @@ class GenerativeTests(unittest.TestCase):
             self.assertIn(needle, il.OBJECT_GUIDE)
 
 
+class ViewScaleTests(unittest.TestCase):
+    def test_uniform_scale(self):
+        self.assertEqual(il.uniform_scale((200, 300), (400, 600)), 2.0)                  # Upscale 2x / Resize 200 %
+        self.assertAlmostEqual(il.uniform_scale((400, 600), (200, 300)), 0.5)             # and their Undo
+        self.assertAlmostEqual(il.uniform_scale((1000, 1500), (333, 500)), 500 / 1500.0, places=3)      # a rounding of one pixel is still a scaling
+        self.assertIsNone(il.uniform_scale((200, 300), (100, 300)))                      # a crop
+        self.assertIsNone(il.uniform_scale((200, 300), (260, 360)))                      # a canvas change
+        self.assertIsNone(il.uniform_scale((200, 300), (200, 300)))                      # no change
+        self.assertIsNone(il.uniform_scale((0, 300), (200, 300)))
+
+
 class KeyBindingTests(unittest.TestCase):
     def test_no_modifier_plus_a_bare_digit_binding(self):
         """In Tk, '<Control-1>' means Control + mouse button 1, NOT Control + the key 1 (that is '<Control-Key-1>'): such a binding fires on every Ctrl+click
