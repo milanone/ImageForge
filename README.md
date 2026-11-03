@@ -90,6 +90,9 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
     go: soft edge, opacity, *Aligned* keeps the offset between strokes) and **Clean brush** (paint over a spot, scratch or stray
     mark, it shows red; when you let go it is rebuilt from its surroundings). Both are limited to the selection and work on the
     selected layer's pixels.
+  - Adjustments: **Portrait retouch**, a one-step portrait finish: it finds the faces (OpenCV's frontal-face detector; or click on the face
+    when it misses one, e.g. a profile), smooths the skin only where the colour is skin (eyes, lips, hair and glasses stay sharp), lifts
+    the light on the face, shifts its warmth, and darkens the surroundings round a wide soft pool of light. Keep the amounts low.
   - Retouch: **Dodge / burn** lightens or darkens by hand, as in a darkroom (faces, eyes, folds): choose *dodge* or *burn*, the tones it
     works on (midtones, shadows, highlights, all), the exposure, the size and the softness of the brush. The exposure belongs to the whole
     stroke; a second stroke adds more. Colours are kept and nothing clips.

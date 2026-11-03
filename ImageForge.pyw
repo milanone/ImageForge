@@ -55,7 +55,7 @@ TOOL_LAYOUT = {
     'Annotate': ['Add text', 'Shapes', 'Scale bar', 'Measure'],
     'Layers': ['Move layer'],
     'Size and orientation': ['Resize', 'Canvas size', 'Crop to aspect ratio', 'Auto-crop borders', 'Rotate 90 / 180', 'Rotate (any angle)', 'Flip', 'Auto straighten', 'Perspective correction', 'Lens distortion'],
-    'Adjustments': ['Brightness / contrast', 'Levels', 'Curves', 'Auto contrast', 'Local contrast (CLAHE)', 'Even out illumination', 'Hue / saturation', 'Colour balance', 'White balance', 'Grayscale', 'Invert', 'Threshold (black & white)'],
+    'Adjustments': ['Brightness / contrast', 'Levels', 'Curves', 'Auto contrast', 'Local contrast (CLAHE)', 'Even out illumination', 'Hue / saturation', 'Colour balance', 'White balance', 'Portrait retouch', 'Grayscale', 'Invert', 'Threshold (black & white)'],
     'Filters': ['Sharpen (unsharp mask)', 'Blur (Gaussian)', 'Reduce noise', 'Morphology', 'Find edges'],
     'Clean-up': ['Erase / keep colours', 'Remove marks', 'Despeckle', 'Flatten ink to one colour', 'Join dashed lines'],
 }          # the order of the groups and of the tools in the lists; a group of a plug-in comes after them, in registration order
@@ -387,6 +387,120 @@ def brightness_contrast(img, brightness, contrast):
         return img
     k = math.tan((contrast + 100) * math.pi / 400)          # 1 at 0, towards infinity at 100
     return _to_u8((img.astype(np.float32) - 128.0) * k + 128.0 + brightness * 2.55)
+
+
+_FACE_CACHE = {}
+
+
+def find_faces(img):
+    """The faces in `img` as a list of (centre x, centre y, width) in pixels: OpenCV's Haar cascade for frontal faces, run on a copy shrunk
+    to 800 px. Good for faces that look at the camera or turn a little; a face in profile, covered, tilted or very small may be missed
+    (the Portrait retouch tool then lets you click on it). The answer is remembered for the last picture, because the live preview asks
+    again at every slider move."""
+    h, w = img.shape[:2]
+    key = (h, w, int(img[::97, ::89].sum()))
+    if key in _FACE_CACHE:
+        return _FACE_CACHE[key]
+    s = min(1.0, 800.0 / max(h, w))
+    g = cv2.equalizeHist(cv2.cvtColor(cv2.resize(img, (max(1, int(w * s)), max(1, int(h * s))), interpolation=cv2.INTER_AREA), cv2.COLOR_RGB2GRAY))
+    found = []
+    try:
+        for name in ("haarcascade_frontalface_alt2.xml", "haarcascade_frontalface_default.xml"):
+            casc = cv2.CascadeClassifier(cv2.data.haarcascades + name)
+            if casc.empty():
+                continue
+            r = casc.detectMultiScale(g, 1.1, 5, minSize=(max(24, int(0.04 * g.shape[1])),) * 2)
+            if len(r):
+                found = [(float(fx + fw / 2) / s, float(fy + fh / 2) / s, float(fw) / s) for fx, fy, fw, fh in r]
+                if name.endswith("default.xml"):                         # the looser cascade makes false hits: keep only the biggest
+                    found = [max(found, key=lambda f: f[2])]
+                break
+    except Exception:
+        found = []
+    _FACE_CACHE.clear()
+    _FACE_CACHE[key] = found
+    return found
+
+
+def _soft_ellipse(shape, box, cx, cy, rx, ry, edge=0.5):
+    """A float map (the size of `box` = (x0, y0, x1, y1)) that is 1 inside the ellipse and falls to 0 over `edge` (fraction of the radius)."""
+    ys, xs = np.mgrid[box[1]:box[3], box[0]:box[2]].astype(np.float32)
+    d = np.hypot((xs - cx) / rx, (ys - cy) / ry)
+    return np.clip((1.0 + edge - d) / edge, 0.0, 1.0)
+
+
+def portrait_retouch_faces(img, faces, smooth=40, light=15, surround=25, warmth=0):
+    """Portrait finish for the faces `faces` ((cx, cy, width) in px): the skin is smoothed (bilateral filter, only where the colour is
+    skin, so eyes, lips, hair and glasses stay sharp), the light on the face is lifted (dodge on the midtones), the warmth of the skin
+    shifted, and everything away from the faces darkened with a wide soft pool of light round them. Returns `img` itself when every
+    amount is 0 or there are no faces."""
+    if not faces or (smooth == 0 and light == 0 and surround == 0 and warmth == 0):
+        return img
+    h, w = img.shape[:2]
+    out = img
+    for cx, cy, fw in faces:
+        if smooth or light or warmth:
+            pad = int(1.2 * fw)
+            x0, y0, x1, y1 = max(0, int(cx - pad)), max(0, int(cy - pad)), min(w, int(cx + pad)), min(h, int(cy + pad))
+            if x1 - x0 < 8 or y1 - y0 < 8:
+                continue
+            roi = out[y0:y1, x0:x1]
+            box = (x0, y0, x1, y1)
+            face = _soft_ellipse(roi.shape, box, cx, cy + 0.10 * fw, 0.60 * fw, 0.78 * fw)
+            ycc = cv2.cvtColor(roi, cv2.COLOR_RGB2YCrCb).astype(np.float32)
+            skin = np.clip(1.0 - np.maximum(np.abs(ycc[..., 1] - 150.0) - 26.0, np.abs(ycc[..., 2] - 112.0) - 26.0) / 14.0, 0.0, 1.0)
+            skin = cv2.GaussianBlur(skin, (0, 0), max(1.0, 0.012 * fw))
+            wgt = face * skin
+            f = roi.astype(np.float32)
+            if smooth:
+                bil = cv2.bilateralFilter(roi, 0, 26, max(2.0, 0.011 * fw)).astype(np.float32)
+                f = f + (bil - f) * (0.85 * smooth / 100.0) * wgt[..., None]
+            if warmth:
+                f = f + np.array([0.4, 0.0, -0.4], np.float32) * warmth * wgt[..., None]
+            part = _to_u8(f)
+            if light:
+                part = tone_paint(part, _soft_ellipse(roi.shape, box, cx, cy + 0.05 * fw, 0.62 * fw, 0.80 * fw, 0.9), 'dodge (lighten)', 'midtones', light)
+            out = out.copy() if out is img else out
+            out[y0:y1, x0:x1] = part
+    if surround:
+        k = max(1, int(max(h, w) / 400))                                # the pool is smooth: build it on a small copy
+        sh, sw = max(2, h // k), max(2, w // k)
+        pool = np.zeros((sh, sw), np.float32)
+        for cx, cy, fw in faces:
+            pool = np.maximum(pool, _soft_ellipse(pool.shape, (0, 0, sw, sh), cx / k, (cy + 0.9 * fw) / k, 1.9 * fw / k, 2.6 * fw / k, 0.9))
+        dark = cv2.resize(cv2.GaussianBlur(1.0 - pool, (0, 0), 3), (w, h), interpolation=cv2.INTER_LINEAR)
+        out = tone_paint(out, dark, 'burn (darken)', 'all', surround)
+    return out
+
+
+@tool("Portrait retouch", "Adjustments", [
+    Param('x', "X of the face centre (px; -1 = find the faces)", 'int', -1, -1, 100000),
+    Param('y', "Y of the face centre (px; -1 = find the faces)", 'int', -1, -1, 100000),
+    Param('size', "Face width (px; 0 = automatic)", 'int', 0, 0, 20000),
+    Param('smooth', "Smooth the skin (%)", 'int', 40, 0, 100, slider=True),
+    Param('light', "Light on the face (%)", 'int', 15, 0, 60, slider=True),
+    Param('surround', "Darken the surroundings (%)", 'int', 25, 0, 80, slider=True),
+    Param('warmth', "Warmth of the skin", 'int', 0, -50, 50, slider=True)],
+    place=True,
+    doc="One-step portrait finish. With X = -1 it finds every face looking at the camera and treats each one; if it misses one (a face in "
+        "profile, small or covered), click on the face and the tool works there. The skin is smoothed only where the colour is skin "
+        "(eyes, lips, hair and glasses stay sharp), the face gets a little light, and the rest of the picture is darkened round a wide "
+        "soft pool of light, which brings the eye to the face. Warmth shifts the skin towards orange (+) or blue (-). Keep the amounts low: "
+        "a natural face still has texture. Limited to the selection if there is one.")
+def portrait_retouch(img, x, y, size, smooth, light, surround, warmth):
+    if smooth == 0 and light == 0 and surround == 0 and warmth == 0:
+        return img
+    h, w = img.shape[:2]
+    if x < 0 or y < 0:
+        faces = find_faces(img)
+        if size > 0:
+            faces = [(fx, fy, float(size)) for fx, fy, fw in faces]
+        TOOL_NOTES["Portrait retouch"] = ("%d face%s found" % (len(faces), "" if len(faces) == 1 else "s")) if faces else \
+            "no face found: click on the face to place the tool"
+    else:
+        faces = [(float(x), float(y), float(size) if size > 0 else 0.28 * min(h, w))]
+        TOOL_NOTES.pop("Portrait retouch", None)
+    return portrait_retouch_faces(img, faces, smooth, light, surround, warmth)
 
 
 @tool("Grayscale", "Adjustments", [

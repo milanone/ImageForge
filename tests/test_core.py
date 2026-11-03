@@ -1628,6 +1628,57 @@ class WorkflowTests(unittest.TestCase):
         self.assertLess(os.path.getsize(j1), os.path.getsize(j2))
 
 
+class PortraitTests(unittest.TestCase):
+    """Portrait retouch: smooth only the skin, light on the face, darker surroundings; faces found or given."""
+
+    def scene(self):
+        rng = np.random.default_rng(3)
+        img = np.full((300, 400, 3), (60, 90, 120), np.uint8)
+        yy, xx = np.mgrid[0:300, 0:400]
+        face = ((xx - 200) / 70.0) ** 2 + ((yy - 140) / 90.0) ** 2 < 1
+        img[face] = (205, 150, 125)                                          # skin colour
+        img = np.clip(img.astype(int) + rng.normal(0, 8, img.shape), 0, 255).astype(np.uint8)
+        return img, face
+
+    def test_all_zero_changes_nothing(self):
+        img, _ = self.scene()
+        self.assertIs(il.portrait_retouch_faces(img, [(200, 140, 140)], 0, 0, 0, 0), img)
+        self.assertIs(il.portrait_retouch_faces(img, [], 40, 15, 25, 0), img)
+
+    def test_skin_is_smoothed_but_the_background_texture_is_not(self):
+        img, face = self.scene()
+        out = il.portrait_retouch_faces(img, [(200, 140, 140)], 100, 0, 0, 0)
+        core = face & (np.abs(np.mgrid[0:300, 0:400][1] - 200) < 40) & (np.abs(np.mgrid[0:300, 0:400][0] - 140) < 50)
+        self.assertLess(out[core].astype(float).std(axis=0).mean(), 0.7 * img[core].astype(float).std(axis=0).mean())
+        far = np.zeros(face.shape, bool); far[:40, :60] = True
+        self.assertTrue(np.array_equal(out[far], img[far]))
+
+    def test_light_and_surround(self):
+        img, face = self.scene()
+        lit = il.portrait_retouch_faces(img, [(200, 140, 140)], 0, 40, 0, 0)
+        self.assertGreater(lit[140, 200].astype(int).sum(), img[140, 200].astype(int).sum())
+        dark = il.portrait_retouch_faces(img, [(200, 140, 60)], 0, 0, 60, 0)
+        self.assertLess(dark[290, 5].astype(int).sum(), img[290, 5].astype(int).sum())            # far corner darker
+        self.assertLessEqual(abs(int(dark[140, 200].sum()) - int(img[140, 200].sum())), 12)        # the face itself hardly changes
+
+    def test_warmth_shifts_red_against_blue(self):
+        img, _ = self.scene()
+        w = il.portrait_retouch_faces(img, [(200, 140, 140)], 0, 0, 0, 40)
+        self.assertGreater(int(w[140, 200, 0]), int(img[140, 200, 0]))
+        self.assertLess(int(w[140, 200, 2]), int(img[140, 200, 2]))
+
+    def test_tool_with_a_given_face_and_with_none_found(self):
+        img, _ = self.scene()
+        out = il.apply_tool("Portrait retouch", img, {'x': 200, 'y': 140, 'size': 140, 'smooth': 60, 'light': 20, 'surround': 30, 'warmth': 0})
+        self.assertEqual((out.dtype, out.shape), (np.uint8, img.shape))
+        self.assertFalse(np.array_equal(out, img))
+        il.apply_tool("Portrait retouch", img, None)                                   # nobody to find in a synthetic picture
+        self.assertIn("no face found", il.TOOL_NOTES["Portrait retouch"])
+
+    def test_find_faces_on_nothing(self):
+        self.assertEqual(il.find_faces(np.full((200, 200, 3), 128, np.uint8)), [])
+
+
 class DodgeBurnTests(unittest.TestCase):
     """Dodge / burn: lighten or darken by hand, limited to a tonal range, colours kept, alpha untouched."""
 

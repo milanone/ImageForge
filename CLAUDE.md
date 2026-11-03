@@ -364,6 +364,20 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   must not set a colour). Tests: `DodgeBurnTests`; real window: `examples/dodge_burn_session.py`. Not done: a 'sponge' (saturate / desaturate)
   variant, a toggle key (Alt in Photoshop) to flip dodge / burn.
 
+- **Portrait retouch** (`find_faces`, `portrait_retouch_faces`, `_soft_ellipse`; tool in Adjustments with `place=True`, so a click sets `x`, `y`;
+  `x = -1` means 'find the faces'): faces come from OpenCV's Haar cascade (`frontalface_alt2`, then `default` keeping only the biggest, because it
+  gives false hits) on a copy shrunk to 800 px, remembered for the last picture (`_FACE_CACHE`, key = shape + a sampled sum) because the live preview
+  asks at every slider move; a profile, a covered or a small face can be missed, hence the click. Per face, in a crop of +-1.2 face widths: a soft
+  face ellipse x a skin map (YCrCb, Cr 150 +- 26, Cb 112 +- 26, blurred) = the weight; smoothing = `cv2.bilateralFilter` blended by 0.85 x amount x
+  weight (so eyes, lips, hair, glasses stay), warmth = +-0.4 x amount on R / B, light = `tone_paint` dodge on the midtones. Then, on the whole
+  picture, `tone_paint` burn with a weight = 1 - a wide soft pool (1.9 x 2.6 face widths, centred a little below the face, built on a small copy
+  and enlarged). The skin colour range was checked on one medium-skin photo and one dark-skin low-key portrait (median Cr 135, Cb 122 in its face box, which the
+  first limits +-20 around 153 / 108 covered only partly: hence the wider ones) and not on other skin tones or light conditions: if the smoothing misses
+  the skin or touches something else, adjust the Cr / Cb limits. On that portrait 'Light on the face' 25 turned the already grey-ish cheeks greyer:
+  a low-key face wants a small light amount. A note ('3 faces found' / 'no face found: click on it') goes through
+  `TOOL_NOTES`. Not recipe-aware beyond the generic path. Tests: `PortraitTests`; real window: `examples/portrait_session.py`. Not done: eye
+  and teeth brightening, blemish removal (Clean brush does it by hand), hair and face-shape handling, a profile detector, a deep-learning detector.
+
 - **Automatic fit** (`self.autofit`, `_set_autofit`, `_on_canvas_resize`): `fit_view` turns it on (so opening a picture, an Undo that changes the size
   and the Fit button all do), `_zoom_at` (wheel, Ctrl +/-, 100%) and `_on_pan` turn it off, Center leaves it alone; the canvas `<Configure>` event
   refits while it is on and just redraws otherwise, so it also follows the panel divider and the first real window size (the first fit at
