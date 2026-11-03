@@ -100,6 +100,14 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
     licence before redistributing it), which you put with the other AI programs; *Tools > AI programs folder...* tells ImageForge where and remembers it.
     The first run of a session spends about a minute loading the model, then about ten seconds per piece; the window stays usable and Esc stops it. The fill
     is invented, plausible rather than true, and a little smoother than the photograph.
+  - Clean-up: **Remove object (generative)** redraws what was behind an object with a generative model (Google Gemini image models through
+    [OpenRouter](https://openrouter.ai)). **It costs money**: about 0.04 USD per object, charged to your OpenRouter credit, which the panel shows (*Refresh
+    credit*). Select the object, describe it in words, press Apply: a window shows what will be sent (only a crop around the object, never the whole picture; you
+    are warned if a face is in it), the estimated cost and your credit, and nothing is sent until you say yes. The answer is aligned to the original and pasted
+    back only over the object, so the rest of the picture is unchanged. Set the key once with
+    `[Environment]::SetEnvironmentVariable('OPENROUTER_API_KEY','your-key','User')`; it is never shown, saved or logged by ImageForge. *Help > Guide: removing
+    objects* explains which of the four removal tools to use, how to use this one, tips, money, privacy and limits. What the model draws is invented
+    (plausible, not true).
   - Adjustments: **Portrait retouch**, a one-step portrait finish: it finds the faces (OpenCV's frontal-face detector). When it misses some (a profile, a tilted or
     partly cut face), **Find faces** writes what it found in a list, **Mark faces** (or Ctrl+click) adds the ones you click on, and the list can be
     edited by hand; yellow outlines show the faces on the picture, smooths the skin only where the colour is skin (eyes, lips, hair and glasses stay sharp), lifts

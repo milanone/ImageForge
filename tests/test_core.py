@@ -8,6 +8,7 @@ import os
 import tempfile
 import unittest
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -1732,6 +1733,166 @@ class AITests(unittest.TestCase):
         t = il.TOOLS["Enlarge (AI)"]
         self.assertTrue(t.external and t.geometry and not t.preview)
         self.assertIn("Enlarge (AI)", il.TOOL_LAYOUT["Size and orientation"])
+
+
+class GenerativeTests(unittest.TestCase):
+    """Remove object (generative): a fake OpenRouter stands in for the paid service. Checks the request, the alignment of the answer, the paste (only over
+    the object), the cost bookkeeping, the stops (no key, no words, no selection, the money limit) and that errors never contain the key."""
+    KEY = "sk-or-test-secret"
+
+    @staticmethod
+    def scene():
+        rng = np.random.default_rng(5)
+        bg = cv2.GaussianBlur(rng.integers(0, 255, (400, 600, 3)).astype(np.uint8), (0, 0), 1.2)
+        for _ in range(120):
+            cv2.circle(bg, (int(rng.integers(0, 600)), int(rng.integers(0, 400))), int(rng.integers(3, 12)), tuple(int(v) for v in rng.integers(0, 255, 3)), -1)
+        return bg
+
+    def setUp(self):
+        self.bg = self.scene()
+        self.img = self.bg.copy()
+        self.img[170:230, 120:180] = (255, 0, 0)                  # object 1: a red square
+        self.img[170:230, 420:480] = (255, 0, 0)                  # object 2
+        self.calls, self.mode = [], 'ok'
+        self.old = (il._urlopen, il.openrouter_key, dict(il.OR_STATE))
+        il._urlopen = self.fake
+        il.openrouter_key = lambda: self.KEY
+        il.OR_STATE['credit'], il.OR_STATE['prices'] = 5.0, {}
+        il.AI_CANCEL.clear()
+
+    def tearDown(self):
+        il._urlopen, il.openrouter_key = self.old[0], self.old[1]
+        il.OR_STATE.clear()
+        il.OR_STATE.update(self.old[2])
+        il.AI_CANCEL.clear()
+
+    def fake(self, req, timeout=None):
+        import io as _io, json as _json, base64 as _b64, urllib.error as _ue
+        url = req.full_url.replace(il.OPENROUTER_API, "")
+        self.calls.append((url, req.get_header("Authorization")))
+        if url == "/credits":
+            return _io.BytesIO(_json.dumps({"data": {"total_credits": 20, "total_usage": 9.9}}).encode())
+        if url == "/models":
+            return _io.BytesIO(_json.dumps({"data": [{"id": "google/gemini-2.5-flash-image", "pricing": {"prompt": "0.0000003", "image_output": "0.00003"}}]}).encode())
+        if self.mode == 'http402':
+            raise _ue.HTTPError(req.full_url, 402, "Payment Required", {}, _io.BytesIO(b'{"error": {"message": "Insufficient credits"}}'))
+        body = _json.loads(req.data)
+        self.last_body = body
+        if self.mode == 'noimage':
+            return _io.BytesIO(_json.dumps({"choices": [{"message": {"content": "I cannot do that"}}], "usage": {"cost": 0.001}}).encode())
+        uri = body["messages"][0]["content"][1]["image_url"]["url"]
+        sent = np.asarray(Image.open(_io.BytesIO(_b64.b64decode(uri.split(",", 1)[1]))).convert("RGB"))
+        red = ((sent[..., 0] > 200) & (sent[..., 1] < 60) & (sent[..., 2] < 60)).astype(np.uint8) * 255
+        red = cv2.dilate(red, np.ones((9, 9), np.uint8))
+        filled = cv2.cvtColor(cv2.inpaint(cv2.cvtColor(sent, cv2.COLOR_RGB2BGR), red, 6, cv2.INPAINT_TELEA), cv2.COLOR_BGR2RGB)
+        h, w = filled.shape[:2]
+        M = np.float32([[0.9, 0, 6], [0, 0.9, 4]])                                   # the model hands the picture back rescaled and shifted
+        out = cv2.warpAffine(filled, M, (int(w * 1.1), int(h * 1.1)), borderMode=cv2.BORDER_REFLECT)
+        buf = _io.BytesIO()
+        Image.fromarray(out).save(buf, "PNG")
+        return _io.BytesIO(_json.dumps({"choices": [{"message": {"content": "", "images": [{"image_url": {"url": "data:image/png;base64," + _b64.b64encode(buf.getvalue()).decode()}}]}}],
+                                        "usage": {"cost": 0.0391}}).encode())
+
+    def sel(self, *boxes):
+        m = np.zeros(self.img.shape[:2], np.float32)
+        for x0, y0, x1, y1 in boxes:
+            m[y0:y1, x0:x1] = 1
+        return il.MaskRegion((min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)), m)
+
+    def chat_calls(self):
+        return [c for c in self.calls if c[0] == "/chat/completions"]
+
+    def test_one_object_is_removed_and_the_rest_is_untouched(self):
+        out = il.generative_remove(self.img, self.sel((115, 165, 185, 235)), "the red square", grow=10)
+        self.assertEqual(len(self.chat_calls()), 1)
+        self.assertEqual(self.chat_calls()[0][1], "Bearer " + self.KEY)
+        self.assertEqual(int(((out[165:235, 115:185, 0] > 200) & (out[165:235, 115:185, 1] < 60)).sum()), 0)       # the red is gone
+        self.assertTrue(np.array_equal(out[:, 300:410], self.img[:, 300:410]))                                      # far from the object: identical
+        self.assertTrue(np.array_equal(out[:60], self.img[:60]))
+        self.assertTrue((out[170:230, 420:480] == (255, 0, 0)).all())                                              # the second object was not selected
+        self.assertIn("1 request, 0.0391 USD", il.TOOL_NOTES["Remove object (generative)"])
+        self.assertAlmostEqual(il.OR_STATE['credit'], 5.0 - 0.0391, places=4)
+        self.assertIn("remove the red square", self.last_body["messages"][0]["content"][0]["text"])
+        self.assertEqual(self.last_body["model"], "google/gemini-2.5-flash-image")
+
+    def test_the_filled_area_looks_like_the_background(self):
+        out = il.generative_remove(self.img, self.sel((115, 165, 185, 235)), "the red square", grow=10)
+        err = np.abs(out[185:215, 135:165].astype(int) - self.bg[185:215, 135:165].astype(int)).mean()
+        before = np.abs(self.img[185:215, 135:165].astype(int) - self.bg[185:215, 135:165].astype(int)).mean()
+        self.assertLess(err, before)                                                                                 # closer to the real background than the red was
+
+    def test_two_pieces_are_two_requests_and_the_money_limit_stops(self):
+        two = self.sel((115, 165, 185, 235), (415, 165, 485, 235))
+        il.generative_remove(self.img, two, "a red square", grow=10)
+        self.assertEqual(len(self.chat_calls()), 2)
+        self.assertIn("2 requests", il.TOOL_NOTES["Remove object (generative)"])
+        self.calls.clear()
+        il.generative_remove(self.img, two, "a red square", grow=10, max_cost=0.05)
+        self.assertEqual(len(self.chat_calls()), 1)                                                                  # a second request would pass the limit
+        self.assertIn("1 request", il.TOOL_NOTES["Remove object (generative)"])
+
+    def test_stops_before_spending(self):
+        with self.assertRaises(ValueError):
+            il.generative_remove(self.img, self.sel((115, 165, 185, 235)), "   ")
+        with self.assertRaises(ValueError):
+            il.generative_remove(self.img, None, "the red square")
+        il.openrouter_key = lambda: None
+        with self.assertRaises(il.ToolUnavailable):
+            il.generative_remove(self.img, self.sel((115, 165, 185, 235)), "the red square")
+        il.openrouter_key = lambda: self.KEY
+        il.AI_CANCEL.set()
+        with self.assertRaises(il.Cancelled):
+            il.generative_remove(self.img, self.sel((115, 165, 185, 235)), "the red square")
+        self.assertEqual(self.chat_calls(), [])                                                                      # nothing was sent in any of these
+
+    def test_errors_are_plain_and_never_contain_the_key(self):
+        self.mode = 'http402'
+        with self.assertRaises(RuntimeError) as cm:
+            il.generative_remove(self.img, self.sel((115, 165, 185, 235)), "the red square")
+        self.assertIn("402", str(cm.exception))
+        self.assertIn("Insufficient credits", str(cm.exception))
+        self.assertNotIn(self.KEY, str(cm.exception))
+        self.mode = 'noimage'
+        with self.assertRaises(RuntimeError) as cm:
+            il.generative_remove(self.img, self.sel((115, 165, 185, 235)), "the red square")
+        self.assertIn("no picture", str(cm.exception))
+
+    def test_an_answer_that_cannot_be_aligned_is_not_pasted(self):
+        crop = self.bg[8:392, 8:392]
+        other = np.random.default_rng(99).integers(0, 255, crop.shape).astype(np.uint8)
+        with self.assertRaises(RuntimeError):
+            il.gen_paste(crop, crop, other, np.zeros(crop.shape[:2], bool), 5)
+
+    def test_pieces_and_estimate_and_credit(self):
+        big = np.zeros((3000, 4000, 3), np.uint8)
+        m = np.zeros((3000, 4000), np.float32)
+        m[1000:2200, 1800:2200] = 1
+        pcs = il.gen_pieces(big, il.MaskRegion((1800, 1000, 2200, 2200), m), 8)
+        self.assertEqual(len(pcs), 1)
+        pc = pcs[0]
+        self.assertTrue(0 <= pc['x0'] and pc['x0'] + pc['side'] <= 4000 and 0 <= pc['y0'] and pc['y0'] + pc['side'] <= 3000)
+        self.assertEqual(pc['sent'], il.GEN_MAX_SIDE)                                                               # a big crop is shrunk before it is sent
+        self.assertEqual(pc['hole'].shape, (pc['side'], pc['side']))
+        self.assertAlmostEqual(il.gen_estimate("google/gemini-2.5-flash-image"), 1290 * 3e-5 + 1400 * 3e-7, places=6)
+        self.assertAlmostEqual(il.gen_estimate("google/gemini-2.5-flash-image", 3), 3 * (1290 * 3e-5 + 1400 * 3e-7), places=6)
+        self.assertAlmostEqual(il.or_credit(self.KEY), 10.1, places=6)
+
+    def test_key_lookup(self):
+        import unittest.mock as mock
+        real = self.old[1]
+        with mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": "  abc  "}):
+            self.assertEqual(real(), "abc")
+        with mock.patch.dict(os.environ, {}, clear=False), mock.patch.object(il.sys, "platform", "linux"):
+            os.environ.pop("OPENROUTER_API_KEY", None)
+            self.assertIsNone(real())
+
+    def test_tool_registration_and_guide(self):
+        t = il.TOOLS["Remove object (generative)"]
+        self.assertTrue(t.external and t.takes_region and not t.preview)
+        self.assertIn("Remove object (generative)", il.TOOL_LAYOUT["Clean-up"])
+        self.assertIn("COSTS MONEY", t.doc)
+        for needle in ("OPENROUTER_API_KEY", "MONEY AND PRIVACY", "Clean brush", "Remove marks", "Remove object (AI)", "Undo"):
+            self.assertIn(needle, il.OBJECT_GUIDE)
 
 
 class RemoveObjectTests(unittest.TestCase):

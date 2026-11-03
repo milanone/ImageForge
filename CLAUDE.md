@@ -409,6 +409,27 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   lost its print. Not done: a GPU provider, a lower-resolution tile mode for huge holes, blending several runs, a second pass option, an MI-GAN (30 MB) variant.
   The model and `onnxruntime` are NOT dependencies: the tool says what is missing (`ToolUnavailable`). Tests with a fake session: `RemoveObjectTests`; real
   window with the real model: `examples/remove_object_session.py <folder> [photo]`.
+- **Remove object (generative)** (`generative_remove`, `gen_pieces`, `gen_edit`, `align_to`, `gen_paste`, `gen_estimate`, `gen_prices`, `or_call`, `or_credit`, `openrouter_key`,
+  `OBJECT_GUIDE`, `_build_or_panel`, `show_object_guide`; group Clean-up, `external` + `takes_region`): PAID. The selection is split into connected pieces, one request each
+  (the model gets WORDS, not a mask: `what` describes the object, `gen_prompt`); a square crop 1.5 x the piece (+ widening, at least 384, at most GEN_MAX_SIDE = 1024 when sent)
+  goes to OpenRouter chat completions (`modalities: [image, text]`, `usage.include`) with the picture as a data URI; the answer comes back ~1 MP and slightly rescaled and
+  shifted (measured: x 0.90 + a few px; the crop is not returned at its size), so `align_to` finds an affine transform (ORB + RANSAC, 290-530 inliers on the desk photo; fewer
+  than 40 = nothing is pasted, the request is lost) and `gen_paste` warps it to the crop, matches its colours (gain/offset per channel in a ring round the hole) and
+  blends it ONLY over the piece widened by `grow` % (feathered): the rest of the picture is the original, byte for byte. Findings that shaped it (desk photo, Gemini 2.5
+  flash image, 0.0391 USD per request = 1290 image tokens at 30 USD per million, plus ~1400 input tokens): asking for both bottles at once made the model redraw the whole
+  scene (the hair band became a ring, the cup moved); ONE OBJECT PER REQUEST kept everything else, so each is described separately and pasted separately; Gemini 3.1 flash
+  image (0.068 USD) was less faithful (it also removed the cup and invented the chair base). Compared with Google Photos' eraser on the same photo, this kept the arm and the
+  hair band as in the original where Google redrew the elbow and dropped the band (mean difference to the original over the area 9.5 vs 21.6 levels, a number that includes the
+  bottles). Money and privacy rules built in: the confirmation dialog (`_start_external`) states what is sent (crops, sizes, model, the words), the estimate from OpenRouter's PUBLIC
+  price list (`gen_prices`, cached, fallback constants), the credit, a face warning (`find_faces` on every crop) and asks yes / no BEFORE anything is sent; the real cost of each
+  request is read from `usage.cost` and subtracted from `OR_STATE['credit']` (the server's `/credits` count lags by a few requests, so the program keeps its own);
+  `generative_remove(max_cost=)` stops before a request that would pass the limit; no key = nothing sent. The key is read from OPENROUTER_API_KEY or, on Windows, the user
+  profile (`winreg`, so one set after the program started is found) and is never shown, stored or logged; errors are built without it. Tests use a fake `_urlopen`
+  (`GenerativeTests`, 9 tests, including a fake model that returns the picture rescaled and shifted); `examples/remove_generative_session.py` is free by default (fake service)
+  and `--real PHOTO` spends about 0.08 USD (2 requests) and refuses a crop with a face. THE REAL-SERVICE RUN OF THIS TOOL THROUGH THE WINDOW WAS NOT DONE: the harness blocked
+  the paid command; the request format, the alignment and the paste were verified earlier with standalone scripts on the live service (4 requests, 0.185 USD), and the editor
+  path only with the fake. Not done: sending a mask or a drawn outline (untested whether Gemini follows it), a free-text extra instruction, other providers, a per-run spending
+  limit setting in the UI (the code supports `max_cost`).
 - **AI folder memory**: settings key `ai_dir` (`set_ai_dir`, `choose_ai_dir`, saved at once with `save_settings`, not only on close); `find_ai_program` and `find_ai_model`
   look in `ai_dir`, `IMAGEFORGE_AI_DIR` and one level down (`_ai_spots`): the user keeps Real-ESRGAN, waifu2x and `lama-onnx` together in one folder.
 

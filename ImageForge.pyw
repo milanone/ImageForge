@@ -9,6 +9,7 @@ The built-in ones are below; more can be dropped as .py files into the `plugins`
 
 The core (registry, tools, history, load/save) does not need a display, so the tests can import it.
 """
+import base64
 import dataclasses
 import functools
 import importlib.util
@@ -24,6 +25,8 @@ import tempfile
 import threading
 import time
 import traceback
+import urllib.error
+import urllib.request
 import zipfile
 
 import numpy as np
@@ -61,7 +64,7 @@ TOOL_LAYOUT = {
     'Size and orientation': ['Resize', 'Enlarge (AI)', 'Canvas size', 'Crop to aspect ratio', 'Auto-crop borders', 'Rotate 90 / 180', 'Rotate (any angle)', 'Flip', 'Auto straighten', 'Perspective correction', 'Lens distortion'],
     'Adjustments': ['Brightness / contrast', 'Levels', 'Curves', 'Auto contrast', 'Local contrast (CLAHE)', 'Even out illumination', 'Hue / saturation', 'Colour balance', 'White balance', 'Portrait retouch', 'Grayscale', 'Invert', 'Threshold (black & white)'],
     'Filters': ['Sharpen (unsharp mask)', 'Blur (Gaussian)', 'Reduce noise', 'Morphology', 'Find edges'],
-    'Clean-up': ['Erase / keep colours', 'Remove marks', 'Remove object (AI)', 'Despeckle', 'Flatten ink to one colour', 'Join dashed lines'],
+    'Clean-up': ['Erase / keep colours', 'Remove marks', 'Remove object (AI)', 'Remove object (generative)', 'Despeckle', 'Flatten ink to one colour', 'Join dashed lines'],
 }          # the order of the groups and of the tools in the lists; a group of a plug-in comes after them, in registration order
 TOOL_NOTES = {}                     # name -> a sentence a tool leaves about what it just did (shown after Apply)
 
@@ -1236,6 +1239,269 @@ def lama_remove(img, region, grow=12, grain=True, model=None):
         "programs folder) and the Python package onnxruntime.")
 def remove_object(img, grow, grain, region=None):
     return lama_remove(img, region, grow, grain)
+
+
+# ---- removing an object with a generative model through OpenRouter (Gemini image models; paid, per use) ------------------------------------------
+OPENROUTER_API = "https://openrouter.ai/api/v1"
+_urlopen = urllib.request.urlopen              # the tests put a fake here
+GEN_MODELS = ("google/gemini-2.5-flash-image", "google/gemini-3.1-flash-image")
+GEN_IMAGE_TOKENS = {"google/gemini-2.5-flash-image": 1290, "google/gemini-3.1-flash-image": 1120}   # output tokens of one ~1 megapixel picture, as measured
+GEN_INPUT_TOKENS = 1400                       # what the request itself costs in input tokens (text + the picture), as measured
+GEN_FALLBACK_PRICES = {"google/gemini-2.5-flash-image": (3e-7, 3e-5), "google/gemini-3.1-flash-image": (5e-7, 6e-5)}     # (input, image output) USD per token
+GEN_MAX_SIDE = 1024                           # the crop sent is shrunk to this: the model hands back about one megapixel anyway
+OR_STATE = {'credit': None, 'prices': {}}     # the credit as far as we know (USD), and the prices read from OpenRouter's public list
+
+
+def openrouter_key():
+    """The OpenRouter key: the environment variable OPENROUTER_API_KEY, else (Windows) the one in the user's profile, so a key set after the program
+    started is found too. None when there is none. The key is never shown, logged or stored by this program."""
+    k = os.environ.get("OPENROUTER_API_KEY")
+    if not k and sys.platform == 'win32':
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as h:
+                k = winreg.QueryValueEx(h, "OPENROUTER_API_KEY")[0]
+        except OSError:
+            k = None
+    return k.strip() if k and k.strip() else None
+
+
+def or_call(path, key=None, body=None, timeout=60):
+    """A call to the OpenRouter API (GET, or POST when `body` is given); the decoded JSON. RuntimeError with a plain message, never containing the key."""
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = "Bearer " + key
+    req = urllib.request.Request(OPENROUTER_API + path, data=json.dumps(body).encode() if body is not None else None, headers=headers)
+    try:
+        with _urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.load(e).get("error", {}).get("message", "")
+        except Exception:
+            msg = ""
+        raise RuntimeError("OpenRouter answered %s%s" % (e.code, ": " + msg if msg else ""))
+    except (urllib.error.URLError, OSError) as e:
+        raise RuntimeError("Could not reach OpenRouter (%s)" % getattr(e, 'reason', e))
+
+
+def or_credit(key):
+    """The credit left on the account in USD (bought minus used). The server's count can lag behind by a few calls."""
+    d = or_call("/credits", key, timeout=20)["data"]
+    return float(d["total_credits"]) - float(d["total_usage"])
+
+
+def gen_prices(model):
+    """(USD per input token, USD per image-output token) of `model`, read from OpenRouter's public model list (no key needed) and remembered; the
+    built-in figures when the list cannot be read."""
+    if model not in OR_STATE['prices']:
+        try:
+            for m in or_call("/models", timeout=20)["data"]:
+                pr = m.get("pricing", {})
+                if m.get("id") in GEN_MODELS and pr.get("image_output") is not None:
+                    OR_STATE['prices'][m["id"]] = (float(pr.get("prompt") or 0), float(pr["image_output"]))
+        except Exception:
+            pass
+    return OR_STATE['prices'].get(model) or GEN_FALLBACK_PRICES.get(model, (5e-7, 6e-5))
+
+
+def gen_estimate(model, calls=1):
+    """The cost in USD of `calls` requests with `model`: the image tokens of a ~1 MP answer plus the input, at the current prices."""
+    pin, pout = gen_prices(model)
+    return calls * (GEN_IMAGE_TOKENS.get(model, 1290) * pout + GEN_INPUT_TOKENS * pin)
+
+
+def gen_prompt(what):
+    """The instruction sent with the crop. One object per request, described in words (the model gets no mask): the crop is centred on it."""
+    return ("Edit this photo: remove %s (it is at the centre of the picture). Rebuild what would be behind it in a realistic way, continuing the "
+            "surrounding surfaces, textures, light and shadows. Do not change anything else: keep the framing, the size, the colours, the light "
+            "and every other detail exactly as they are." % what.strip().rstrip("."))
+
+
+def gen_edit(crop, what, model, key):
+    """One paid request: `crop` ((h, w, 3) RGB) goes to `model` with the instruction to remove `what`. Returns (the picture that comes back as RGB
+    uint8, the cost in USD as reported by OpenRouter or None). RuntimeError when no picture comes back."""
+    buf = io.BytesIO()
+    Image.fromarray(np.ascontiguousarray(crop)).save(buf, 'JPEG', quality=92)
+    body = {"model": model, "modalities": ["image", "text"], "usage": {"include": True},
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": gen_prompt(what)},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()}}]}]}
+    r = or_call("/chat/completions", key, body, timeout=240)
+    if r.get("error"):
+        raise RuntimeError("OpenRouter: %s" % (r["error"].get("message") if isinstance(r["error"], dict) else r["error"]))
+    msg = (r.get("choices") or [{}])[0].get("message", {})
+    imgs = msg.get("images") or []
+    if not imgs:
+        raise RuntimeError("The model returned no picture%s" % (": " + str(msg.get("content"))[:160] if msg.get("content") else ""))
+    out = np.asarray(Image.open(io.BytesIO(base64.b64decode(imgs[0]["image_url"]["url"].split(",", 1)[1]))).convert("RGB"))
+    cost = (r.get("usage") or {}).get("cost")
+    return out, (float(cost) if cost is not None else None)
+
+
+def align_to(sent, gen):
+    """The 2 x 3 affine matrix that maps pixel coordinates of `gen` onto those of `sent` (RGB arrays; ORB features + RANSAC), and the number of
+    matches that agree with it; (None, 0) when there are too few. The model gives the picture back a little rescaled (here: x 0.90, a few pixels
+    off), so it has to be put back in register before anything is pasted."""
+    gray = lambda im: cv2.cvtColor(np.ascontiguousarray(im), cv2.COLOR_RGB2GRAY)
+    orb = cv2.ORB_create(6000)
+    ka, da = orb.detectAndCompute(gray(sent), None)
+    kb, db = orb.detectAndCompute(gray(gen), None)
+    if da is None or db is None:
+        return None, 0
+    ms = sorted(cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True).match(db, da), key=lambda m: m.distance)[:600]
+    if len(ms) < 10:
+        return None, 0
+    M, inl = cv2.estimateAffine2D(np.float32([kb[m.queryIdx].pt for m in ms]), np.float32([ka[m.trainIdx].pt for m in ms]), ransacReprojThreshold=3.0)
+    return (M, int(inl.sum())) if M is not None else (None, 0)
+
+
+def gen_paste(crop, sent, gen, hole, grow_px, min_inliers=40):
+    """`crop` with the generated picture `gen` (the answer to `sent`, a shrunk copy of `crop`) put in only where the bool mask `hole`, widened by
+    `grow_px`, is: aligned to the crop, its colours matched to the crop in a ring round the hole, edge feathered. Everything outside stays as it
+    was. RuntimeError when the answer cannot be aligned (the model changed the picture too much): nothing is pasted then."""
+    M, n = align_to(sent, gen)
+    if n < min_inliers:
+        raise RuntimeError("The result could not be matched to the original (the model changed the picture too much): try again, or describe "
+                           "the object differently.")
+    ch, cw = crop.shape[:2]
+    up = np.diag([cw / sent.shape[1], ch / sent.shape[0], 1.0]) @ np.vstack([M, [0, 0, 1]])
+    warp = cv2.warpAffine(np.ascontiguousarray(gen), up[:2], (cw, ch), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT).astype(np.float32)
+    mask = cv2.dilate(hole.astype(np.uint8) * 255, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * int(grow_px) + 1,) * 2))
+    k = max(21, int(0.04 * max(ch, cw)) | 1)
+    ring = (cv2.dilate(mask, np.ones((k, k), np.uint8)) > 0) & (mask == 0)
+    o = crop.astype(np.float32)
+    if ring.sum() > 50:
+        for c in range(3):
+            mo, so_ = o[..., c][ring].mean(), o[..., c][ring].std() + 1e-3
+            mw, sw = warp[..., c][ring].mean(), warp[..., c][ring].std() + 1e-3
+            warp[..., c] = (warp[..., c] - mw) * (so_ / sw) + mo
+    soft = cv2.GaussianBlur(mask.astype(np.float32) / 255.0, (0, 0), max(3.0, 0.008 * max(ch, cw)))[..., None]
+    return np.clip(o * (1 - soft) + warp * soft, 0, 255).astype(np.uint8)
+
+
+def gen_pieces(img, region, grow=8):
+    """The pieces a selection will be removed in, one request each: a list of dicts with the square crop (x0, y0, side), the mask of the piece in the
+    crop (`hole`), the widening in pixels (`grow_px`) and the size of the picture that will be sent. A crop is 1.5 x the piece (plus the widening) so
+    the model sees some surroundings but as little else as possible. ValueError when nothing is selected."""
+    mask = region_bool(region, img.shape)
+    if mask is None or not mask.any():
+        raise ValueError("Select the object first (Lasso, Magic wand or Rectangle), then press Apply.")
+    h, w = img.shape[:2]
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    out = []
+    for i in sorted(range(1, n), key=lambda i: -stats[i, cv2.CC_STAT_AREA]):
+        x, y, bw, bh, area = (int(v) for v in stats[i])
+        if area < 16:
+            continue
+        g = max(2, int(round(grow / 100.0 * max(bw, bh))))
+        side = int(min(max(max(bw, bh) * 1.5 + 2 * g, 384), h, w))
+        cx, cy = x + bw // 2, y + bh // 2
+        x0, y0 = int(np.clip(cx - side // 2, 0, w - side)), int(np.clip(cy - side // 2, 0, h - side))
+        sent = side if side <= GEN_MAX_SIDE else GEN_MAX_SIDE
+        out.append(dict(x0=x0, y0=y0, side=side, hole=(lab[y0:y0 + side, x0:x0 + side] == i), grow_px=g, sent=sent))
+    return out
+
+
+def generative_remove(img, region, what, model=GEN_MODELS[0], grow=8, key=None, max_cost=None):
+    """`img` with the object(s) of the selection removed by a generative model: for each separate piece a crop around it is sent to `model` through
+    OpenRouter with the instruction to remove `what` (describe the object; several pieces get the same description), and the answer is aligned and
+    pasted back only over the piece, so the rest of the picture is exactly the original. Costs money on every call. ValueError (nothing selected, no
+    description), ToolUnavailable (no key), RuntimeError (the service or the alignment failed), Cancelled (AI_CANCEL set). With `max_cost` the
+    work stops before a request that would take the total spent above it."""
+    if not str(what).strip():
+        raise ValueError("Describe what to remove (for example: the green water bottle).")
+    pieces = gen_pieces(img, region, grow)
+    key = key or openrouter_key()
+    if not key:
+        raise ToolUnavailable("No OpenRouter key: set the environment variable OPENROUTER_API_KEY (Help > Guide: removing objects explains how).")
+    out, spent, calls, est = img, 0.0, 0, gen_estimate(model)
+    for pc in pieces:
+        if AI_CANCEL.is_set():
+            raise Cancelled("stopped")
+        if max_cost is not None and spent + est > max_cost:
+            break
+        x0, y0, S = pc['x0'], pc['y0'], pc['side']
+        crop = out[y0:y0 + S, x0:x0 + S]
+        sent = crop if S <= GEN_MAX_SIDE else cv2.resize(crop, (GEN_MAX_SIDE, GEN_MAX_SIDE), interpolation=cv2.INTER_AREA)
+        gen, cost = gen_edit(sent, what, model, key)
+        calls += 1
+        c = cost if cost is not None else est
+        spent += c
+        if OR_STATE['credit'] is not None:
+            OR_STATE['credit'] = max(0.0, OR_STATE['credit'] - c)
+        out = out.copy() if out is img else out
+        out[y0:y0 + S, x0:x0 + S] = gen_paste(crop, sent, gen, pc['hole'], pc['grow_px'])
+    TOOL_NOTES["Remove object (generative)"] = "%d request%s, %.4f USD" % (calls, "" if calls == 1 else "s", spent)
+    return out
+
+
+@tool("Remove object (generative)", "Clean-up", [
+    Param('what', "What to remove (describe it in words)", 'text', ""),
+    Param('model', "Model", 'choice', GEN_MODELS[0], choices=GEN_MODELS),
+    Param('grow', "Widen the selection by (% of the object's size)", 'int', 8, 0, 40, slider=True)],
+    preview=False, external=True, takes_region=True,
+    doc="COSTS MONEY (about 0.04 USD per object, from your OpenRouter credit). Select the object (Lasso, Magic wand or Rectangle), describe it in "
+        "words, press Apply: a generative AI model redraws what was behind it. You see what will be sent and the cost, and nothing leaves the computer "
+        "until you say yes; only a crop around the object is sent. One object per run. Press Guide... below for the steps, tips, money and privacy.")
+def remove_object_generative(img, what, model, grow, region=None):
+    return generative_remove(img, region, what, model, grow)
+
+
+OBJECT_GUIDE = """REMOVING OBJECTS AND MARKS: WHICH TOOL, AND HOW
+
+Four tools take things out of a picture. Pick the simplest one that works.
+
+1. Clean brush (Retouch, in the toolbox) - free, instant.
+   For a scratch, a speck, a stray mark or a thin line over a plain or smooth area. Paint over it; it is rebuilt from the edge of the hole.
+
+2. Remove marks (Clean-up) - free, instant.
+   For many small marks of one colour over a drawing (stars, stamps, dots on a figure). Pick the colour, press Apply.
+
+3. Remove object (AI) (Clean-up) - free, on this computer, a few seconds per object.
+   Good for plain backgrounds: a wall, a table, a floor, the sky, a cable. It continues what is around the hole. It cannot invent things (an arm
+   or a hand behind the object comes out smooth) and the fill is a little softer than the photograph. Needs the LaMa model and onnxruntime
+   (see the README). The first use of a session loads the model: about a minute.
+
+4. Remove object (generative) (Clean-up) - COSTS MONEY, about 0.04 USD per object, a few seconds.
+   For what the other tools cannot do: an object in front of something with structure (a bottle in front of an arm, a person in a crowd, a sign on a
+   building). A generative model redraws what was behind it. On a test photo it kept the surroundings as they were and rebuilt a partly hidden
+   hair band and an arm faithfully; but what it adds is always a plausible guess, so look at the result.
+
+HOW TO USE "REMOVE OBJECT (GENERATIVE)"
+
+1. Select the object: Lasso, Magic wand or Rectangle (the toolbox, top left). It does not need to be precise: it tells the program where the object is.
+2. Describe it in the box "What to remove", in words, as you would to a person: 'the transparent green water bottle', 'the man in the red jacket'.
+3. Press Apply. A window tells you what will be sent, the estimated cost and your OpenRouter credit. Nothing is sent until you press Yes.
+4. Wait a few seconds. The window stays usable; Esc stops it. The result is one step of the history: Undo takes it back.
+5. Look at the result. If it is wrong, Undo, change the description or the widening, and try again: each try costs again.
+
+TIPS
+- One object per run. The model gets your words, not the selection: with two different objects, run the tool twice. (Several pieces of the same
+  kind, for instance three bottles, can be removed in one run; each piece is a separate request.)
+- Be specific about which one: colour, size, where it is. 'the dark blue flask on the left, with the wooden lid' works better than 'the flask'.
+- Widen the selection a little (the default 8 % is fine) so the glass, the shadow and the reflection of the object are included.
+- A selection that is small compared with the picture works best: the crop sent is only 1.5 times the size of the object.
+- Do not select faces or people unless you mean to send them: the crop goes to an outside service. The program tells you if it finds a face in the
+  crop. A face in the crop is also something the model may redraw.
+- The model gives the picture back a little rescaled; the program aligns it again and pastes only the area of the object. If it cannot be aligned
+  you are told and nothing is pasted (the request has been paid, though).
+
+MONEY AND PRIVACY
+- Each request is charged by OpenRouter to your credit. The estimate comes from OpenRouter's published prices (about 0.039 USD for the default
+  model, about 0.068 USD for the other); the real cost of each request is read from the answer and shown after it. The credit shown in the panel is
+  what the program knows: the account's own count can lag behind by a few requests, so press 'Refresh credit' after a moment.
+- The key is read from the environment variable OPENROUTER_API_KEY and is never shown, saved or logged by ImageForge. To set it in Windows
+  (PowerShell, once; then restart ImageForge):
+      [Environment]::SetEnvironmentVariable('OPENROUTER_API_KEY','your-key','User')
+- What is sent: a JPEG crop of the area (at most 1024 px on the long side) and your description. OpenRouter passes it to the model provider.
+  Pictures that must not leave the computer should be done with the free tools.
+
+LIMITS
+- What the model draws is invented: plausible, not true. Do not use it on pictures that must stay faithful (measurements, evidence).
+- The new area has about the resolution of a 1 megapixel picture: on a large photo it can be a little softer than the rest.
+- It works best with objects that are small compared with the picture. Removing a large part of the picture is not a job for this tool.
+"""
 
 
 @tool("Canvas size", "Size and orientation", [
@@ -3563,6 +3829,7 @@ class ImageForge:
         mb.add_cascade(label="Layer", menu=self.m_layer)
         mb.add_cascade(label="Help", menu=self.m_help)
         self.m_help.add_command(label="Keyboard shortcuts and mouse...", accelerator="F1", command=self.show_shortcuts)
+        self.m_help.add_command(label="Guide: removing objects...", command=self.show_object_guide)
         ms = self.m_measure
         ms.add_command(label="Measure tool", command=lambda: self.tree.selection_set("Measure"))
         ms.add_command(label="Measurements...", command=self.show_measurements)
@@ -4177,7 +4444,74 @@ class ImageForge:
                               command=lambda k=p.key: self.start_pick('point', k), bg='#cdeefc').pack(fill=tk.X, pady=(2, 0))
             var.trace_add('write', lambda *a: self._params_changed())
             self.pvars[p.key] = var
+        if self.tool.name == "Remove object (generative)":
+            self._build_or_panel()
         self._params_ready = True
+
+    def _build_or_panel(self):
+        """Under the parameters of Remove object (generative): the OpenRouter credit as far as the program knows, a button to read it from the account, and
+        the guide. The credit is read once per program run, when the tool is first selected and a key exists."""
+        bg = '#f0f4f7'
+        f = tk.Frame(self.params_frame, bg=bg)
+        f.pack(fill=tk.X, pady=(6, 0))
+        self.l_or = tk.Label(f, text="", bg=bg, anchor='w', font=('Arial', 9, 'bold'))
+        self.l_or.pack(fill=tk.X)
+        r = tk.Frame(f, bg=bg)
+        r.pack(fill=tk.X)
+        tk.Button(r, text="Refresh credit", command=lambda: self.refresh_or_credit(True)).pack(side=tk.LEFT)
+        tk.Button(r, text="Guide...", command=self.show_object_guide, bg='#cdeefc').pack(side=tk.LEFT, padx=4)
+        if OR_STATE['credit'] is None and openrouter_key() and not OR_STATE.get('asked'):
+            OR_STATE['asked'] = True
+            self.refresh_or_credit(False)
+        self._update_or_label()
+
+    def _update_or_label(self):
+        lab = getattr(self, 'l_or', None)
+        if lab is None or not lab.winfo_exists():
+            return
+        if not openrouter_key():
+            lab.config(text="No OpenRouter key set (see the Guide).", fg='#b03a2e')
+        elif OR_STATE['credit'] is None:
+            lab.config(text="OpenRouter credit: unknown (Refresh).", fg='#444444')
+        else:
+            lab.config(text="OpenRouter credit: %.2f USD" % OR_STATE['credit'], fg='#1e6b2e')
+
+    def refresh_or_credit(self, say):
+        key = openrouter_key()
+        if not key:
+            if say:
+                self._status("No OpenRouter key: set OPENROUTER_API_KEY (Help > Guide: removing objects).")
+            self._update_or_label()
+            return
+        try:
+            OR_STATE['credit'] = or_credit(key)
+            if say:
+                self._status("OpenRouter credit: %.4f USD (the account's count can lag behind by a few requests)." % OR_STATE['credit'], ok=True)
+        except Exception as ex:
+            if say:
+                self._status("Could not read the credit: %s" % ex)
+        self._update_or_label()
+
+    def show_object_guide(self):
+        """Help > Guide: removing objects: which of the four tools to use, how to use the generative one, tips, money and privacy, limits."""
+        win = getattr(self, '_guide_win', None)
+        if win is not None and win.winfo_exists():
+            win.lift()
+            return
+        w = tk.Toplevel(self.root)
+        w.title("Guide: removing objects - " + APP_NAME)
+        w.geometry("860x700")
+        self._guide_win = w
+        txt = tk.Text(w, wrap='word', font=('Arial', 10), padx=12, pady=10, bg='#fbfbf8', relief=tk.FLAT)
+        sb = ttk.Scrollbar(w, orient='vertical', command=txt.yview)
+        txt.configure(yscrollcommand=sb.set)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        txt.pack(fill=tk.BOTH, expand=True)
+        txt.tag_configure('h', font=('Arial', 11, 'bold'), spacing1=10, spacing3=3)
+        for line in OBJECT_GUIDE.strip("\n").split("\n"):
+            head = line.isupper() and len(line) > 6
+            txt.insert(tk.END, line + "\n", 'h' if head else ())
+        txt.config(state='disabled')
 
     def _read_params(self):
         """Current parameter values, or None while a number box holds something unreadable (mid-typing)."""
@@ -4392,6 +4726,43 @@ class ImageForge:
                     return
                 if not self.choose_ai_dir() or find_ai_model("lama") is None:
                     return
+        if t.name == "Remove object (generative)":
+            if not str(params.get('what', "")).strip():
+                self._status("Describe what to remove in the box 'What to remove' (for example: the green water bottle), then press Apply.")
+                return
+            key = openrouter_key()
+            if not key:
+                messagebox.showwarning(APP_NAME, "No OpenRouter key was found. Set the environment variable OPENROUTER_API_KEY (once, in PowerShell):\n\n"
+                                       "    [Environment]::SetEnvironmentVariable('OPENROUTER_API_KEY','your-key','User')\n\nand restart ImageForge. "
+                                       "Help > Guide: removing objects explains it.")
+                return
+            try:
+                pieces = gen_pieces(cur, region, int(params.get('grow', 8)))
+            except ValueError as ex:
+                self._status(str(ex))
+                return
+            if not pieces:
+                self._status("The selection is too small to remove.")
+                return
+            model = params.get('model', GEN_MODELS[0])
+            est = gen_estimate(model, len(pieces))
+            if OR_STATE['credit'] is None:
+                self.refresh_or_credit(False)
+            faces = sum(len(find_faces(cur[pc['y0']:pc['y0'] + pc['side'], pc['x0']:pc['x0'] + pc['side']])) for pc in pieces)
+            lines = ["This will send %d crop%s of your picture (%s) to OpenRouter, which passes %s to %s, with the words: \"%s\"." % (
+                len(pieces), "" if len(pieces) == 1 else "s", ", ".join("%d x %d px" % (pc['sent'], pc['sent']) for pc in pieces),
+                "it" if len(pieces) == 1 else "them", model, str(params['what']).strip()),
+                "Only the crop leaves this computer, not the whole picture.", "",
+                "Estimated cost: about %.3f USD (%d request%s)." % (est, len(pieces), "" if len(pieces) == 1 else "s"),
+                ("Credit: about %.2f USD." % OR_STATE['credit']) if OR_STATE['credit'] is not None else "Credit: unknown."]
+            if faces:
+                lines += ["", "WARNING: %d face%s found in the part to be sent." % (faces, "" if faces == 1 else "s")]
+            if len(pieces) > 1:
+                lines += ["", "Each separate piece is one request, all with the same description."]
+            lines += ["", "Send it and pay?"]
+            if not messagebox.askyesno(APP_NAME, "\n".join(lines)):
+                self._status("Nothing was sent.")
+                return
         if t.name == "Enlarge (AI)":
             kind = AI_METHODS.get(params.get('method'), ('realesrgan',))[0]
             if find_ai_program(kind) is None:
@@ -4450,6 +4821,7 @@ class ImageForge:
             self._commit(name, out, () if flatten else None, self._recipe_step_for(params))
             note = TOOL_NOTES.pop(name, "")
             self._status("%s applied%s in %d s." % (name, " (%s)" % note if note else "", time.time() - t0), ok=True)
+            self._update_or_label()
 
     def _commit(self, label, img, layers=None, step=None):
         """Put a new state on the history (`layers` None keeps the current ones). Size changes drop the selection and
