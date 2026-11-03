@@ -1692,9 +1692,29 @@ class AITests(unittest.TestCase):
         self.assertTrue(il.find_ai_program('realesrgan', self.tmp.name).endswith("realesrgan-ncnn-vulkan.exe"))
         self.assertTrue(il.find_ai_program('waifu2x', self.tmp.name).endswith("waifu2x-ncnn-vulkan.exe"))
         self.assertTrue(il.find_ai_program('waifu2x', self.w2).endswith("waifu2x-ncnn-vulkan.exe"))
-        self.assertIsNone(il.find_ai_program('waifu2x', self.dir))
+        self.assertTrue(il.find_ai_program('waifu2x', self.dir).endswith("waifu2x-ncnn-vulkan.exe"))        # a program's own folder finds the ones next to it
         il.set_ai_dir(self.tmp.name)
         self.assertIsNotNone(il.find_ai_program('realesrgan'))
+
+    def test_choosing_the_folder_of_one_program_does_not_forget_the_others(self):
+        lama = os.path.join(self.tmp.name, "lama-onnx")
+        os.makedirs(lama)
+        open(os.path.join(lama, "lama_fp32.onnx"), "w").close()
+        il.set_ai_dir([lama])                                                    # the only folder remembered, as in the user's settings
+        self.assertTrue(il.find_ai_program('realesrgan').endswith("realesrgan-ncnn-vulkan.exe"))     # found through the parent
+        self.assertTrue(il.find_ai_program('waifu2x').endswith("waifu2x-ncnn-vulkan.exe"))
+        self.assertTrue(il.find_ai_model('lama').endswith("lama_fp32.onnx"))
+        il.set_ai_dir(None)
+        self.assertIsNone(il.find_ai_model('lama'))
+
+    def test_the_list_of_folders(self):
+        d = il.add_ai_dir([], "I:/Il mio Drive/script/lama-onnx")
+        d = il.add_ai_dir(d, "I:\\Il mio Drive\\script")
+        self.assertEqual(d, ["I:\\Il mio Drive\\script", "I:/Il mio Drive/script/lama-onnx"])            # the new one first, the old one kept
+        self.assertEqual(il.saved_ai_dirs({'ai_dirs': ['a', 'b']}), ['a', 'b'])
+        self.assertEqual(il.saved_ai_dirs({'ai_dir': 'old'}), ['old'])                          # the single folder older versions saved
+        self.assertEqual(il.saved_ai_dirs({}), [])
+        self.assertEqual(il.saved_ai_dirs({'ai_dirs': [3], 'ai_dir': 'x'}), ['x'])                    # an unusable list falls back to the single folder
 
     def test_commands(self):
         exe = os.path.join(self.w2, "waifu2x-ncnn-vulkan.exe")
@@ -1718,8 +1738,10 @@ class AITests(unittest.TestCase):
 
     def test_missing_program_and_failure_and_cancel(self):
         img = np.zeros((8, 8, 3), np.uint8)
-        with self.assertRaises(il.ToolUnavailable):
-            il.ai_upscale(img, "waifu2x photo (2x, gentler)", 2, 1, folder=self.dir)             # that folder has only Real-ESRGAN
+        with tempfile.TemporaryDirectory() as lone, tempfile.TemporaryDirectory() as lone2:          # a folder with no AI program, nor any next to it
+            os.makedirs(os.path.join(lone, "a-folder"))
+            with self.assertRaises(il.ToolUnavailable):
+                il.ai_upscale(img, "waifu2x photo (2x, gentler)", 2, 1, folder=os.path.join(lone, "a-folder"))
         AITests.FakeProc.mode = 'fail'
         with self.assertRaises(RuntimeError) as cm:
             il.ai_upscale(img, "waifu2x photo (2x, gentler)", 2, 1, folder=self.tmp.name)

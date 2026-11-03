@@ -1003,7 +1003,7 @@ def canvas_size(img, left, top, right, bottom, fill='white', color=None):
 
 
 # ---- AI upscaling with programs that are already on the computer (Real-ESRGAN, waifu2x) ------------------------------------------
-AI_DIR = None                       # a folder that holds the programs (or their folders); set from the settings, IMAGEFORGE_AI_DIR also works
+AI_DIR = None                       # the folders that hold the programs and models (a list; a single path also works); from the settings, IMAGEFORGE_AI_DIR also works
 AI_CANCEL = threading.Event()       # set to stop a running upscaling
 _popen = subprocess.Popen           # the tests put a fake in here
 AI_METHODS = {                      # label -> (program, model folder, the scale the model makes by itself)
@@ -1023,22 +1023,43 @@ class Cancelled(RuntimeError):
 
 
 def set_ai_dir(path):
+    """Set the folders where the AI programs and models are looked for: one path, a list of paths, or None."""
     global AI_DIR
     AI_DIR = path or None
 
 
+def add_ai_dir(dirs, new):
+    """`dirs` (a list of folders) with `new` put first and without duplicates (Windows paths compared without regard to case or slash direction): the folders
+    the user chose one after the other all stay known, so choosing the folder of one program does not make the others forgotten."""
+    key = lambda d: os.path.normcase(os.path.normpath(d))
+    return [new] + [d for d in (dirs or []) if key(d) != key(new)]
+
+
+def saved_ai_dirs(settings):
+    """The folders in the settings: the list `ai_dirs`, or the single `ai_dir` that older versions kept."""
+    dirs = [d for d in (settings.get('ai_dirs') if isinstance(settings.get('ai_dirs'), list) else []) if isinstance(d, str) and d]
+    if dirs:
+        return dirs
+    one = settings.get('ai_dir')
+    return [one] if isinstance(one, str) and one else []
+
+
 def _ai_spots(prefix, folder=None):
-    """The folders where something called `prefix...` may be: `folder`, IMAGEFORGE_AI_DIR and AI_DIR themselves, and the folders inside them whose name
-    starts with `prefix` (one level down)."""
+    """The folders where something called `prefix...` may be: `folder`, IMAGEFORGE_AI_DIR and the folders of AI_DIR themselves, the folders inside them
+    whose name starts with `prefix` (one level down), and the same in the PARENT of each one (its sibling folders): choosing the folder of one program
+    (lama-onnx) still finds the others that sit next to it (realesrgan-..., waifu2x-...)."""
     spots = []
-    for d in (folder, os.environ.get("IMAGEFORGE_AI_DIR"), AI_DIR):
+    dirs = [folder, os.environ.get("IMAGEFORGE_AI_DIR")] + (AI_DIR if isinstance(AI_DIR, (list, tuple)) else [AI_DIR])
+    for d in dirs:
         if not d or not os.path.isdir(d):
             continue
         spots.append(d)
-        try:
-            spots += [os.path.join(d, n) for n in sorted(os.listdir(d)) if n.lower().startswith(prefix) and os.path.isdir(os.path.join(d, n))]
-        except OSError:
-            pass
+        for base in dict.fromkeys((d, os.path.dirname(os.path.normpath(d)))):             # the folder itself, then its parent
+            try:
+                spots += [os.path.join(base, n) for n in sorted(os.listdir(base))
+                          if n.lower().startswith(prefix) and os.path.isdir(os.path.join(base, n))]
+            except OSError:
+                pass
     return spots
 
 
@@ -3741,8 +3762,8 @@ class ImageForge:
         self._grab = None                # (handle, press point in image pixels, selection at press) while dragging it
         self._hist_win, self._hist_pending, self._hist_key = None, False, None      # the Histogram window
         self.settings = load_settings()  # recent files, last folders, window: written back when the program is closed
-        if self.settings.get('ai_dir'):
-            set_ai_dir(self.settings['ai_dir'])
+        if saved_ai_dirs(self.settings):
+            set_ai_dir(saved_ai_dirs(self.settings))
         self.fg = self._saved_rgb('fg', (0, 0, 0))                   # foreground / background colours of the drawing tools
         self.bg = self._saved_rgb('bg', (255, 255, 255))
         self._cover, self._paint_prev, self._grad = None, None, None
@@ -4203,7 +4224,7 @@ class ImageForge:
         """Tools > AI programs folder...: where Real-ESRGAN / waifu2x / the LaMa model are (the folder that holds them, or one of them). Remembered in the settings.
         Returns True when at least one of the programs is found there."""
         d = filedialog.askdirectory(parent=self.root, title="Folder with realesrgan-ncnn-vulkan and / or waifu2x-ncnn-vulkan",
-                                    initialdir=AI_DIR or self.settings.get('last_dir') or os.path.expanduser("~")) if ask else None
+                                    initialdir=(saved_ai_dirs(self.settings) or [None])[0] or self.settings.get('last_dir') or os.path.expanduser("~")) if ask else None
         if not d:
             return False
         found = [AI_PROGRAMS[k] for k in AI_PROGRAMS if find_ai_program(k, d)] + (["the LaMa model"] if find_ai_model("lama", d) else [])
@@ -4211,8 +4232,9 @@ class ImageForge:
             messagebox.showwarning(APP_NAME, "Neither realesrgan-ncnn-vulkan, waifu2x-ncnn-vulkan nor a lama*.onnx model was found in that folder (or "
                                    "in the folders inside it).")
             return False
-        self.settings['ai_dir'] = d
-        set_ai_dir(d)
+        self.settings['ai_dirs'] = add_ai_dir(saved_ai_dirs(self.settings), d)         # the others chosen before stay known
+        self.settings.pop('ai_dir', None)
+        set_ai_dir(self.settings['ai_dirs'])
         save_settings(self.settings)                              # remembered at once, not only when the program is closed
         self._status("AI programs folder set: found %s." % " and ".join(found), ok=True)
         return True
