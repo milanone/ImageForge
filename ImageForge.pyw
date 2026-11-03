@@ -4099,8 +4099,8 @@ class ImageForge:
                         ("<Control-e>", self.export_dialog), ("<Control-v>", self.paste_clipboard),
                         ("<Control-h>", self.show_histogram), ("<F1>", self.show_shortcuts), ("<Control-k>", self.focus_find), ("<Control-Z>", self.redo),
                         ("<Control-X>", self.crop_to_selection), ("<Control-j>", lambda: self.selection_to_layer(False)),
-                        ("<Control-J>", lambda: self.selection_to_layer(True)), ("<Control-0>", self.fit_view),
-                        ("<Control-1>", self.actual_size), ("<Control-plus>", lambda: self._zoom_step(1.25)),
+                        ("<Control-J>", lambda: self.selection_to_layer(True)), ("<Control-Key-0>", self.fit_view),
+                        ("<Control-Key-1>", self.actual_size), ("<Control-plus>", lambda: self._zoom_step(1.25)),
                         ("<Control-equal>", lambda: self._zoom_step(1.25)),
                         ("<Control-minus>", lambda: self._zoom_step(0.8)),
                         ("<Control-Return>", self.apply), ("<Escape>", self.escape)):

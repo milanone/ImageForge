@@ -1923,6 +1923,16 @@ class GenerativeTests(unittest.TestCase):
             self.assertIn(needle, il.OBJECT_GUIDE)
 
 
+class KeyBindingTests(unittest.TestCase):
+    def test_no_modifier_plus_a_bare_digit_binding(self):
+        """In Tk, '<Control-1>' means Control + mouse button 1, NOT Control + the key 1 (that is '<Control-Key-1>'): such a binding fires on every Ctrl+click
+        (it reset the zoom and ran before the tool's own handler) and the key itself does nothing. Digits 1-5 are mouse buttons."""
+        import re
+        src = open(os.path.join(HERE, "..", "ImageForge.pyw"), encoding="utf-8").read()
+        bad = re.findall(r"""["']<(?:(?:Control|Shift|Alt|Command|Meta)-)+[1-5]>["']""", src)
+        self.assertEqual(bad, [])
+
+
 class RemoveObjectTests(unittest.TestCase):
     """Remove object (local, free): the selection is the input, every separate piece is filled on its own, only the widened hole changes."""
 
