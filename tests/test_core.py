@@ -1634,7 +1634,7 @@ class WorkflowTests(unittest.TestCase):
 
 
 class AITests(unittest.TestCase):
-    """Enlarge (AI): the command lines, finding the programs, a fake program standing in for the real one, failure and cancel."""
+    """Enlarge (local, free): the command lines, finding the programs, a fake program standing in for the real one, failure and cancel."""
 
     class FakeProc:
         """Stands in for subprocess.Popen: 'enlarges' the input by pixel repetition and writes the output where -o says."""
@@ -1708,13 +1708,13 @@ class AITests(unittest.TestCase):
         img = np.random.default_rng(0).integers(0, 255, (12, 20, 3)).astype(np.uint8)
         ref = img.copy()
         il.set_ai_dir(self.tmp.name)
-        out = il.apply_tool("Enlarge (AI)", img, {'method': "waifu2x photo (2x, gentler)", 'scale': '4x'})
+        out = il.apply_tool("Enlarge (local, free)", img, {'method': "waifu2x photo (2x, gentler)", 'scale': '4x'})
         self.assertEqual(out.shape, (48, 80, 3))
         self.assertEqual(out.dtype, np.uint8)
         self.assertTrue(np.array_equal(img, ref))
-        out2 = il.apply_tool("Enlarge (AI)", img, {'method': "Real-ESRGAN photo (4x, most detail)", 'scale': '2x'})       # x4 model, reduced to 2x
+        out2 = il.apply_tool("Enlarge (local, free)", img, {'method': "Real-ESRGAN photo (4x, most detail)", 'scale': '2x'})       # x4 model, reduced to 2x
         self.assertEqual(out2.shape, (24, 40, 3))
-        self.assertIn("20x12 -> 40x24", il.TOOL_NOTES["Enlarge (AI)"])
+        self.assertIn("20x12 -> 40x24", il.TOOL_NOTES["Enlarge (local, free)"])
 
     def test_missing_program_and_failure_and_cancel(self):
         img = np.zeros((8, 8, 3), np.uint8)
@@ -1730,9 +1730,9 @@ class AITests(unittest.TestCase):
             il.ai_enlarge(img, "waifu2x photo (2x, gentler)", 2, 1, folder=self.tmp.name)
 
     def test_tool_is_external_geometry_in_the_layout(self):
-        t = il.TOOLS["Enlarge (AI)"]
+        t = il.TOOLS["Enlarge (local, free)"]
         self.assertTrue(t.external and t.geometry and not t.preview)
-        self.assertIn("Enlarge (AI)", il.TOOL_LAYOUT["Size and orientation"])
+        self.assertIn("Enlarge (local, free)", il.TOOL_LAYOUT["Size and orientation"])
 
 
 class GenerativeTests(unittest.TestCase):

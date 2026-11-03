@@ -1,4 +1,4 @@
-"""Scripted check of Enlarge (AI) in the real window with the REAL programs (Real-ESRGAN / waifu2x must be installed; pass the folder that holds them
+"""Scripted check of Enlarge (local, free) in the real window with the REAL programs (Real-ESRGAN / waifu2x must be installed; pass the folder that holds them
 as the argument, or set IMAGEFORGE_AI_DIR): the window stays alive while the program works, the result is one history step of the right size, Undo
 restores it, and Esc stops a run. Skips itself when the programs are not found.
 
@@ -23,7 +23,7 @@ root = m.TkinterDnD.Tk() if m.HAS_DND else m.tk.Tk()
 a = m.ImageForge(root); root.geometry("1250x940+40+20"); root.attributes('-topmost', True); root.update(); a.dirty = False; a.open_path(f); root.update()
 m.set_ai_dir(folder)                              # after the window: it reads the settings when it starts
 orig = a.hist.current
-a.tree.selection_set("Enlarge (AI)"); root.update()
+a.tree.selection_set("Enlarge (local, free)"); root.update()
 a.pvars['method'].set("waifu2x photo (2x, gentler)"); a.pvars['scale'].set('2x'); root.update()
 ticks = []
 def tick(): ticks.append(time.time()); root.after(100, tick)
@@ -39,7 +39,7 @@ a.undo(); print("Undo restores the size:", a.hist.current.shape == orig.shape)
 # Esc stops a run (Real-ESRGAN x4 on a bigger picture takes long enough)
 if m.find_ai_program('realesrgan', folder):
     Image.fromarray(np.clip(np.linspace(30, 220, 600)[None, :, None] + rng.normal(0, 10, (450, 600, 3)), 0, 255).astype(np.uint8)).save(f); a.open_path(f); root.update()
-    a.tree.selection_set("Enlarge (AI)"); root.update(); a.pvars['method'].set("Real-ESRGAN photo (4x, most detail)"); a.pvars['scale'].set('4x'); root.update()
+    a.tree.selection_set("Enlarge (local, free)"); root.update(); a.pvars['method'].set("Real-ESRGAN photo (4x, most detail)"); a.pvars['scale'].set('4x'); root.update()
     n = len(a.hist.states); a.apply(); root.update()
     t1 = time.time()
     while time.time() - t1 < 4: root.update(); time.sleep(0.05)

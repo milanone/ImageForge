@@ -61,7 +61,7 @@ TOOL_LAYOUT = {
     'Retouch': ['Clone stamp', 'Clean brush', 'Dodge / burn', 'Erase rectangle', 'Move area'],
     'Annotate': ['Add text', 'Shapes', 'Scale bar', 'Measure'],
     'Layers': ['Move layer'],
-    'Size and orientation': ['Resize', 'Enlarge (AI)', 'Canvas size', 'Crop to aspect ratio', 'Auto-crop borders', 'Rotate 90 / 180', 'Rotate (any angle)', 'Flip', 'Auto straighten', 'Perspective correction', 'Lens distortion'],
+    'Size and orientation': ['Resize', 'Enlarge (local, free)', 'Canvas size', 'Crop to aspect ratio', 'Auto-crop borders', 'Rotate 90 / 180', 'Rotate (any angle)', 'Flip', 'Auto straighten', 'Perspective correction', 'Lens distortion'],
     'Adjustments': ['Brightness / contrast', 'Levels', 'Curves', 'Auto contrast', 'Local contrast (CLAHE)', 'Even out illumination', 'Hue / saturation', 'Colour balance', 'White balance', 'Portrait retouch', 'Grayscale', 'Invert', 'Threshold (black & white)'],
     'Filters': ['Sharpen (unsharp mask)', 'Blur (Gaussian)', 'Reduce noise', 'Morphology', 'Find edges'],
     'Clean-up': ['Erase / keep colours', 'Remove marks', 'Remove object (local, free)', 'Remove object (API, paid)', 'Despeckle', 'Flatten ink to one colour', 'Join dashed lines'],
@@ -1116,20 +1116,20 @@ def ai_enlarge(img, method, scale, denoise=1, folder=None):
         return np.asarray(out, dtype=np.uint8).copy()
 
 
-@tool("Enlarge (AI)", "Size and orientation", [
+@tool("Enlarge (local, free)", "Size and orientation", [
     Param('method', "Program and model", 'choice', next(iter(AI_METHODS)), choices=tuple(AI_METHODS)),
     Param('scale', "Enlarge", 'choice', '2x', choices=('2x', '4x')),
     Param('denoise', "Remove noise (waifu2x only, 0-3)", 'int', 1, 0, 3)],
     geometry=True, preview=False, external=True,
-    doc="Makes the picture 2 or 4 times larger with a neural network that invents plausible detail, instead of just stretching the pixels. "
+    doc="FREE and LOCAL: the programs run on this computer and nothing is sent anywhere. Makes the picture 2 or 4 times larger with a neural network that invents plausible detail, instead of just stretching the pixels. "
         "It runs Real-ESRGAN or waifu2x, programs that must already be on this computer (Tools > AI programs folder... tells ImageForge "
         "where), and needs a GPU with Vulkan. It can take many minutes (about 2.5 minutes for 1 megapixel x4 on an integrated Intel GPU): "
         "ImageForge keeps working meanwhile and Esc stops it. Real-ESRGAN gives the most detail but can make skin look waxy; waifu2x is "
         "gentler. The new detail is invented, not recovered: do not use it on pictures that must stay faithful to the original (measurements).")
 def enlarge_ai(img, method, scale, denoise):
-    TOOL_NOTES.pop("Enlarge (AI)", None)
+    TOOL_NOTES.pop("Enlarge (local, free)", None)
     out = ai_enlarge(img, method, int(scale[0]), denoise)
-    TOOL_NOTES["Enlarge (AI)"] = "%dx%d -> %dx%d px" % (img.shape[1], img.shape[0], out.shape[1], out.shape[0])
+    TOOL_NOTES["Enlarge (local, free)"] = "%dx%d -> %dx%d px" % (img.shape[1], img.shape[0], out.shape[1], out.shape[0])
     return out
 
 
@@ -4769,7 +4769,7 @@ class ImageForge:
             if not messagebox.askyesno(APP_NAME, "\n".join(lines)):
                 self._status("Nothing was sent.")
                 return
-        if t.name == "Enlarge (AI)":
+        if t.name == "Enlarge (local, free)":
             kind = AI_METHODS.get(params.get('method'), ('realesrgan',))[0]
             if find_ai_program(kind) is None:
                 if not messagebox.askyesno(APP_NAME, "%s is not set up yet. Choose the folder that holds it now?" % AI_PROGRAMS[kind]):
