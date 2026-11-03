@@ -1189,6 +1189,19 @@ def _ai_run(img, method, scale, denoise=1, folder=None):
         return np.asarray(out, dtype=np.uint8).copy()
 
 
+def flat_fraction(img):
+    """The fraction of pixels that are exactly equal, in all channels, to their right and lower neighbours. A drawing, a diagram, a screenshot, text on a flat
+    background: 0.7 - 1.0 (measured: a figure of cartoon cells 0.74, a synthetic scheme 0.99). A photograph, even a smooth sky or a clean one, never gets above
+    about 0.07, and a grainy one is 0.0."""
+    a = (img[:, 1:] == img[:, :-1]).all(axis=2)
+    b = (img[1:, :] == img[:-1, :]).all(axis=2)
+    return 0.5 * (float(a.mean()) + float(b.mean()))
+
+
+def looks_like_graphics(img, threshold=0.35):
+    return flat_fraction(img) >= threshold
+
+
 def ai_upscale(img, method, scale, denoise=1, folder=None, shrink=100):
     """`img` made `scale` times larger (so exactly (w * scale, h * scale)) by the AI program. With `shrink` below 100 the picture is first REDUCED to that
     percent (area averaging) and the program then enlarges the small copy by 2 or 4: for a grainy or already enlarged picture, whose pixels hold less detail
@@ -1211,7 +1224,7 @@ def ai_upscale(img, method, scale, denoise=1, folder=None, shrink=100):
     Param('method', "Program and model", 'choice', next(iter(AI_METHODS)), choices=tuple(AI_METHODS)),
     Param('scale', "Upscale by", 'choice', '2x', choices=('2x', '4x')),
     Param('denoise', "Remove noise (waifu2x only, 0-3)", 'int', 1, 0, 3),
-    Param('shrink', "Shrink first to (%): for grainy or already enlarged pictures", 'int', 100, 25, 100, slider=True)],
+    Param('shrink', "Shrink first to (%): grainy or already enlarged PHOTOS only", 'int', 100, 25, 100, slider=True)],
     geometry=True, preview=False, external=True,
     doc="FREE and LOCAL: the programs run on this computer and nothing is sent anywhere. Makes the picture 2 or 4 times larger with a neural network that invents plausible detail, instead of just stretching the pixels. "
         "It runs Real-ESRGAN or waifu2x, programs that must already be on this computer (Tools > AI programs folder... tells ImageForge "
@@ -1220,11 +1233,15 @@ def ai_upscale(img, method, scale, denoise=1, folder=None, shrink=100):
         "gentler. The new detail is invented, not recovered: do not use it on pictures that must stay faithful to the original (measurements). "
         "'Shrink first' is for a grainy picture, or one that was already enlarged, whose pixels hold less detail than their number says: it is "
         "reduced to that percent before the program enlarges it, which removes the grain and blocky artefacts (try 50 and compare the result "
-        "with 100 using the Before button). The result always has the size you asked for (2x or 4x of the picture).")
+        "with 100 using the Before button). It also makes Real-ESRGAN faster (about 2.5x at 50 %). NEVER for drawings, diagrams or text: thin lines and "
+        "letters are destroyed (the program notices a drawing and ignores the setting). The result always has the size you asked for (2x or 4x).")
 def upscale_ai(img, method, scale, denoise, shrink):
     TOOL_NOTES.pop("Upscale (local, free)", None)
+    ignored = ""
+    if shrink < 100 and looks_like_graphics(img):                  # shrinking first destroys thin lines and text (seen on a real figure): not done
+        shrink, ignored = 100, "; 'shrink first' ignored: this looks like a drawing or text (flat areas, thin lines) and shrinking would damage it"
     out = ai_upscale(img, method, int(scale[0]), denoise, shrink=shrink)
-    note = "%dx%d -> %dx%d px" % (img.shape[1], img.shape[0], out.shape[1], out.shape[0])
+    note = "%dx%d -> %dx%d px" % (img.shape[1], img.shape[0], out.shape[1], out.shape[0]) + ignored
     if shrink < 100:
         note += ", shrunk to %d %% first" % shrink + ("; the program makes 4x at most, the rest is stretched" if int(scale[0]) * 100.0 / shrink > 4.0 + 1e-9 else "")
     TOOL_NOTES["Upscale (local, free)"] = note

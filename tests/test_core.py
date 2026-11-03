@@ -1716,6 +1716,25 @@ class AITests(unittest.TestCase):
         self.assertEqual(out.shape, (200, 320, 3))
         self.assertEqual([c[c.index("-s") + 1] for c in AITests.FakeProc.calls[-3:]], ["4", "4", "2"])   # what the program was asked for: 50 % then x4 = 2x of the original; 25 % then x4 (the most it makes); no shrink: x2
 
+    def test_drawings_are_told_from_photographs_and_are_never_shrunk(self):
+        rng = np.random.default_rng(1)
+        drawing = np.full((120, 200, 3), 255, np.uint8)
+        drawing[20:60, 20:100] = (200, 225, 245)
+        drawing[70:72, 10:190] = (40, 40, 40)                                           # flat fills and a thin line
+        grain = np.clip(120 + rng.normal(0, 9, (120, 200, 3)), 0, 255).astype(np.uint8)
+        smooth = np.clip(np.linspace(80, 200, 200)[None, :, None] + rng.normal(0, 1, (120, 200, 3)), 0, 255).astype(np.uint8)
+        self.assertGreater(il.flat_fraction(drawing), 0.9)
+        self.assertLess(il.flat_fraction(grain), 0.05)
+        self.assertLess(il.flat_fraction(smooth), 0.1)                                  # a clean smooth photo is still not a drawing
+        self.assertTrue(il.looks_like_graphics(drawing))
+        self.assertFalse(il.looks_like_graphics(grain) or il.looks_like_graphics(smooth))
+        il.set_ai_dir(self.tmp.name)
+        il.apply_tool("Upscale (local, free)", drawing, {'method': "waifu2x photo (2x, gentler)", 'scale': '2x', 'shrink': 50})
+        self.assertEqual(AITests.FakeProc.sizes[-1], (200, 120))                        # the drawing went in at full size, whatever the setting
+        self.assertIn("ignored", il.TOOL_NOTES["Upscale (local, free)"])
+        il.apply_tool("Upscale (local, free)", grain, {'method': "waifu2x photo (2x, gentler)", 'scale': '2x', 'shrink': 50})
+        self.assertEqual(AITests.FakeProc.sizes[-1], (100, 60))                         # a grainy photo is shrunk as asked
+
     def test_choosing_the_folder_of_one_program_does_not_forget_the_others(self):
         lama = os.path.join(self.tmp.name, "lama-onnx")
         os.makedirs(lama)
