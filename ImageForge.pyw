@@ -4025,6 +4025,10 @@ class ImageForge:
         self.b_redo.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
         self.b_crop = tk.Button(row, text="Crop to selection", command=self.crop_to_selection)
         self.b_crop.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
+        self.l_undo = tk.Label(panel, text="", anchor='w', justify='left', bg=bg, fg='#555555', font=('Arial', 8))      # what Undo / Redo will take back / redo
+        self.l_undo.pack(fill=tk.X, padx=12)
+        self._tip(self.b_undo, "Undo the last step (Ctrl+Z): the line under the buttons says which")
+        self._tip(self.b_redo, "Redo the step that was undone (Ctrl+Y): the line under the buttons says which")
 
         # The working area: set it first, before choosing any tool; every tool then acts only inside it.
         wa = tk.LabelFrame(panel, text="Working area: every tool acts only inside it (draw it with the Select tools, top left)",
@@ -6119,6 +6123,7 @@ class ImageForge:
             self._photo = ImageTk.PhotoImage(sub)
             c.create_image(round(x0 * z + self.ox), round(y0 * z + self.oy), anchor='nw', image=self._photo, tags='img')
             c.tag_lower('img')
+        self._update_undo_label()                                    # a preview appearing or going changes what Undo would do
         c.delete('cmp')
         if self.v_compare.get():
             c.create_rectangle(8, 8, 78, 30, fill='#222222', outline='#ffd400', tags='cmp')
@@ -7616,16 +7621,36 @@ class ImageForge:
             text = self._size_text() + "   |   " + text
         self.info.config(text=text)
 
+    def _undo_texts(self):
+        """(what Undo would take back, what Redo would redo), as short words, or None for 'nothing'. With a preview on screen Undo only drops the preview."""
+        h = self.hist
+        if h is None:
+            return None, None
+        if self._pending_preview():
+            undo = "preview of %s" % self.tool.name
+        else:
+            undo = h.undo_label() if h.can_undo() else None
+        return undo, (h.redo_label() if h.can_redo() else None)
+
+    def _update_undo_label(self):
+        """The two lines under the Undo / Redo buttons and the Edit menu entries: the name of the step each one acts on, so nothing is undone blindly."""
+        undo, redo = self._undo_texts()
+        short = lambda t: "-" if t is None else (t if len(t) <= 40 else t[:39] + "...")
+        text = "Undo: %s\nRedo: %s" % (short(undo), short(redo))
+        if self.l_undo.cget('text') != text:
+            self.l_undo.config(text=text)
+        self.b_undo.config(state=tk.NORMAL if undo else tk.DISABLED)           # also when only a preview appeared or went
+        self.b_redo.config(state=tk.NORMAL if redo else tk.DISABLED)
+        self.m_edit.entryconfig(0, label="Undo" + (" " + undo if undo else ""), state=tk.NORMAL if undo else tk.DISABLED)
+        self.m_edit.entryconfig(1, label="Redo" + (" " + redo if redo else ""), state=tk.NORMAL if redo else tk.DISABLED)
+
     def _update_state(self):
         h = self.hist
-        self.b_undo.config(state=tk.NORMAL if h and h.can_undo() else tk.DISABLED)
+        self.b_undo.config(state=tk.NORMAL if h and (h.can_undo() or self._pending_preview()) else tk.DISABLED)
         self.b_redo.config(state=tk.NORMAL if h and h.can_redo() else tk.DISABLED)
         self.b_crop.config(state=tk.NORMAL if h and self.sel else tk.DISABLED)
         self._sync_area_box()
-        self.m_edit.entryconfig(0, label="Undo" + (" " + h.undo_label() if h and h.can_undo() else ""),
-                                state=tk.NORMAL if h and h.can_undo() else tk.DISABLED)
-        self.m_edit.entryconfig(1, label="Redo" + (" " + h.redo_label() if h and h.can_redo() else ""),
-                                state=tk.NORMAL if h and h.can_redo() else tk.DISABLED)
+        self._update_undo_label()
         name = os.path.basename(self.save_path or self.path) if self.path else ""
         self.root.title("%s%s - %s" % (name, "*" if self.dirty else "", APP_NAME) if name else APP_NAME)
         self.b_apply.config(text="Update layer" if self._edit_index() is not None else

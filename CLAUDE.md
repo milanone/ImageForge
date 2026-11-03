@@ -39,6 +39,7 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   enlarged, so the real pixels show; cached by the ids of what it was made from); a yellow BEFORE tag is drawn on the picture; any step, Undo / Redo, tool change or Esc turns it off.
   (3) The Preview checkbox only means something for a tool with a live preview, so it is greyed out for the others (`_update_preview_check`: Upscale, Resize, brushes, external tools); it used
   to look broken there. Tests: `ViewScaleTests`; real window: `examples/before_after_session.py` (Resize 200 % stands for Upscale: same path, instant).
+- **Undo / Redo say what they act on** (`_undo_texts`, `_update_undo_label`, `l_undo`): two lines under the Undo / Redo buttons ('Undo: Despeckle' / 'Redo: -') and the Edit menu entries ('Undo Despeckle'), refreshed from `_update_state` and from `_redraw` (a preview appearing or going changes what Undo does: with only a preview on screen the line reads 'Undo: preview of <tool>' and Undo just drops it; the Undo button is enabled for that too). The label of a step is the label given to `History.push`, i.e. the tool name or 'Move content' etc. Check: `examples/implicit_apply_session.py` (part 6).
 - **Preview**: parameter changes are debounced (60 ms) and run the tool on the full image on the Tk thread; `self.preview`
   replaces the displayed array. After Apply the preview is cleared and only recomputed on the next parameter change
   (otherwise the already-applied effect would show twice). `preview=False` for tools where it makes no sense (Resize).

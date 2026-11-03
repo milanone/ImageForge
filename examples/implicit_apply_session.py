@@ -56,4 +56,13 @@ print("   next tool: the marks stay removed:", RED(a.hist.current) == 0, "| and 
 # 5. a brush tool is not a preview tool: switching away changes nothing by itself
 a.undo(); n = len(a.hist.states); a.tree.selection_set("Pencil"); root.update(); a.tree.selection_set("Despeckle"); root.update()
 print("5. selecting and leaving a brush adds no step:", len(a.hist.states) == n)
+# 6. the Undo / Redo labels say what they would do
+a.tree.selection_set("Pencil"); root.update(); a.sel = None; a._after_selection()
+txt = lambda: a.l_undo.cget('text').replace(chr(10), ' | ')
+print("6. labels under the buttons:", txt(), "| menu:", a.m_edit.entrycget(0, 'label'), "/", a.m_edit.entrycget(1, 'label'))
+a.tree.selection_set("Blur (Gaussian)"); settle(); a.pvars['radius'].set(3) if 'radius' in a.pvars else None; settle()
+print("   with a Blur preview on screen:", txt(), "| Undo enabled:", str(a.b_undo.cget('state')) == 'normal')
+a.tree.selection_set("Despeckle"); root.update(); look_undo = txt()
+print("   after switching (applied by itself):", look_undo)
+a.undo(); root.update(); print("   after Undo:", txt())
 a.dirty = False; root.destroy()
