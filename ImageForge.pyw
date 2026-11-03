@@ -67,7 +67,8 @@ class Param:
     options and `default` is one of them), 'colors' (text with hex colours such as '#ff0000 #00ff00') or 'text'.
     `slider` adds a slider next to the number box. `pick` adds a button that fills the value by clicking on
     the image: 'color' (appends the colour clicked), 'color1' (a single colour, also with a colour dialog) or
-    'angle' (two clicks on a line that should be level) or 'point' (one click sets this int and the one named `<key>` with
+    'faces' (a text list of faces 'x y width; ...': Find / Mark / Clear buttons, Ctrl+click adds one), 'angle' (two clicks on a line that
+    should be level) or 'point' (one click sets this int and the one named `<key>` with
     x/y swapped: used by the clone source, src_x / src_y)."""
 
     def __init__(self, key, label, kind, default, lo=None, hi=None, step=1, choices=(), slider=False, pick=None,
@@ -473,34 +474,62 @@ def portrait_retouch_faces(img, faces, smooth=40, light=15, surround=25, warmth=
     return out
 
 
+def parse_faces(text, default_width=0.0, shape=None):
+    """The faces written in `text` as a list of (centre x, centre y, width): one face per `;` or line, as 'x y width' (commas or spaces;
+    a missing or zero width is `default_width`, or 22 % of the shorter side of `shape` = (h, w, ...) when that is 0). Entries that cannot be
+    read are skipped."""
+    out = []
+    for part in str(text).replace("\n", ";").split(";"):
+        nums = []
+        for tok in part.replace(",", " ").split():
+            try:
+                nums.append(float(tok))
+            except ValueError:
+                nums = []
+                break
+        if len(nums) < 2:
+            continue
+        wd = nums[2] if len(nums) > 2 and nums[2] > 0 else float(default_width)
+        if wd <= 0 and shape is not None:
+            wd = 0.22 * min(shape[0], shape[1])
+        if wd > 0:
+            out.append((nums[0], nums[1], wd))
+    return out
+
+
+def format_faces(faces):
+    """The text form of a list of faces, as `parse_faces` reads it: '440 526 190; 120 80 150'."""
+    return "; ".join("%d %d %d" % (round(x), round(y), round(w)) for x, y, w in faces)
+
+
 @tool("Portrait retouch", "Adjustments", [
-    Param('x', "X of the face centre (px; -1 = find the faces)", 'int', -1, -1, 100000),
-    Param('y', "Y of the face centre (px; -1 = find the faces)", 'int', -1, -1, 100000),
-    Param('size', "Face width (px; 0 = automatic)", 'int', 0, 0, 20000),
+    Param('faces', "Faces (x y width; one per face; empty = find them)", 'text', "", pick='faces'),
+    Param('size', "Width for a face written without one (px; 0 = automatic)", 'int', 0, 0, 20000),
     Param('smooth', "Smooth the skin (%)", 'int', 40, 0, 100, slider=True),
     Param('light', "Light on the face (%)", 'int', 15, 0, 60, slider=True),
     Param('surround', "Darken the surroundings (%)", 'int', 25, 0, 80, slider=True),
     Param('warmth', "Warmth of the skin", 'int', 0, -50, 50, slider=True)],
-    place=True,
-    doc="One-step portrait finish. With X = -1 it finds every face looking at the camera and treats each one; if it misses one (a face in "
-        "profile, small or covered), click on the face and the tool works there. The skin is smoothed only where the colour is skin "
-        "(eyes, lips, hair and glasses stay sharp), the face gets a little light, and the rest of the picture is darkened round a wide "
-        "soft pool of light, which brings the eye to the face. Warmth shifts the skin towards orange (+) or blue (-). Keep the amounts low: "
-        "a natural face still has texture. Limited to the selection if there is one.")
-def portrait_retouch(img, x, y, size, smooth, light, surround, warmth):
+    doc="One-step portrait finish. With the list of faces empty it finds the faces that look at the camera and treats each one; it can "
+        "miss some (a profile, a tilted, partly cut or small face). Press 'Find faces' to write what it found in the list, then 'Mark "
+        "faces' and click on the ones it missed (Ctrl+click does the same without the button); edit the list by hand to remove or move a "
+        "face. The skin is smoothed only where the colour is skin (eyes, lips, hair and glasses stay sharp), the face gets a little "
+        "light, and the rest of the picture is darkened round a wide soft pool of light, which brings the eye to the faces. Warmth shifts "
+        "the skin towards orange (+) or blue (-). Keep the amounts low: a natural face still has texture. Limited to the selection if "
+        "there is one.")
+def portrait_retouch(img, faces, size, smooth, light, surround, warmth):
     if smooth == 0 and light == 0 and surround == 0 and warmth == 0:
         return img
-    h, w = img.shape[:2]
-    if x < 0 or y < 0:
-        faces = find_faces(img)
-        if size > 0:
-            faces = [(fx, fy, float(size)) for fx, fy, fw in faces]
-        TOOL_NOTES["Portrait retouch"] = ("%d face%s found" % (len(faces), "" if len(faces) == 1 else "s")) if faces else \
-            "no face found: click on the face to place the tool"
-    else:
-        faces = [(float(x), float(y), float(size) if size > 0 else 0.28 * min(h, w))]
+    listed = parse_faces(faces, size, img.shape)
+    if listed:
+        found = listed
         TOOL_NOTES.pop("Portrait retouch", None)
-    return portrait_retouch_faces(img, faces, smooth, light, surround, warmth)
+    else:
+        found = find_faces(img)
+        if size > 0:
+            found = [(fx, fy, float(size)) for fx, fy, fw in found]
+        TOOL_NOTES["Portrait retouch"] = ("%d face%s found" % (len(found), "" if len(found) == 1 else "s")) if found else \
+            "no face found: press 'Mark faces' and click on each one"
+    return portrait_retouch_faces(img, found, smooth, light, surround, warmth)
 
 
 @tool("Grayscale", "Adjustments", [
@@ -3830,6 +3859,12 @@ class ImageForge:
                 elif p.pick == 'color':
                     tk.Button(r, text="Clear", command=lambda v=var: v.set("")).pack(side=tk.RIGHT, padx=(4, 0))
                     tk.Button(r, text="Pick", command=lambda k=p.key: self.start_pick('color', k)).pack(side=tk.RIGHT)
+                elif p.pick == 'faces':
+                    r2 = tk.Frame(self.params_frame, bg=bg)
+                    r2.pack(fill=tk.X, pady=(2, 0))
+                    tk.Button(r2, text="Find faces", command=lambda k=p.key: self.find_faces_into(k), bg='#cdeefc').pack(side=tk.LEFT, expand=True, fill=tk.X)
+                    tk.Button(r2, text="Mark faces", command=lambda k=p.key: self.start_pick('faces', k), bg='#cdeefc').pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
+                    tk.Button(r2, text="Clear", command=lambda v=var: v.set("")).pack(side=tk.LEFT)
             else:
                 var = tk.DoubleVar(value=p.default)
                 tk.Label(self.params_frame, text=p.label, bg=bg, anchor='w', font=('Arial', 9)).pack(fill=tk.X)
@@ -3895,6 +3930,7 @@ class ImageForge:
             return
         self._hist_schedule()
         self._draw_shape_handles()
+        self._draw_faces_marker()
         self._clone_off = None if self._clone_source() != self._clone_last else self._clone_off
         self._draw_clone_marker()
         if self._after is not None:
@@ -5077,6 +5113,7 @@ class ImageForge:
             c.create_image(round(x0 * z + self.ox), round(y0 * z + self.oy), anchor='nw', image=self._photo, tags='img')
             c.tag_lower('img')
         self._draw_selection()
+        self._draw_faces_marker()
         self._draw_clone_marker()
         self._set_info()
         self._draw_measures()
@@ -5133,7 +5170,38 @@ class ImageForge:
                       'color1': "Click the colour to use on the image. Esc cancels.",
                       'point': "Click the point of the picture to copy FROM. Esc cancels.",
                       'angle': "Click two points of a line that should be level (or vertical). Esc cancels.",
-                      'quad': "Click the four corners of the area to straighten, in any order. Esc cancels."}[what])
+                      'quad': "Click the four corners of the area to straighten, in any order. Esc cancels.",
+                      'faces': "Click on each face to add it to the list (as many as needed), Esc to finish."}[what])
+
+    def find_faces_into(self, key):
+        """The 'Find faces' button: write the faces the finder sees in the list, so that they can be corrected."""
+        if not self._need_image():
+            return
+        found = find_faces(self._flat())
+        self.pvars[key].set(format_faces(found))
+        self._status(("%d face%s found and written in the list: add the missing ones with 'Mark faces', or edit the numbers."
+                      % (len(found), "" if len(found) == 1 else "s")) if found else
+                     "No face found: press 'Mark faces' and click on each one.", ok=bool(found))
+
+    def _draw_faces_marker(self):
+        """The faces of the Portrait retouch tool as ellipses on the picture (the list, or what the finder sees while the list is empty,
+        dashed); removed when another tool is selected."""
+        c = self.canvas
+        c.delete('faces')
+        if self.tool is None or self.hist is None or 'faces' not in self.pvars or self.tool.name != "Portrait retouch":
+            return
+        try:
+            img = self._flat()
+            p = self._read_params() or {}
+            listed = parse_faces(p.get('faces', ""), p.get('size', 0), img.shape)
+            faces, dash = (listed, None) if listed else (find_faces(img), (4, 3))
+        except Exception:
+            return
+        for i, (fx, fy, fw) in enumerate(faces):
+            sx, sy, rx, ry = fx * self.zoom + self.ox, (fy + 0.10 * fw) * self.zoom + self.oy, 0.62 * fw * self.zoom, 0.80 * fw * self.zoom
+            c.create_oval(sx - rx, sy - ry, sx + rx, sy + ry, outline='#ffd400', width=2, dash=dash, tags='faces')
+            if listed:
+                c.create_text(sx, sy - ry - 8, text=str(i + 1), fill='#ffd400', font=('Arial', 10, 'bold'), tags='faces')
 
     def choose_color(self, key):
         var = self.pvars[key]
@@ -5352,7 +5420,9 @@ class ImageForge:
     @staticmethod
     def _quick_pick_hint(tool):
         """The line added to a tool's description when Ctrl+click can pick for it."""
-        kinds = [q.pick for q in tool.params if q.pick in ('point', 'color', 'color1')]
+        kinds = [q.pick for q in tool.params if q.pick in ('point', 'color', 'color1', 'faces')]
+        if 'faces' in kinds:
+            return "\n\nCtrl+click on the picture adds a face to the list."
         if 'point' in kinds:
             return "\n\nCtrl+click on the picture sets the source."
         if 'color' in kinds and 'color1' in kinds:
@@ -5378,14 +5448,16 @@ class ImageForge:
                 self.set_colour(which, rgb)
                 self._status("%s colour #%02x%02x%02x picked." % ("Background" if which == 'bg' else "Foreground", *rgb), ok=True)
             return True
-        params = [q for q in self.tool.params if q.pick in ('point', 'color', 'color1')]
+        params = [q for q in self.tool.params if q.pick in ('point', 'color', 'color1', 'faces')]
         if not params:
             return False
         shift = bool(e.state & 0x1)
         point = [q for q in params if q.pick == 'point']
         find = [q for q in params if q.pick == 'color']
         paint = [q for q in params if q.pick == 'color1']
-        if point:
+        if [q for q in params if q.pick == 'faces']:
+            chosen = [q for q in params if q.pick == 'faces'][0]
+        elif point:
             chosen = point[0]
         elif find and paint:
             chosen = paint[0] if shift else find[0]
@@ -5430,6 +5502,12 @@ class ImageForge:
                 var.set((var.get().strip() + " #%02x%02x%02x" % (r, g, b)).strip())
                 self._status("Added #%02x%02x%02x. %s" % (r, g, b, "Ctrl+click adds more." if quick else
                                                            "Click more colours, or Esc to finish."), ok=True)
+        elif self.mode == 'faces':
+            var = self.pvars[self._pick_key]
+            size = int((self._read_params() or {}).get('size', 0)) or int(0.22 * min(h, w))
+            var.set((var.get().strip().rstrip(";") + "; " if var.get().strip() else "") + "%d %d %d" % (ix, iy, size))
+            self._status("Face added at (%d, %d), width %d: edit the list to change its size. Click more faces, or Esc to finish."
+                         % (ix, iy, size), ok=True)
         elif self.mode == 'quad':
             self._pick_pts.append((x, y))
             self._draw_pick_points()

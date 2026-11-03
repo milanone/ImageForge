@@ -364,8 +364,8 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   must not set a colour). Tests: `DodgeBurnTests`; real window: `examples/dodge_burn_session.py`. Not done: a 'sponge' (saturate / desaturate)
   variant, a toggle key (Alt in Photoshop) to flip dodge / burn.
 
-- **Portrait retouch** (`find_faces`, `portrait_retouch_faces`, `_soft_ellipse`; tool in Adjustments with `place=True`, so a click sets `x`, `y`;
-  `x = -1` means 'find the faces'): faces come from OpenCV's Haar cascade (`frontalface_alt2`, then `default` keeping only the biggest, because it
+- **Portrait retouch** (`find_faces`, `portrait_retouch_faces`, `_soft_ellipse`; tool in Adjustments; the faces are one text param `faces` = 'x y width; x y width' with
+  `Param(pick='faces')`, read by `parse_faces` / written by `format_faces`; empty = the finder's faces): faces come from OpenCV's Haar cascade (`frontalface_alt2`, then `default` keeping only the biggest, because it
   gives false hits) on a copy shrunk to 800 px, remembered for the last picture (`_FACE_CACHE`, key = shape + a sampled sum) because the live preview
   asks at every slider move; a profile, a covered or a small face can be missed, hence the click. Per face, in a crop of +-1.2 face widths: a soft
   face ellipse x a skin map (YCrCb, Cr 150 +- 26, Cb 112 +- 26, blurred) = the weight; smoothing = `cv2.bilateralFilter` blended by 0.85 x amount x
@@ -375,7 +375,12 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   first limits +-20 around 153 / 108 covered only partly: hence the wider ones) and not on other skin tones or light conditions: if the smoothing misses
   the skin or touches something else, adjust the Cr / Cb limits. On that portrait 'Light on the face' 25 turned the already grey-ish cheeks greyer:
   a low-key face wants a small light amount. A note ('3 faces found' / 'no face found: click on it') goes through
-  `TOOL_NOTES`. Not recipe-aware beyond the generic path. Tests: `PortraitTests`; real window: `examples/portrait_session.py`. Not done: eye
+  `TOOL_NOTES`. **Marking faces by hand**: the `pick='faces'` text param gets three buttons under it (`_build_params`): *Find faces*
+  (`find_faces_into`: writes the finder's faces into the list so they can be corrected), *Mark faces* (`start_pick('faces')`: mode stays on, each click
+  appends 'x y w' with `w` = the 'Width for a face written without one' box or 22 % of the short side; Esc ends) and *Clear*; Ctrl+click adds one without
+  the button (`_quick_pick` / `_quick_pick_hint` know the kind). `_draw_faces_marker` (called from `_redraw` and `_params_changed`) outlines the faces
+  in yellow, numbered (the list) or dashed (what the finder sees while the list is empty). A hand-written list belongs to one picture, so it should not
+  go into a recipe used on others. Not recipe-aware beyond the generic path. Tests: `PortraitTests`; real window: `examples/portrait_session.py`. Not done: eye
   and teeth brightening, blemish removal (Clean brush does it by hand), hair and face-shape handling, a profile detector, a deep-learning detector.
 
 - **Automatic fit** (`self.autofit`, `_set_autofit`, `_on_canvas_resize`): `fit_view` turns it on (so opening a picture, an Undo that changes the size

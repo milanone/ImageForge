@@ -1669,11 +1669,26 @@ class PortraitTests(unittest.TestCase):
 
     def test_tool_with_a_given_face_and_with_none_found(self):
         img, _ = self.scene()
-        out = il.apply_tool("Portrait retouch", img, {'x': 200, 'y': 140, 'size': 140, 'smooth': 60, 'light': 20, 'surround': 30, 'warmth': 0})
+        out = il.apply_tool("Portrait retouch", img, {'faces': '200 140 140', 'size': 0, 'smooth': 60, 'light': 20, 'surround': 30, 'warmth': 0})
         self.assertEqual((out.dtype, out.shape), (np.uint8, img.shape))
         self.assertFalse(np.array_equal(out, img))
         il.apply_tool("Portrait retouch", img, None)                                   # nobody to find in a synthetic picture
         self.assertIn("no face found", il.TOOL_NOTES["Portrait retouch"])
+
+    def test_parse_and_format_faces(self):
+        self.assertEqual(il.parse_faces("200 140 140; 50, 60, 30"), [(200.0, 140.0, 140.0), (50.0, 60.0, 30.0)])
+        self.assertEqual(il.parse_faces("10 20", 99), [(10.0, 20.0, 99.0)])                            # no width: the default one
+        self.assertEqual(il.parse_faces("10 20", 0, (100, 400, 3)), [(10.0, 20.0, 22.0)])               # no default: 22 % of the short side
+        self.assertEqual(il.parse_faces("abc; 5; 1 2 x;\n7 8 9"), [(7.0, 8.0, 9.0)])                  # unreadable entries are skipped
+        self.assertEqual(il.parse_faces(""), [])
+        f = [(440.4, 526.2, 189.6), (12, 80, 150)]
+        self.assertEqual(il.parse_faces(il.format_faces(f)), [(440.0, 526.0, 190.0), (12.0, 80.0, 150.0)])
+
+    def test_several_listed_faces_are_all_kept_bright(self):
+        img, _ = self.scene()
+        both = il.apply_tool("Portrait retouch", img, {'faces': '100 140 60; 300 140 60', 'size': 0, 'smooth': 0, 'light': 0, 'surround': 60, 'warmth': 0})
+        one = il.apply_tool("Portrait retouch", img, {'faces': '100 140 60', 'size': 0, 'smooth': 0, 'light': 0, 'surround': 60, 'warmth': 0})
+        self.assertLess(int(one[140, 300].sum()), int(both[140, 300].sum()))                              # a second face keeps its surroundings lit
 
     def test_find_faces_on_nothing(self):
         self.assertEqual(il.find_faces(np.full((200, 200, 3), 128, np.uint8)), [])
