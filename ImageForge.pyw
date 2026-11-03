@@ -17,7 +17,11 @@ import json
 import math
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
+import threading
 import time
 import traceback
 import zipfile
@@ -54,7 +58,7 @@ TOOL_LAYOUT = {
     'Retouch': ['Clone stamp', 'Clean brush', 'Dodge / burn', 'Erase rectangle', 'Move area'],
     'Annotate': ['Add text', 'Shapes', 'Scale bar', 'Measure'],
     'Layers': ['Move layer'],
-    'Size and orientation': ['Resize', 'Canvas size', 'Crop to aspect ratio', 'Auto-crop borders', 'Rotate 90 / 180', 'Rotate (any angle)', 'Flip', 'Auto straighten', 'Perspective correction', 'Lens distortion'],
+    'Size and orientation': ['Resize', 'Enlarge (AI)', 'Canvas size', 'Crop to aspect ratio', 'Auto-crop borders', 'Rotate 90 / 180', 'Rotate (any angle)', 'Flip', 'Auto straighten', 'Perspective correction', 'Lens distortion'],
     'Adjustments': ['Brightness / contrast', 'Levels', 'Curves', 'Auto contrast', 'Local contrast (CLAHE)', 'Even out illumination', 'Hue / saturation', 'Colour balance', 'White balance', 'Portrait retouch', 'Grayscale', 'Invert', 'Threshold (black & white)'],
     'Filters': ['Sharpen (unsharp mask)', 'Blur (Gaussian)', 'Reduce noise', 'Morphology', 'Find edges'],
     'Clean-up': ['Erase / keep colours', 'Remove marks', 'Despeckle', 'Flatten ink to one colour', 'Join dashed lines'],
@@ -112,22 +116,23 @@ class Tool:
     with `layer` ('text') makes (or, if one is selected, edits) a Layer of that kind instead of changing the pixels."""
 
     def __init__(self, name, group, func, params, geometry, preview, doc, interactive=None, place=False, layer=None,
-                 layer_geometry=None, layer_shift=None):
+                 layer_geometry=None, layer_shift=None, external=False):
         self.name, self.group, self.func, self.params = name, group, func, tuple(params)
         self.geometry, self.preview, self.doc, self.interactive, self.place = geometry, preview, doc, interactive, place
         self.layer = layer
         self.layer_geometry = layer_geometry          # None, or how it may transform one layer: 'exact' / 'resample'
         self.layer_shift = layer_shift                # None, or f(params, old shape) -> (dx, dy): the layers move with the canvas
+        self.external = external                      # runs another program and can take minutes: the editor runs it in the background
 
 
 def tool(name, group, params=(), geometry=False, preview=True, doc="", interactive=None, place=False,
-         layer=None, layer_geometry=None, layer_shift=None):
+         layer=None, layer_geometry=None, layer_shift=None, external=False):
     """Register `func(img, **params) -> img` as a tool. `img` is an (H, W, 3) uint8 array that must not be
     modified in place (it belongs to the Undo history); return a new array, or `img` itself for 'no change'.
     The keys of `params` are the keyword arguments."""
     def deco(func):
         TOOLS[name] = Tool(name, group, func, params, geometry, preview, doc or (func.__doc__ or "").strip(),
-                           interactive, place, layer, layer_geometry, layer_shift)
+                           interactive, place, layer, layer_geometry, layer_shift, external)
         return func
     return deco
 
@@ -989,6 +994,119 @@ def canvas_size(img, left, top, right, bottom, fill='white', color=None):
         pad = cv2.copyMakeBorder(img, max(0, top), max(0, bottom), max(0, left), max(0, right), cv2.BORDER_CONSTANT, value=rgb)
     x0, y0 = max(0, -left), max(0, -top)
     return np.ascontiguousarray(pad[y0:y0 + nh, x0:x0 + nw])
+
+
+# ---- AI enlargement with programs that are already on the computer (Real-ESRGAN, waifu2x) ------------------------------------------
+AI_DIR = None                       # a folder that holds the programs (or their folders); set from the settings, IMAGEFORGE_AI_DIR also works
+AI_CANCEL = threading.Event()       # set to stop a running enlargement
+_popen = subprocess.Popen           # the tests put a fake in here
+AI_METHODS = {                      # label -> (program, model folder, the scale the model makes by itself)
+    "Real-ESRGAN photo (4x, most detail)": ('realesrgan', 'realesrgan-x4plus', 4),
+    "waifu2x photo (2x, gentler)": ('waifu2x', 'models-upconv_7_photo', 2),
+    "waifu2x drawings (2x, cunet)": ('waifu2x', 'models-cunet', 2),
+}
+AI_PROGRAMS = {'realesrgan': 'realesrgan-ncnn-vulkan', 'waifu2x': 'waifu2x-ncnn-vulkan'}
+
+
+class ToolUnavailable(RuntimeError):
+    """A tool needs a program that is not there (the message says which and what to do)."""
+
+
+class Cancelled(RuntimeError):
+    """The user stopped a running tool."""
+
+
+def set_ai_dir(path):
+    global AI_DIR
+    AI_DIR = path or None
+
+
+def find_ai_program(kind, folder=None):
+    """Path of the executable of `kind` ('realesrgan' or 'waifu2x'), or None. Looked for in `folder`, in IMAGEFORGE_AI_DIR and in AI_DIR, each
+    either the program's own folder or a folder that contains it one level down, then on the PATH."""
+    base = AI_PROGRAMS[kind]
+    names = (base + ".exe", base)
+    for d in (folder, os.environ.get("IMAGEFORGE_AI_DIR"), AI_DIR):
+        if not d or not os.path.isdir(d):
+            continue
+        spots = [d]
+        try:
+            spots += [os.path.join(d, n) for n in sorted(os.listdir(d)) if n.lower().startswith(base)]
+        except OSError:
+            pass
+        for sp in spots:
+            for n in names:
+                f = os.path.join(sp, n)
+                if os.path.isfile(f):
+                    return f
+    return shutil.which(base)
+
+
+def ai_command(method, exe, src, dst, scale, denoise):
+    """The command line that runs `exe` for `method` (a key of AI_METHODS). Real-ESRGAN always makes the model's own scale (a 2x result is that
+    reduced by half afterwards, which looks better than the 2x of the x4 model); waifu2x makes the scale asked and removes noise at level `denoise`."""
+    kind, model, native = AI_METHODS[method]
+    folder = os.path.dirname(exe)
+    if kind == 'realesrgan':
+        return [exe, "-i", src, "-o", dst, "-n", model, "-s", str(native), "-m", os.path.join(folder, "models")]
+    return [exe, "-i", src, "-o", dst, "-m", os.path.join(folder, model), "-n", str(int(denoise)), "-s", str(int(scale))]
+
+
+def ai_enlarge(img, method, scale, denoise=1, folder=None):
+    """`img` ((h, w, 3) RGB) enlarged `scale` times (2 or 4) by an external AI program, or ToolUnavailable if it is not found. Runs the program
+    on a temporary PNG and waits for it, polling AI_CANCEL (set it from another thread to stop: Cancelled). A GPU with Vulkan is needed;
+    on a laptop's integrated GPU expect minutes per megapixel."""
+    kind, model, native = AI_METHODS[method]
+    exe = find_ai_program(kind, folder)
+    if exe is None:
+        raise ToolUnavailable("%s was not found. Tools > AI programs folder... tells ImageForge where the programs are."
+                              % {'realesrgan': "Real-ESRGAN (realesrgan-ncnn-vulkan)", 'waifu2x': "waifu2x (waifu2x-ncnn-vulkan)"}[kind])
+    scale = int(scale)
+    h, w = img.shape[:2]
+    with tempfile.TemporaryDirectory(prefix="imageforge_ai_", ignore_cleanup_errors=True) as tmp:
+        src, dst, err = os.path.join(tmp, "in.png"), os.path.join(tmp, "out.png"), os.path.join(tmp, "err.txt")
+        Image.fromarray(np.ascontiguousarray(img)).save(src)
+        cmd = ai_command(method, exe, src, dst, scale, denoise)
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        with open(err, "w") as ef:
+            proc = _popen(cmd, cwd=os.path.dirname(exe), stdout=subprocess.DEVNULL, stderr=ef, creationflags=flags)
+            while proc.poll() is None:
+                if AI_CANCEL.is_set():
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=10)                                # let go of the files before the temporary folder is removed
+                    except Exception:
+                        pass
+                    raise Cancelled("stopped")
+                time.sleep(0.1)
+        if proc.returncode != 0 or not os.path.isfile(dst):
+            try:
+                tail = open(err, errors="replace").read().strip().splitlines()[-3:]
+            except OSError:
+                tail = []
+            raise RuntimeError("%s failed (code %s)%s" % (os.path.basename(exe), proc.returncode, ": " + " | ".join(tail) if tail else ""))
+        out = Image.open(dst).convert("RGB")
+        want = (w * scale, h * scale)
+        if out.size != want:                                         # Real-ESRGAN x4 asked for 2x: reduce, with a good filter
+            out = out.resize(want, Image.LANCZOS)
+        return np.asarray(out, dtype=np.uint8).copy()
+
+
+@tool("Enlarge (AI)", "Size and orientation", [
+    Param('method', "Program and model", 'choice', next(iter(AI_METHODS)), choices=tuple(AI_METHODS)),
+    Param('scale', "Enlarge", 'choice', '2x', choices=('2x', '4x')),
+    Param('denoise', "Remove noise (waifu2x only, 0-3)", 'int', 1, 0, 3)],
+    geometry=True, preview=False, external=True,
+    doc="Makes the picture 2 or 4 times larger with a neural network that invents plausible detail, instead of just stretching the pixels. "
+        "It runs Real-ESRGAN or waifu2x, programs that must already be on this computer (Tools > AI programs folder... tells ImageForge "
+        "where), and needs a GPU with Vulkan. It can take many minutes (about 2.5 minutes for 1 megapixel x4 on an integrated Intel GPU): "
+        "ImageForge keeps working meanwhile and Esc stops it. Real-ESRGAN gives the most detail but can make skin look waxy; waifu2x is "
+        "gentler. The new detail is invented, not recovered: do not use it on pictures that must stay faithful to the original (measurements).")
+def enlarge_ai(img, method, scale, denoise):
+    TOOL_NOTES.pop("Enlarge (AI)", None)
+    out = ai_enlarge(img, method, int(scale[0]), denoise)
+    TOOL_NOTES["Enlarge (AI)"] = "%dx%d -> %dx%d px" % (img.shape[1], img.shape[0], out.shape[1], out.shape[0])
+    return out
 
 
 @tool("Canvas size", "Size and orientation", [
@@ -3217,10 +3335,13 @@ class ImageForge:
         self._lsync = False              # True while the layer boxes are filled from a layer (no change events)
         self._comp = None                # cache of the last composite (base, layers, image)
         self._mv = None                  # (press point, selection, copy?, original image) while moving the content
+        self._busy, self._busy_after = None, None     # (tool name, thread, start time) while an `external` tool runs in the background
         self._placing = False            # a click/drag is setting the x, y of a 'place' tool
         self._grab = None                # (handle, press point in image pixels, selection at press) while dragging it
         self._hist_win, self._hist_pending, self._hist_key = None, False, None      # the Histogram window
         self.settings = load_settings()  # recent files, last folders, window: written back when the program is closed
+        if self.settings.get('ai_dir'):
+            set_ai_dir(self.settings['ai_dir'])
         self.fg = self._saved_rgb('fg', (0, 0, 0))                   # foreground / background colours of the drawing tools
         self.bg = self._saved_rgb('bg', (255, 255, 255))
         self._cover, self._paint_prev, self._grad = None, None, None
@@ -3671,8 +3792,27 @@ class ImageForge:
             for t in ts:
                 self.tree.insert('g:' + g, tk.END, iid=t.name, text=t.name)
                 sub.add_command(label=t.name, command=lambda n=t.name: self.tree.selection_set(n))
+        self.m_tools.add_separator()
+        self.m_tools.add_command(label="AI programs folder...", command=self.choose_ai_dir)
         self._build_toolbox()
         self._build_chips(order)
+
+    def choose_ai_dir(self, ask=True):
+        """Tools > AI programs folder...: where Real-ESRGAN / waifu2x are (the folder that holds them, or one of them). Remembered in the settings.
+        Returns True when at least one of the programs is found there."""
+        d = filedialog.askdirectory(parent=self.root, title="Folder with realesrgan-ncnn-vulkan and / or waifu2x-ncnn-vulkan",
+                                    initialdir=AI_DIR or self.settings.get('last_dir') or os.path.expanduser("~")) if ask else None
+        if not d:
+            return False
+        if not any(find_ai_program(k, d) for k in AI_PROGRAMS):
+            messagebox.showwarning(APP_NAME, "Neither realesrgan-ncnn-vulkan nor waifu2x-ncnn-vulkan was found in that folder (or in the folders "
+                                   "inside it).")
+            return False
+        self.settings['ai_dir'] = d
+        set_ai_dir(d)
+        found = [AI_PROGRAMS[k] for k in AI_PROGRAMS if find_ai_program(k, d)]
+        self._status("AI programs folder set: found %s." % " and ".join(found), ok=True)
+        return True
 
     def _tip(self, widget, text):
         """A hint under `widget` after half a second of hovering."""
@@ -4071,11 +4211,17 @@ class ImageForge:
         cur = self.hist.current
         region = None if self.tool.geometry else self.sel
         flatten = bool(self.tool.geometry and self.hist.layers)
+        if self._busy:
+            self._status("%s is still running: Esc stops it." % self._busy[0])
+            return
         if flatten:
             if not messagebox.askyesno(APP_NAME, "'%s' changes the whole picture, so the layers are merged into the "
                                        "background first. Continue?" % self.tool.name):
                 return
             cur = self._flat()
+        if self.tool.external:
+            self._start_external(cur, region, params, flatten)
+            return
         try:
             out = apply_tool(self.tool.name, cur, params, region)
         except Exception as ex:
@@ -4097,6 +4243,68 @@ class ImageForge:
         if self.hist.layers:
             extra += " (on the Background: select a layer to filter it)"
         self._status("%s applied%s." % (self.tool.name, extra), ok=True)
+
+    def _start_external(self, cur, region, params, flatten):
+        """Run an `external` tool (a program that can take minutes) in a worker thread: the window stays alive, the status line counts the
+        seconds, Esc stops it (AI_CANCEL). The result is committed in the Tk thread when it is done, unless the history moved on meanwhile."""
+        t = self.tool
+        if t.name == "Enlarge (AI)":
+            kind = AI_METHODS.get(params.get('method'), ('realesrgan',))[0]
+            if find_ai_program(kind) is None:
+                if not messagebox.askyesno(APP_NAME, "%s is not set up yet. Choose the folder that holds it now?" % AI_PROGRAMS[kind]):
+                    return
+                if not self.choose_ai_dir() or find_ai_program(kind) is None:
+                    return
+            mp = cur.shape[0] * cur.shape[1] / 1e6
+            k = int(str(params.get('scale', '2x'))[0])
+            if mp * k * k > 12 and not messagebox.askyesno(
+                    APP_NAME, "This will make a picture of about %.0f megapixels (%.1f MP x %d x %d). The programs work on the GPU and this can "
+                    "take a very long time (on an integrated Intel GPU: about 2.5 minutes per megapixel of the original with Real-ESRGAN). "
+                    "Esc stops it. Continue?" % (mp * k * k, mp, k, k)):
+                return
+        AI_CANCEL.clear()
+        box = {}
+        base = self.hist.current
+
+        def work():
+            try:
+                box['out'] = apply_tool(t.name, cur, params, region)
+            except Cancelled:
+                box['cancelled'] = True
+            except Exception as ex:
+                box['error'] = ex
+
+        th = threading.Thread(target=work, daemon=True)
+        self._busy = (t.name, th, time.time())
+        self.canvas.config(cursor='watch')
+        self.b_apply.config(state='disabled')
+        th.start()
+        self._poll_external(box, base, flatten, params)
+
+    def _poll_external(self, box, base, flatten, params):
+        name, th, t0 = self._busy
+        if th.is_alive():
+            self._status("%s is running... %d s (Esc stops it; the window stays usable)." % (name, time.time() - t0))
+            self._busy_after = self.root.after(500, lambda: self._poll_external(box, base, flatten, params))
+            return
+        self._busy, self._busy_after = None, None
+        self.b_apply.config(state='normal')
+        self.canvas.config(cursor='crosshair')
+        if 'cancelled' in box:
+            self._status("%s stopped." % name)
+        elif 'error' in box:
+            self._status("%s failed: %s" % (name, box['error']))
+            if isinstance(box['error'], ToolUnavailable):
+                messagebox.showwarning(APP_NAME, str(box['error']))
+        elif self.hist is None or self.hist.current is not base:
+            self._status("%s finished, but the picture changed meanwhile: the result was dropped." % name)
+        else:
+            out = box['out']
+            if flatten:
+                self.active = None
+            self._commit(name, out, () if flatten else None, self._recipe_step_for(params))
+            note = TOOL_NOTES.pop(name, "")
+            self._status("%s applied%s in %d s." % (name, " (%s)" % note if note else "", time.time() - t0), ok=True)
 
     def _commit(self, label, img, layers=None, step=None):
         """Put a new state on the history (`layers` None keeps the current ones). Size changes drop the selection and
@@ -4264,6 +4472,8 @@ class ImageForge:
         self._update_state()
 
     def on_close(self):
+        if self._busy:
+            AI_CANCEL.set()                                   # do not leave the AI program running behind a closed window
         if self._confirm_discard():
             if self._after is not None:
                 self.root.after_cancel(self._after)
@@ -4306,8 +4516,11 @@ class ImageForge:
             self._after_selection()
 
     def escape(self):
-        """Esc: end a pick in progress, else drop the selection."""
-        if self._grad is not None:
+        """Esc: stop a running tool, else end a pick in progress, else drop the selection."""
+        if self._busy:
+            AI_CANCEL.set()
+            self._status("Stopping %s..." % self._busy[0])
+        elif self._grad is not None:
             self._grad = self.preview = self.lprev = None
             self._redraw()
             self._status("Gradient cancelled.")

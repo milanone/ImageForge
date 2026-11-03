@@ -31,6 +31,8 @@ class ToolTests(unittest.TestCase):
     def test_every_tool_returns_rgb_uint8_at_defaults_and_extremes(self):
         img = gradient()
         for name, t in il.TOOLS.items():
+            if t.external:                                  # needs a program that may not be there and can take minutes: tested with a fake (AITests)
+                continue
             for pick in ('default', 'lo', 'hi'):
                 params = {}
                 for p in t.params:
@@ -45,6 +47,8 @@ class ToolTests(unittest.TestCase):
         img = gradient()
         ref = img.copy()
         for name in il.TOOLS:
+            if il.TOOLS[name].external:
+                continue
             il.apply_tool(name, img, {})
             il.apply_tool(name, img, {p.key: min(p.hi, 50) for p in il.TOOLS[name].params if p.kind in ('int', 'float')})
         self.assertTrue(np.array_equal(img, ref))
@@ -1626,6 +1630,108 @@ class WorkflowTests(unittest.TestCase):
         il.save_image(img, j1, None, 10)
         il.save_image(img, j2, None, 95)
         self.assertLess(os.path.getsize(j1), os.path.getsize(j2))
+
+
+class AITests(unittest.TestCase):
+    """Enlarge (AI): the command lines, finding the programs, a fake program standing in for the real one, failure and cancel."""
+
+    class FakeProc:
+        """Stands in for subprocess.Popen: 'enlarges' the input by pixel repetition and writes the output where -o says."""
+        calls = []
+        mode = 'ok'
+
+        def __init__(self, cmd, **kw):
+            AITests.FakeProc.calls.append(cmd)
+            self.returncode = 0
+            src, dst = cmd[cmd.index("-i") + 1], cmd[cmd.index("-o") + 1]
+            s = int(cmd[cmd.index("-s") + 1])
+            if AITests.FakeProc.mode == 'fail':
+                self.returncode = 3
+                kw['stderr'].write("vkCreateInstance failed\n"); kw['stderr'].flush()
+                return
+            im = Image.open(src)
+            if AITests.FakeProc.mode == 'slow':
+                self.slow = True
+                return
+            im.resize((im.size[0] * s, im.size[1] * s), Image.NEAREST).save(dst)
+
+        slow = False
+
+        def poll(self):
+            return None if self.slow else self.returncode
+
+        def terminate(self):
+            self.slow = False
+            self.returncode = 1
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = os.path.join(self.tmp.name, "realesrgan-ncnn-vulkan-20220424-windows")
+        os.makedirs(os.path.join(self.dir, "models"))
+        for n in ("realesrgan-ncnn-vulkan.exe",):
+            open(os.path.join(self.dir, n), "w").close()
+        self.w2 = os.path.join(self.tmp.name, "waifu2x-ncnn-vulkan-20250915-windows")
+        os.makedirs(self.w2)
+        open(os.path.join(self.w2, "waifu2x-ncnn-vulkan.exe"), "w").close()
+        self.old = (il._popen, il.AI_DIR)
+        il._popen = AITests.FakeProc
+        il.AI_DIR = None
+        il.AI_CANCEL.clear()
+        AITests.FakeProc.calls, AITests.FakeProc.mode = [], 'ok'
+
+    def tearDown(self):
+        il._popen, il.AI_DIR = self.old
+        il.AI_CANCEL.clear()
+        self.tmp.cleanup()
+
+    def test_find_programs_in_the_parent_folder_or_their_own(self):
+        self.assertTrue(il.find_ai_program('realesrgan', self.tmp.name).endswith("realesrgan-ncnn-vulkan.exe"))
+        self.assertTrue(il.find_ai_program('waifu2x', self.tmp.name).endswith("waifu2x-ncnn-vulkan.exe"))
+        self.assertTrue(il.find_ai_program('waifu2x', self.w2).endswith("waifu2x-ncnn-vulkan.exe"))
+        self.assertIsNone(il.find_ai_program('waifu2x', self.dir))
+        il.set_ai_dir(self.tmp.name)
+        self.assertIsNotNone(il.find_ai_program('realesrgan'))
+
+    def test_commands(self):
+        exe = os.path.join(self.w2, "waifu2x-ncnn-vulkan.exe")
+        c = il.ai_command("waifu2x photo (2x, gentler)", exe, "a.png", "b.png", 2, 3)
+        self.assertEqual((c[c.index("-n") + 1], c[c.index("-s") + 1]), ("3", "2"))
+        self.assertTrue(c[c.index("-m") + 1].endswith("models-upconv_7_photo"))
+        r = il.ai_command("Real-ESRGAN photo (4x, most detail)", os.path.join(self.dir, "realesrgan-ncnn-vulkan.exe"), "a.png", "b.png", 2, 1)
+        self.assertEqual((r[r.index("-n") + 1], r[r.index("-s") + 1]), ("realesrgan-x4plus", "4"))     # always the model's own scale
+
+    def test_enlarge_sizes_and_input_untouched(self):
+        img = np.random.default_rng(0).integers(0, 255, (12, 20, 3)).astype(np.uint8)
+        ref = img.copy()
+        il.set_ai_dir(self.tmp.name)
+        out = il.apply_tool("Enlarge (AI)", img, {'method': "waifu2x photo (2x, gentler)", 'scale': '4x'})
+        self.assertEqual(out.shape, (48, 80, 3))
+        self.assertEqual(out.dtype, np.uint8)
+        self.assertTrue(np.array_equal(img, ref))
+        out2 = il.apply_tool("Enlarge (AI)", img, {'method': "Real-ESRGAN photo (4x, most detail)", 'scale': '2x'})       # x4 model, reduced to 2x
+        self.assertEqual(out2.shape, (24, 40, 3))
+        self.assertIn("20x12 -> 40x24", il.TOOL_NOTES["Enlarge (AI)"])
+
+    def test_missing_program_and_failure_and_cancel(self):
+        img = np.zeros((8, 8, 3), np.uint8)
+        with self.assertRaises(il.ToolUnavailable):
+            il.ai_enlarge(img, "waifu2x photo (2x, gentler)", 2, 1, folder=self.dir)             # that folder has only Real-ESRGAN
+        AITests.FakeProc.mode = 'fail'
+        with self.assertRaises(RuntimeError) as cm:
+            il.ai_enlarge(img, "waifu2x photo (2x, gentler)", 2, 1, folder=self.tmp.name)
+        self.assertIn("vkCreateInstance", str(cm.exception))
+        AITests.FakeProc.mode = 'slow'
+        il.AI_CANCEL.set()
+        with self.assertRaises(il.Cancelled):
+            il.ai_enlarge(img, "waifu2x photo (2x, gentler)", 2, 1, folder=self.tmp.name)
+
+    def test_tool_is_external_geometry_in_the_layout(self):
+        t = il.TOOLS["Enlarge (AI)"]
+        self.assertTrue(t.external and t.geometry and not t.preview)
+        self.assertIn("Enlarge (AI)", il.TOOL_LAYOUT["Size and orientation"])
 
 
 class PortraitTests(unittest.TestCase):
