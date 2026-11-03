@@ -90,7 +90,7 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
     go: soft edge, opacity, *Aligned* keeps the offset between strokes) and **Clean brush** (paint over a spot, scratch or stray
     mark, it shows red; when you let go it is rebuilt from its surroundings). Both are limited to the selection and work on the
     selected layer's pixels.
-  - Size: **Enlarge (local, free)** makes the picture 2x or 4x larger with Real-ESRGAN or waifu2x (the `-ncnn-vulkan` command-line programs, which you download
+  - Size: **Upscale (local, free)** makes the picture 2x or 4x larger with Real-ESRGAN or waifu2x (the `-ncnn-vulkan` command-line programs, which you download
     yourself and which need a GPU with Vulkan; *Tools > AI programs folder...* tells ImageForge where they are). It runs in the background (the window stays
     usable, Esc stops it) and can take minutes: about 2.5 min per megapixel with Real-ESRGAN on an integrated Intel GPU. The detail it adds is invented, not
     recovered. It does **not** remove objects.

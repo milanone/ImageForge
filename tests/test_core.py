@@ -1634,10 +1634,10 @@ class WorkflowTests(unittest.TestCase):
 
 
 class AITests(unittest.TestCase):
-    """Enlarge (local, free): the command lines, finding the programs, a fake program standing in for the real one, failure and cancel."""
+    """Upscale (local, free): the command lines, finding the programs, a fake program standing in for the real one, failure and cancel."""
 
     class FakeProc:
-        """Stands in for subprocess.Popen: 'enlarges' the input by pixel repetition and writes the output where -o says."""
+        """Stands in for subprocess.Popen: 'upscales' the input by pixel repetition and writes the output where -o says."""
         calls = []
         mode = 'ok'
 
@@ -1704,35 +1704,35 @@ class AITests(unittest.TestCase):
         r = il.ai_command("Real-ESRGAN photo (4x, most detail)", os.path.join(self.dir, "realesrgan-ncnn-vulkan.exe"), "a.png", "b.png", 2, 1)
         self.assertEqual((r[r.index("-n") + 1], r[r.index("-s") + 1]), ("realesrgan-x4plus", "4"))     # always the model's own scale
 
-    def test_enlarge_sizes_and_input_untouched(self):
+    def test_upscale_sizes_and_input_untouched(self):
         img = np.random.default_rng(0).integers(0, 255, (12, 20, 3)).astype(np.uint8)
         ref = img.copy()
         il.set_ai_dir(self.tmp.name)
-        out = il.apply_tool("Enlarge (local, free)", img, {'method': "waifu2x photo (2x, gentler)", 'scale': '4x'})
+        out = il.apply_tool("Upscale (local, free)", img, {'method': "waifu2x photo (2x, gentler)", 'scale': '4x'})
         self.assertEqual(out.shape, (48, 80, 3))
         self.assertEqual(out.dtype, np.uint8)
         self.assertTrue(np.array_equal(img, ref))
-        out2 = il.apply_tool("Enlarge (local, free)", img, {'method': "Real-ESRGAN photo (4x, most detail)", 'scale': '2x'})       # x4 model, reduced to 2x
+        out2 = il.apply_tool("Upscale (local, free)", img, {'method': "Real-ESRGAN photo (4x, most detail)", 'scale': '2x'})       # x4 model, reduced to 2x
         self.assertEqual(out2.shape, (24, 40, 3))
-        self.assertIn("20x12 -> 40x24", il.TOOL_NOTES["Enlarge (local, free)"])
+        self.assertIn("20x12 -> 40x24", il.TOOL_NOTES["Upscale (local, free)"])
 
     def test_missing_program_and_failure_and_cancel(self):
         img = np.zeros((8, 8, 3), np.uint8)
         with self.assertRaises(il.ToolUnavailable):
-            il.ai_enlarge(img, "waifu2x photo (2x, gentler)", 2, 1, folder=self.dir)             # that folder has only Real-ESRGAN
+            il.ai_upscale(img, "waifu2x photo (2x, gentler)", 2, 1, folder=self.dir)             # that folder has only Real-ESRGAN
         AITests.FakeProc.mode = 'fail'
         with self.assertRaises(RuntimeError) as cm:
-            il.ai_enlarge(img, "waifu2x photo (2x, gentler)", 2, 1, folder=self.tmp.name)
+            il.ai_upscale(img, "waifu2x photo (2x, gentler)", 2, 1, folder=self.tmp.name)
         self.assertIn("vkCreateInstance", str(cm.exception))
         AITests.FakeProc.mode = 'slow'
         il.AI_CANCEL.set()
         with self.assertRaises(il.Cancelled):
-            il.ai_enlarge(img, "waifu2x photo (2x, gentler)", 2, 1, folder=self.tmp.name)
+            il.ai_upscale(img, "waifu2x photo (2x, gentler)", 2, 1, folder=self.tmp.name)
 
     def test_tool_is_external_geometry_in_the_layout(self):
-        t = il.TOOLS["Enlarge (local, free)"]
+        t = il.TOOLS["Upscale (local, free)"]
         self.assertTrue(t.external and t.geometry and not t.preview)
-        self.assertIn("Enlarge (local, free)", il.TOOL_LAYOUT["Size and orientation"])
+        self.assertIn("Upscale (local, free)", il.TOOL_LAYOUT["Size and orientation"])
 
 
 class GenerativeTests(unittest.TestCase):

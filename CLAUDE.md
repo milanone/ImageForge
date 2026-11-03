@@ -383,7 +383,7 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   go into a recipe used on others. Not recipe-aware beyond the generic path. Tests: `PortraitTests`; real window: `examples/portrait_session.py`. Not done: eye
   and teeth brightening, blemish removal (Clean brush does it by hand), hair and face-shape handling, a profile detector, a deep-learning detector.
 
-- **Enlarge (local, free)** (`ai_enlarge`, `ai_command`, `find_ai_program`, `AI_METHODS`, `Tool.external`, `_start_external` / `_poll_external`): runs the user's own
+- **Upscale (local, free)** (`ai_upscale`, `ai_command`, `find_ai_program`, `AI_METHODS`, `Tool.external`, `_start_external` / `_poll_external`): runs the user's own
   `realesrgan-ncnn-vulkan` / `waifu2x-ncnn-vulkan` executables (nothing is bundled or downloaded; both are MIT / BSD-style projects, check before shipping them).
   `find_ai_program` looks in the folder given, `IMAGEFORGE_AI_DIR`, `AI_DIR` (settings key `ai_dir`, set by Tools > AI programs folder...), each as the program's own
   folder or a parent holding it one level down, then the PATH. The picture goes through a temporary PNG; the process is polled so `AI_CANCEL` (Esc) can
@@ -392,8 +392,8 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   `-s` and `-n` (noise 0-3) and an absolute `-m` model folder. `Tool.external=True` tools are skipped by the generic default/extremes tests (they would run the
   real program) and tested with a fake `_popen` (`AITests`); in the editor `apply()` hands them to a worker thread (the status line counts seconds, Apply is disabled, Esc
   stops, a result is dropped if the history moved on meanwhile) and asks before a result above 12 MP. Measured here (Intel Iris Xe, 1182x887 -> 4x): Real-ESRGAN x4plus 152 s,
-  waifu2x photo 2x 56 s; Real-ESRGAN gives the most detail and slightly waxy skin, waifu2x is gentler. Real window with the real programs: `examples/enlarge_ai_session.py`.
-  These are enlargers and denoisers: NOT inpainting, they cannot remove objects (that would need a model such as LaMa or MI-GAN, not added).
+  waifu2x photo 2x 56 s; Real-ESRGAN gives the most detail and slightly waxy skin, waifu2x is gentler. Real window with the real programs: `examples/upscale_ai_session.py`.
+  These are upscalers and denoisers: NOT inpainting, they cannot remove objects (that would need a model such as LaMa or MI-GAN, not added).
 
 - **Remove object (local, free)** (`lama_remove`, `_lama_fill`, `_lama_session`, `region_bool`, `find_ai_model`, `Tool.takes_region`; group Clean-up, `external=True`): the working area
   IS the input (`takes_region` tools get `region=` from `apply_tool` and are not merged afterwards; `_recipe_step_for` skips them, a selection belongs to one
