@@ -3,7 +3,7 @@
     python examples/remove_generative_session.py            FREE: a fake OpenRouter answers, on a synthetic picture with two red squares
     python examples/remove_generative_session.py --real PHOTO.jpg
                                                             PAID, about 0.04 USD per request, 2 requests: it removes the dark flask and the green bottle of the
-                                                            desk photo through the real window and the real service (key from OPENROUTER_API_KEY).
+                                                            desk photo WITHOUT a description, through the real window and the real service (key from OPENROUTER_API_KEY).
                                                             The confirmation dialog is answered by the script: NO if a face is in the crop or the estimate is
                                                             above 0.06 USD, so it can never send a face or spend more than expected.
 
@@ -83,13 +83,16 @@ if not real:
     a.undo(); print("Undo restores the picture:", np.array_equal(a.hist.current, orig))
     run("the red squares", [[(115, 165), (185, 165), (185, 235), (115, 235)], [(415, 165), (485, 165), (485, 235), (415, 235)]])
     print("two pieces: 2 requests, announced in the dialog:", "2 crops" in dialogs[-1], [c for c in calls if c == "/chat/completions"].__len__() == 3)
+    a.undo(); a.undo() if a.hist.current is not orig and not np.array_equal(a.hist.current, orig) else None
+    ok = run("", [[(115, 165), (185, 165), (185, 235), (115, 235)]]); cur = a.hist.current
+    print("empty description: the dialog says so:", "No description given" in dialogs[-1], "| removed anyway:", ok and int(((cur[165:235, 115:185, 0] > 200) & (cur[165:235, 115:185, 1] < 60)).sum()) == 0)
 else:
     k = w / 900.0; oy = int(800 * k)
     thermos = [(118,282),(150,250),(240,238),(330,245),(348,268),(348,330),(340,360),(345,390),(352,420),(375,440),(395,470),(405,520),(412,580),(414,674),(90,674),(92,560),(100,520),(125,480),(150,450),(148,420),(95,405),(85,395),(110,370),(125,345),(122,310)]
     bottle = [(585,62),(660,62),(662,100),(690,130),(712,170),(718,230),(705,270),(690,300),(715,340),(722,430),(722,520),(722,560),(710,600),(670,630),(640,640),(600,632),(560,610),(545,570),(543,520),(545,430),(545,350),(560,325),(580,300),(570,270),(545,235),(535,185),(545,160),(575,120),(582,100)]
     P = lambda L: [(x * 2, oy + y * 2) for x, y in L]
-    r1 = run("the dark blue insulated flask with the wooden lid, on the left", [P(thermos)])
-    r2 = run("the transparent green water bottle with the red cap, in the middle", [P(bottle)]) if r1 else False
+    r1 = run("", [P(thermos)])                       # no description: the object at the centre of the crop
+    r2 = run("", [P(bottle)]) if r1 else False        # the hard case, also without a description
     print("both runs committed:", r1, r2, "| history labels:", [st[0] for st in a.hist.states][-3:])
     Image.fromarray(a.hist.current).save(os.path.join(tempfile.gettempdir(), "gen_real_result.jpg"), quality=93); print("saved", os.path.join(tempfile.gettempdir(), "gen_real_result.jpg"))
 x, y = root.winfo_rootx(), root.winfo_rooty(); ImageGrab.grab((x, y, x + root.winfo_width(), y + root.winfo_height())).save(os.path.join(tempfile.gettempdir(), "gen_ui.png"))

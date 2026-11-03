@@ -102,7 +102,7 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
     is invented, plausible rather than true, and a little smoother than the photograph.
   - Clean-up: **Remove object (generative)** redraws what was behind an object with a generative model (Google Gemini image models through
     [OpenRouter](https://openrouter.ai)). **It costs money**: about 0.04 USD per object, charged to your OpenRouter credit, which the panel shows (*Refresh
-    credit*). Select the object, describe it in words, press Apply: a window shows what will be sent (only a crop around the object, never the whole picture; you
+    credit*). Select the object, describe it in words (or leave the box empty: the object at the centre of the crop, which is the one you selected, is removed), press Apply: a window shows what will be sent (only a crop around the object, never the whole picture; you
     are warned if a face is in it), the estimated cost and your credit, and nothing is sent until you say yes. The answer is aligned to the original and pasted
     back only over the object, so the rest of the picture is unchanged. Set the key once with
     `[Environment]::SetEnvironmentVariable('OPENROUTER_API_KEY','your-key','User')`; it is never shown, saved or logged by ImageForge. *Help > Guide: removing

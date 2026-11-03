@@ -1248,6 +1248,7 @@ GEN_MODELS = ("google/gemini-2.5-flash-image", "google/gemini-3.1-flash-image")
 GEN_IMAGE_TOKENS = {"google/gemini-2.5-flash-image": 1290, "google/gemini-3.1-flash-image": 1120}   # output tokens of one ~1 megapixel picture, as measured
 GEN_INPUT_TOKENS = 1400                       # what the request itself costs in input tokens (text + the picture), as measured
 GEN_FALLBACK_PRICES = {"google/gemini-2.5-flash-image": (3e-7, 3e-5), "google/gemini-3.1-flash-image": (5e-7, 6e-5)}     # (input, image output) USD per token
+GEN_DEFAULT_WHAT = "the main object at the centre of the picture"       # used when the description is left empty: the crop is centred on the selection
 GEN_MAX_SIDE = 1024                           # the crop sent is shrunk to this: the model hands back about one megapixel anyway
 OR_STATE = {'credit': None, 'prices': {}}     # the credit as far as we know (USD), and the prices read from OpenRouter's public list
 
@@ -1313,9 +1314,11 @@ def gen_estimate(model, calls=1):
 
 def gen_prompt(what):
     """The instruction sent with the crop. One object per request, described in words (the model gets no mask): the crop is centred on it."""
-    return ("Edit this photo: remove %s (it is at the centre of the picture). Rebuild what would be behind it in a realistic way, continuing the "
+    what = what.strip().rstrip(".") or GEN_DEFAULT_WHAT
+    where = "" if what == GEN_DEFAULT_WHAT else " (it is at the centre of the picture)"
+    return ("Edit this photo: remove %s%s. Rebuild what would be behind it in a realistic way, continuing the "
             "surrounding surfaces, textures, light and shadows. Do not change anything else: keep the framing, the size, the colours, the light "
-            "and every other detail exactly as they are." % what.strip().rstrip("."))
+            "and every other detail exactly as they are." % (what, where))
 
 
 def gen_edit(crop, what, model, key):
@@ -1405,12 +1408,11 @@ def gen_pieces(img, region, grow=8):
 
 def generative_remove(img, region, what, model=GEN_MODELS[0], grow=8, key=None, max_cost=None):
     """`img` with the object(s) of the selection removed by a generative model: for each separate piece a crop around it is sent to `model` through
-    OpenRouter with the instruction to remove `what` (describe the object; several pieces get the same description), and the answer is aligned and
-    pasted back only over the piece, so the rest of the picture is exactly the original. Costs money on every call. ValueError (nothing selected, no
-    description), ToolUnavailable (no key), RuntimeError (the service or the alignment failed), Cancelled (AI_CANCEL set). With `max_cost` the
+    OpenRouter with the instruction to remove `what` (describe the object; several pieces get the same description; empty = "the main object at the
+    centre", which is what the crop is centred on), and the answer is aligned and
+    pasted back only over the piece, so the rest of the picture is exactly the original. Costs money on every call. ValueError (nothing selected),
+    ToolUnavailable (no key), RuntimeError (the service or the alignment failed), Cancelled (AI_CANCEL set). With `max_cost` the
     work stops before a request that would take the total spent above it."""
-    if not str(what).strip():
-        raise ValueError("Describe what to remove (for example: the green water bottle).")
     pieces = gen_pieces(img, region, grow)
     key = key or openrouter_key()
     if not key:
@@ -1437,12 +1439,12 @@ def generative_remove(img, region, what, model=GEN_MODELS[0], grow=8, key=None, 
 
 
 @tool("Remove object (generative)", "Clean-up", [
-    Param('what', "What to remove (describe it in words)", 'text', ""),
+    Param('what', "What to remove (describe it; empty = the object at the centre)", 'text', ""),
     Param('model', "Model", 'choice', GEN_MODELS[0], choices=GEN_MODELS),
     Param('grow', "Widen the selection by (% of the object's size)", 'int', 8, 0, 40, slider=True)],
     preview=False, external=True, takes_region=True,
     doc="COSTS MONEY (about 0.04 USD per object, from your OpenRouter credit). Select the object (Lasso, Magic wand or Rectangle), describe it in "
-        "words, press Apply: a generative AI model redraws what was behind it. You see what will be sent and the cost, and nothing leaves the computer "
+        "words (or leave the box empty: the object at the centre of the crop is removed), press Apply: a generative AI model redraws what was behind it. You see what will be sent and the cost, and nothing leaves the computer "
         "until you say yes; only a crop around the object is sent. One object per run. Press Guide... below for the steps, tips, money and privacy.")
 def remove_object_generative(img, what, model, grow, region=None):
     return generative_remove(img, region, what, model, grow)
@@ -1472,12 +1474,14 @@ HOW TO USE "REMOVE OBJECT (GENERATIVE)"
 
 1. Select the object: Lasso, Magic wand or Rectangle (the toolbox, top left). It does not need to be precise: it tells the program where the object is.
 2. Describe it in the box "What to remove", in words, as you would to a person: 'the transparent green water bottle', 'the man in the red jacket'.
+   You may leave the box empty: the program then asks the model to remove 'the main object at the centre of the picture', which is the object you
+   selected because the crop is centred on it. That works when nothing else big is at the centre; with a few objects close together, describe it.
 3. Press Apply. A window tells you what will be sent, the estimated cost and your OpenRouter credit. Nothing is sent until you press Yes.
 4. Wait a few seconds. The window stays usable; Esc stops it. The result is one step of the history: Undo takes it back.
 5. Look at the result. If it is wrong, Undo, change the description or the widening, and try again: each try costs again.
 
 TIPS
-- One object per run. The model gets your words, not the selection: with two different objects, run the tool twice. (Several pieces of the same
+- One object per run. The model gets your words (or the default sentence), not the selection: with two different objects, run the tool twice. (Several pieces of the same
   kind, for instance three bottles, can be removed in one run; each piece is a separate request.)
 - Be specific about which one: colour, size, where it is. 'the dark blue flask on the left, with the wooden lid' works better than 'the flask'.
 - Widen the selection a little (the default 8 % is fine) so the glass, the shadow and the reflection of the object are included.
@@ -4727,9 +4731,6 @@ class ImageForge:
                 if not self.choose_ai_dir() or find_ai_model("lama") is None:
                     return
         if t.name == "Remove object (generative)":
-            if not str(params.get('what', "")).strip():
-                self._status("Describe what to remove in the box 'What to remove' (for example: the green water bottle), then press Apply.")
-                return
             key = openrouter_key()
             if not key:
                 messagebox.showwarning(APP_NAME, "No OpenRouter key was found. Set the environment variable OPENROUTER_API_KEY (once, in PowerShell):\n\n"
@@ -4749,9 +4750,12 @@ class ImageForge:
             if OR_STATE['credit'] is None:
                 self.refresh_or_credit(False)
             faces = sum(len(find_faces(cur[pc['y0']:pc['y0'] + pc['side'], pc['x0']:pc['x0'] + pc['side']])) for pc in pieces)
+            said = str(params.get('what', "")).strip()
             lines = ["This will send %d crop%s of your picture (%s) to OpenRouter, which passes %s to %s, with the words: \"%s\"." % (
                 len(pieces), "" if len(pieces) == 1 else "s", ", ".join("%d x %d px" % (pc['sent'], pc['sent']) for pc in pieces),
-                "it" if len(pieces) == 1 else "them", model, str(params['what']).strip()),
+                "it" if len(pieces) == 1 else "them", model, said or "remove " + GEN_DEFAULT_WHAT),
+                ("No description given: the model is asked to remove the object at the centre of the crop (the one you selected), "
+                 "which works best when nothing else big is there." if not said else ""),
                 "Only the crop leaves this computer, not the whole picture.", "",
                 "Estimated cost: about %.3f USD (%d request%s)." % (est, len(pieces), "" if len(pieces) == 1 else "s"),
                 ("Credit: about %.2f USD." % OR_STATE['credit']) if OR_STATE['credit'] is not None else "Credit: unknown."]

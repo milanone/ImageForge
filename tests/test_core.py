@@ -1833,8 +1833,6 @@ class GenerativeTests(unittest.TestCase):
 
     def test_stops_before_spending(self):
         with self.assertRaises(ValueError):
-            il.generative_remove(self.img, self.sel((115, 165, 185, 235)), "   ")
-        with self.assertRaises(ValueError):
             il.generative_remove(self.img, None, "the red square")
         il.openrouter_key = lambda: None
         with self.assertRaises(il.ToolUnavailable):
@@ -1844,6 +1842,14 @@ class GenerativeTests(unittest.TestCase):
         with self.assertRaises(il.Cancelled):
             il.generative_remove(self.img, self.sel((115, 165, 185, 235)), "the red square")
         self.assertEqual(self.chat_calls(), [])                                                                      # nothing was sent in any of these
+
+    def test_an_empty_description_uses_the_default_sentence(self):
+        il.generative_remove(self.img, self.sel((115, 165, 185, 235)), "   ", grow=10)
+        text = self.last_body["messages"][0]["content"][0]["text"]
+        self.assertIn("remove " + il.GEN_DEFAULT_WHAT + ".", text)
+        self.assertNotIn("it is at the centre of the picture", text)                       # the default already says it
+        il.generative_remove(self.img, self.sel((115, 165, 185, 235)), "the red square", grow=10)
+        self.assertIn("remove the red square (it is at the centre of the picture).", self.last_body["messages"][0]["content"][0]["text"])
 
     def test_errors_are_plain_and_never_contain_the_key(self):
         self.mode = 'http402'

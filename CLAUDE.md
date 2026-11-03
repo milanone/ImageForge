@@ -426,7 +426,7 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   `generative_remove(max_cost=)` stops before a request that would pass the limit; no key = nothing sent. The key is read from OPENROUTER_API_KEY or, on Windows, the user
   profile (`winreg`, so one set after the program started is found) and is never shown, stored or logged; errors are built without it. Tests use a fake `_urlopen`
   (`GenerativeTests`, 9 tests, including a fake model that returns the picture rescaled and shifted); `examples/remove_generative_session.py` is free by default (fake service)
-  and `--real PHOTO` spends about 0.08 USD (2 requests) and refuses a crop with a face. THE REAL-SERVICE RUN OF THIS TOOL THROUGH THE WINDOW WAS NOT DONE: the harness blocked
+  and `--real PHOTO` spends about 0.08 USD (2 requests) and refuses a crop with a face. An EMPTY description is allowed (`GEN_DEFAULT_WHAT` = 'the main object at the centre of the picture', no 'it is at the centre' clause; the dialog says so): it relies on the crop being centred on the selection and is UNTESTED against the live service. THE REAL-SERVICE RUN OF THIS TOOL THROUGH THE WINDOW WAS NOT DONE: the harness blocked
   the paid command; the request format, the alignment and the paste were verified earlier with standalone scripts on the live service (4 requests, 0.185 USD), and the editor
   path only with the fake. Not done: sending a mask or a drawn outline (untested whether Gemini follows it), a free-text extra instruction, other providers, a per-run spending
   limit setting in the UI (the code supports `max_cost`).
