@@ -77,7 +77,7 @@ print("Erase rectangle inside the triangle only:", bool((cur[200, 120] == 255).a
 a.undo()
 
 # 6. a rectangle still works as before, and replaces the shape
-a.b_modes["Rectangle"].invoke(); drag((20, 20), (200, 140))
+a.b_modes["Select / move"].invoke(); drag((20, 20), (200, 140))
 print("rectangle after a shape:", a.sel, "| plain tuple:", m.region_mask(a.sel, orig.shape) is None, "| handles drawn:", any(c.type(i) == 'rectangle' for i in c.find_withtag('sel')))
 root.after(300, root.quit); root.mainloop()
 x, y = root.winfo_rootx(), root.winfo_rooty(); ImageGrab.grab((x, y, x + root.winfo_width(), y + root.winfo_height())).save(os.path.join(tempfile.gettempdir(), 'selection_ui.png'))

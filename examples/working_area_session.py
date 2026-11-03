@@ -29,15 +29,16 @@ def find_button(text):
         w = stack.pop()
         if w.winfo_class() == 'Button' and w.cget('text') == text: return w
         stack.extend(w.winfo_children())
-btn_define, btn_whole = a.b_modes["Rectangle"], find_button("Whole image (no area)")
+btn_define, btn_whole = a.b_modes["Select / move"], find_button("Whole image (no area)")
 print("bar present:", btn_define is not None and btn_whole is not None, "| label:", a.l_area.cget('text'))
 
 # 1. the awkward case: a painting tool is ALREADY selected, then the area is defined
 a.tree.selection_set("Eraser brush"); root.update(); a.pvars['size'].set(30); root.update()
-btn_define.invoke(); print("mode after the button:", a.mode)
+btn_define.invoke(); print("mode after the Select / move button:", a.mode, "| the brush was left (no tool):", a.tool is None, "| toolbox shows no tool:", a.v_toolsel.get() == "")
 drag(scr(20, 30), scr(300, 200))
-print("area set with the brush tool selected:", a.sel, "| mode over:", a.mode is None, "| tool unchanged:", a.tool.name, "| boxes:", [a.area_vars[k].get() for k in 'XYWH'],
-      "| label:", a.l_area.cget('text'))
+print("area drawn in the base state:", a.sel, "| mode over:", a.mode is None, "| boxes:", [a.area_vars[k].get() for k in 'XYWH'], "| label:", a.l_area.cget('text'))
+a.tree.selection_set("Eraser brush"); root.update(); a.pvars['size'].set(30); root.update()          # pick the tool again: the area stays
+print("area kept when the brush is picked again:", a.sel is not None, "| tool:", a.tool.name)
 orig = a.hist.current
 n = len(a.hist.states); drag(scr(10, 100), scr(590, 100))                      # a stroke across the whole width, area is x 20..300
 cur = a.hist.current

@@ -143,13 +143,16 @@ def tool(name, group, params=(), geometry=False, preview=True, doc="", interacti
 
 # the toolbox: the mouse tools as icon buttons (a group per line of two), then the selection commands and the Hand
 TOOLBOX = [
-    ("Select", ["Rectangle", "Magic wand", "Lasso", "Hand"]),
+    ("Select", ["Select / move", "Magic wand", "Lasso", "Hand"]),
     ("Draw", ["Pencil", "Paintbrush", "Eraser brush", "Fill bucket", "Gradient"]),
     ("Retouch", ["Clone stamp", "Clean brush", "Dodge / burn", "Erase rectangle", "Move area"]),
     ("Annotate", ["Add text", "Shapes", "Scale bar", "Measure"]),
     ("Layers", ["Move layer"]),
 ]
-TOOLBOX_MODES = {"Rectangle": 'area', "Magic wand": 'wand', "Lasso": 'lasso'}      # buttons that start a selection mode, not a tool
+TOOLBOX_MODES = {"Magic wand": 'wand', "Lasso": 'lasso'}      # buttons that start a selection mode, not a tool
+NO_TOOL_DOC = ("Select and move (no tool): drag to select a rectangle; the handles resize it; drag inside it to move what is inside (Shift copies, Ctrl "
+               "moves only the frame). The Magic wand and the Lasso select other shapes. Pick a tool to work inside the selection; click the tool "
+               "again to come back here.")
 GROUP_SHORT = {"Size and orientation": "Size", "Adjustments": "Adjust", "Clean-up": "Clean-up", "Filters": "Filters"}
 
 
@@ -243,11 +246,12 @@ def tool_icon(name, size=26):
     elif name == "Move layer":
         box((3, 9, 15, 21), soft, ink)
         box((10, 3, 22, 15), None, acc)
-    elif name == "Rectangle":
-        for a, b in (((4, 5), (22, 5)), ((22, 5), (22, 21)), ((22, 21), (4, 21)), ((4, 21), (4, 5))):
+    elif name == "Select / move":                              # a dashed selection with a pointer arrow: the base state, no tool
+        for a, b in (((3, 4), (17, 4)), ((17, 4), (17, 14)), ((17, 14), (3, 14)), ((3, 14), (3, 4))):
             dash(a, b)
-        for cx, cy in ((4, 5), (22, 5), (22, 21), (4, 21)):
-            box((cx - 2, cy - 2, cx + 2, cy + 2), acc, acc)
+        for cx, cy in ((3, 4), (17, 4), (17, 14), (3, 14)):
+            box((cx - 1.6, cy - 1.6, cx + 1.6, cy + 1.6), acc, acc)
+        poly((11, 11, 11, 24, 14.2, 20.8, 16.6, 25.6, 19.2, 24.4, 16.8, 19.7, 21.5, 19.7), ink, ink)
     elif name == "Magic wand":
         line((4, 22, 15, 11), ink, int(3 * u))
         for a in ((19, 2, 19, 12), (14, 7, 24, 7), (15.5, 3.5, 22.5, 10.5), (22.5, 3.5, 15.5, 10.5)):
@@ -290,6 +294,8 @@ SHORTCUTS = [
     ("View", "Space + drag", "Move the picture, with any tool (not while typing in a box)", "standard"),
     ("View", "Right or middle button + drag", "Move the picture", "standard"),
     ("View", "Hand button in the toolbox", "The left button moves the picture", "standard (tool)"),
+    ("Tools", "Select / move button (the arrow)", "No tool: drag selects a rectangle, drag inside it moves what is inside (Shift copies, Ctrl moves the frame only)", "standard (tool)"),
+    ("Tools", "Click the tool in use again", "Deselects it: back to Select / move", "common"),
     ("View", "Ctrl+H", "Histogram window", "ours"),
     ("Selections with the mouse", "Drag", "Draw a rectangle; drag inside it to move it, drag a handle to resize", "standard"),
     ("Selections with the mouse", "Shift + click", "Magic wand and Lasso: add to the selection", "standard"),
@@ -1222,7 +1228,7 @@ def lama_remove(img, region, grow=12, grain=True, model=None):
     outside the outline you draw and the model would copy it. ValueError when there is no selection; ToolUnavailable when the model is missing."""
     mask = region_bool(region, img.shape)
     if mask is None or not mask.any():
-        raise ValueError("Select the object first (Lasso, Magic wand or Rectangle), then press Apply.")
+        raise ValueError("Select the object first (Lasso, Magic wand or a rectangle with Select / move), then press Apply.")
     path = model or find_ai_model("lama")
     if path is None or not os.path.isfile(path):
         raise ToolUnavailable("The LaMa model (lama_fp32.onnx) was not found. Put it in the AI programs folder and use Tools > AI programs folder...")
@@ -1253,7 +1259,7 @@ def lama_remove(img, region, grow=12, grain=True, model=None):
     preview=False, external=True, takes_region=True,
     doc="FREE and LOCAL: nothing leaves this computer. Removes what is inside the working area and rebuilds it from the surroundings with the LaMa "
         "neural network (a 'magic eraser'; for a paid online model that invents more, see Remove object (API, paid)). Select the "
-        "object first with the Lasso, the Magic wand or the Rectangle (several separate pieces are removed one after the other), then press Apply: it "
+        "object first with the Lasso, the Magic wand or a rectangle (Select / move) (several separate pieces are removed one after the other), then press Apply: it "
         "takes about ten seconds per piece on the CPU and the window stays usable (Esc stops it). Widening the selection by about 10-15 % is "
         "important for transparent or shiny things (a bottle, glass, a reflection): their tint and reflection lie outside the outline. The model "
         "works at 512 x 512 on a crop around the object, so the fill is a little smoother than the photograph (the grain option adds it back); "
@@ -1411,7 +1417,7 @@ def gen_pieces(img, region, grow=8):
     the model sees some surroundings but as little else as possible. ValueError when nothing is selected."""
     mask = region_bool(region, img.shape)
     if mask is None or not mask.any():
-        raise ValueError("Select the object first (Lasso, Magic wand or Rectangle), then press Apply.")
+        raise ValueError("Select the object first (Lasso, Magic wand or a rectangle with Select / move), then press Apply.")
     h, w = img.shape[:2]
     n, lab, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
     out = []
@@ -1465,7 +1471,7 @@ def generative_remove(img, region, what, model=GEN_MODELS[0], grow=8, key=None, 
     Param('model', "Model", 'choice', GEN_MODELS[0], choices=GEN_MODELS),
     Param('grow', "Widen the selection by (% of the object's size)", 'int', 8, 0, 40, slider=True)],
     preview=False, external=True, takes_region=True,
-    doc="COSTS MONEY (about 0.04 USD per object, from your OpenRouter credit). Select the object (Lasso, Magic wand or Rectangle), describe it in "
+    doc="COSTS MONEY (about 0.04 USD per object, from your OpenRouter credit). Select the object (Lasso, Magic wand or a rectangle with Select / move), describe it in "
         "words (or leave the box empty: the object at the centre of the crop is removed), press Apply: a generative AI model redraws what was behind it. You see what will be sent and the cost, and nothing leaves the computer "
         "until you say yes; only a crop around the object is sent. One object per run. Press Guide... below for the steps, tips, money and privacy.")
 def remove_object_generative(img, what, model, grow, region=None):
@@ -1495,7 +1501,7 @@ runs and what it costs: (local, free) runs on this computer and sends nothing an
 
 HOW TO USE "REMOVE OBJECT (API, PAID)"
 
-1. Select the object: Lasso, Magic wand or Rectangle (the toolbox, top left). It does not need to be precise: it tells the program where the object is.
+1. Select the object: Lasso, Magic wand or a rectangle (Select / move: the toolbox, top left). It does not need to be precise: it tells the program where the object is.
 2. Describe it in the box "What to remove", in words, as you would to a person: 'the transparent green water bottle', 'the man in the red jacket'.
    You may leave the box empty: the program then asks the model to remove 'the main object at the centre of the picture', which is the object you
    selected because the crop is centred on it. That works when nothing else big is at the centre; with a few objects close together, describe it.
@@ -4055,7 +4061,7 @@ class ImageForge:
         self._ops_sync = False
         self.root.after(500, self._set_tools_divider)
 
-        self.l_doc = tk.Label(tab, text="", bg=bg, fg='#555555', font=('Arial', 8), wraplength=270, justify='left',
+        self.l_doc = tk.Label(tab, text=NO_TOOL_DOC, bg=bg, fg='#555555', font=('Arial', 8), wraplength=270, justify='left',
                               anchor='w')
         self.l_doc.pack(fill=tk.X, padx=10, pady=(4, 0))
         self.params_frame = tk.Frame(tab, bg=bg)
@@ -4274,23 +4280,24 @@ class ImageForge:
             grid.pack(padx=3)
             col = 0
             for name in names:
-                if name in TOOLS or name in TOOLBOX_MODES or name == "Hand":
+                if name in TOOLS or name in TOOLBOX_MODES or name in ("Hand", "Select / move"):
                     img = ImageTk.PhotoImage(tool_icon(name))
                     self._icons[name] = img
                     common = dict(image=img, width=30, height=30, bg='#f4f4f4', activebackground='#dfeaff', bd=1)
                     if name in TOOLS:
                         b = tk.Radiobutton(grid, variable=self.v_toolsel, value=name, indicatoron=False, selectcolor='#bcd6ff',
-                                           command=lambda n=name: self.tree.selection_set(n), **common)
-                        hint = "%s  (%s)" % (name, TOOLS[name].group)
+                                           command=lambda n=name: self._toolbox_click(n), **common)
+                        hint = "%s  (%s)  - click again to deselect" % (name, TOOLS[name].group)
                     elif name == "Hand":
                         b = tk.Checkbutton(grid, variable=self.v_hand, indicatoron=False, selectcolor='#bcd6ff', command=self._hand_changed, **common)
                         hint = "Hand: the left button moves the picture  (H, or hold Space)"
                     else:
-                        b = tk.Button(grid, command={"Rectangle": self.start_area, "Magic wand": self.start_wand, "Lasso": self.start_lasso}[name], **common)
+                        starter = {"Select / move": None, "Magic wand": self.start_wand, "Lasso": self.start_lasso}[name]
+                        b = tk.Button(grid, command=lambda f=starter: (self.leave_tool(), f() if f else None), **common)
                         self.b_modes[name] = b
-                        hint = {"Rectangle": "Rectangle: drag the working area (every tool then acts only inside it)",
-                                "Magic wand": "Magic wand: click a colour to select it  (Shift adds, Ctrl removes)",
-                                "Lasso": "Lasso: draw around what to select  (double-click closes)"}[name]
+                        hint = {"Select / move": "Select / move: no tool. Drag to select a rectangle, drag inside it to move what is inside  (Shift copies, Ctrl moves the frame only)",
+                                "Magic wand": "Magic wand: click a colour to select it  (Shift adds, Ctrl removes; leaves the current tool)",
+                                "Lasso": "Lasso: draw around what to select  (double-click closes; leaves the current tool)"}[name]
                     b.grid(row=col // 2, column=col % 2, padx=1, pady=1)
                     self._tip(b, hint)
                     col += 1
@@ -4303,7 +4310,7 @@ class ImageForge:
         name = self.tool.name if self.tool is not None else ""
         self.v_toolsel.set(name if any(name in names for _, names in TOOLBOX) else "")
         for n, b in getattr(self, 'b_modes', {}).items():
-            on = self.mode == TOOLBOX_MODES[n]
+            on = (self.tool is None and not self.mode) if n == "Select / move" else self.mode == TOOLBOX_MODES[n]       # the base state: no tool, no mode
             b.config(relief=tk.SUNKEN if on else tk.RAISED, bg='#bcd6ff' if on else '#f4f4f4')
 
     def _build_chips(self, order):
@@ -4395,6 +4402,44 @@ class ImageForge:
             self._status("%s applied (it was a preview) %s. Undo takes it back." % (name, why), ok=True)
             return True
         return False
+
+    def _toolbox_click(self, name):
+        """A click on a tool button of the toolbox: selects the tool; a second click on the tool already in use deselects it (like toggling a button), which
+        leaves the program in the plain select / move state."""
+        if self.tool is not None and self.tool.name == name:
+            self.leave_tool()
+            self._status("%s deselected: no tool in use." % name)
+        else:
+            self.tree.selection_set(name)
+
+    def leave_tool(self):
+        """Select / move state: no tool is in use. The Rectangle, Magic wand and Lasso buttons call it first, so that choosing a selection tool really leaves the
+        tool before it (a clone stamp used to stay active and kept cloning when the user wanted to select or move). The area stays: pick a tool again to work
+        inside it. The preview of the tool that is left is applied, like on any switch."""
+        if self.tool is None:
+            self.cancel_mode()                                   # already in the base state: just end a wand / lasso in progress
+            return
+        self._commit_pending("when you switched to a selection tool")
+        self.cancel_mode()
+        self._measure_cancel()
+        self.tool = None
+        self.preview = self.lprev = None
+        for w in self.params_frame.winfo_children():
+            w.destroy()
+        self.pvars = {}
+        self._params_ready = True
+        for tag in ('brush', 'clone', 'faces'):
+            self.canvas.delete(tag)
+        self._ops_sync = True                                   # clear the lists too: picking the same tool again must fire a selection change
+        try:
+            self.tree.selection_set(())
+            self.ops.selection_set(())
+        finally:
+            self._ops_sync = False
+        self.l_doc.config(text=NO_TOOL_DOC)
+        self._sync_toolbox()
+        self._update_state()
+        self._redraw()
 
     def select_tool(self, name):
         if self.tool is not None and self.tool.name != name:
@@ -4764,7 +4809,7 @@ class ImageForge:
         seconds, Esc stops it (AI_CANCEL). The result is committed in the Tk thread when it is done, unless the history moved on meanwhile."""
         t = self.tool
         if t.takes_region and region is None:
-            self._status("%s needs a selection: draw the object with the Lasso, the Magic wand or the Rectangle (the toolbox, top left), then press Apply." % t.name)
+            self._status("%s needs a selection: draw the object with the Lasso, the Magic wand or a rectangle (Select / move: the toolbox, top left), then press Apply." % t.name)
             return
         if t.name == "Remove object (local, free)":
             try:
@@ -6661,7 +6706,9 @@ class ImageForge:
         self.pvars['y'].set(int(math.floor(y)))
 
     def _moves_content(self, e):
-        if self.tool is not None and self.tool.interactive == 'rect-move':
+        if self.tool is None:
+            return not (e.state & 0x4)                                # the base 'Select / move': inside the rectangle the drag moves the content (Ctrl: the frame only)
+        if self.tool.interactive == 'rect-move':
             return True                                               # the 'Move area' tool: the drag always moves the content
         return self.v_content.get() != bool(e.state & 0x4)            # the box, flipped by Ctrl
 

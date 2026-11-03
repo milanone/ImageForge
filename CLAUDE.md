@@ -437,6 +437,15 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   the first version remembered ONE folder, so choosing `lama-onnx` for the model made the app forget the folder with the other two ('not set up' again); a list alone would not have rescued
   the settings already written with only `lama-onnx`, the sibling search does.
 
+- **Base state: Select / move** (`leave_tool`, `_toolbox_click`, `NO_TOOL_DOC`, button `b_modes["Select / move"]` = the old 'Rectangle'): `self.tool is None` is a real state, the one the
+  program starts in and the one the user asked for ('the base tool should be select and move'). Reported as: 'from the clone stamp I want to go to Select to move something and the
+  tool seems to stay on clone' - the Rectangle / wand / lasso buttons used to start a MODE and leave the tool in use selected (by design, so an area could be drawn with any tool, but a
+  drag with the clone stamp still cloned). Now the three Select buttons call `leave_tool()` first (commits a pending preview, clears the panel, the tool tree AND the ops list selection -
+  otherwise picking the same tool again fires no `<<TreeviewSelect>>` and the button looks dead), and a SECOND click on the tool in use deselects it (Francesco's idea). The area stays, so
+  the way to limit a tool to an area is: draw it in the base state, then pick the tool. In the base state `_moves_content` is true (the drag inside a rectangle moves the content, Shift
+  copies, Ctrl moves the frame only); with a tool in use the old rules stand (checkbox xor Ctrl; Move area always). `start_area` and the 'area' mode still exist (sessions, keyboard) but have no button.
+  The toolbox button is sunken when there is no tool and no mode (`_sync_toolbox`). Check: `examples/base_tool_session.py`.
+
 - **Automatic fit** (`self.autofit`, `_set_autofit`, `_on_canvas_resize`): `fit_view` turns it on (so opening a picture, an Undo that changes the size
   and the Fit button all do), `_zoom_at` (wheel, Ctrl +/-, 100%) and `_on_pan` turn it off, Center leaves it alone; the canvas `<Configure>` event
   refits while it is on and just redraws otherwise, so it also follows the panel divider and the first real window size (the first fit at
