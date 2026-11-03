@@ -38,6 +38,12 @@ print("status:", a.status.cget('text'))
 ev_h, ev_w = a.hist.current.shape[:2]; a.canvas.event_generate('<Motion>', x=200, y=200); root.update()
 print("the info line shows the new size (also under the pointer):", a.info.cget('text').startswith("%d x %d px" % (ev_w, ev_h)), "|", a.info.cget('text'))
 a.undo(); print("Undo restores the size:", a.hist.current.shape == orig.shape)
+# 'Shrink first': the picture is reduced to 50 % before the program, and the result is still 2x of the ORIGINAL
+a.tree.selection_set("Upscale (local, free)"); root.update(); a.pvars['method'].set("waifu2x photo (2x, gentler)"); a.pvars['scale'].set('2x'); a.pvars['shrink'].set(50); root.update()
+a.apply(); root.update(); t0 = time.time()
+while a._busy is not None and time.time() - t0 < 120: root.update(); time.sleep(0.05)
+print("shrink 50 %: result", a.hist.current.shape[1::-1], "(expected (320, 220)) | status:", a.status.cget('text'))
+a.undo(); print("   Undo restores the size:", a.hist.current.shape == orig.shape)
 # Esc stops a run (Real-ESRGAN x4 on a bigger picture takes long enough)
 if m.find_ai_program('realesrgan', folder):
     Image.fromarray(np.clip(np.linspace(30, 220, 600)[None, :, None] + rng.normal(0, 10, (450, 600, 3)), 0, 255).astype(np.uint8)).save(f); a.open_path(f); root.update()

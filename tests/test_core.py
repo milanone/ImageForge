@@ -1639,6 +1639,7 @@ class AITests(unittest.TestCase):
     class FakeProc:
         """Stands in for subprocess.Popen: 'upscales' the input by pixel repetition and writes the output where -o says."""
         calls = []
+        sizes = []
         mode = 'ok'
 
         def __init__(self, cmd, **kw):
@@ -1651,6 +1652,7 @@ class AITests(unittest.TestCase):
                 kw['stderr'].write("vkCreateInstance failed\n"); kw['stderr'].flush()
                 return
             im = Image.open(src)
+            AITests.FakeProc.sizes.append(im.size)                      # what the program was given
             if AITests.FakeProc.mode == 'slow':
                 self.slow = True
                 kw['stderr'].write("0.00%\n12.50%\n37.50%\n")                      # what the real programs print, tile by tile
@@ -1683,7 +1685,7 @@ class AITests(unittest.TestCase):
         il._popen = AITests.FakeProc
         il.AI_DIR = None
         il.AI_CANCEL.clear()
-        AITests.FakeProc.calls, AITests.FakeProc.mode = [], 'ok'
+        AITests.FakeProc.calls, AITests.FakeProc.mode, AITests.FakeProc.sizes = [], 'ok', []
 
     def tearDown(self):
         il._popen, il.AI_DIR = self.old
@@ -1697,6 +1699,22 @@ class AITests(unittest.TestCase):
         self.assertTrue(il.find_ai_program('waifu2x', self.dir).endswith("waifu2x-ncnn-vulkan.exe"))        # a program's own folder finds the ones next to it
         il.set_ai_dir(self.tmp.name)
         self.assertIsNotNone(il.find_ai_program('realesrgan'))
+
+    def test_shrink_first_then_upscale_still_gives_the_size_asked_for(self):
+        il.set_ai_dir(self.tmp.name)
+        img = np.random.default_rng(2).integers(0, 255, (100, 160, 3)).astype(np.uint8)
+        out = il.apply_tool("Upscale (local, free)", img, {'method': "waifu2x photo (2x, gentler)", 'scale': '2x', 'shrink': 50})
+        self.assertEqual(AITests.FakeProc.sizes[-1], (80, 50))                          # the program was given the picture reduced to 50 %
+        self.assertEqual(out.shape, (200, 320, 3))                                      # and the result is 2x of the ORIGINAL
+        self.assertIn("shrunk to 50 % first", il.TOOL_NOTES["Upscale (local, free)"])
+        out = il.apply_tool("Upscale (local, free)", img, {'method': "waifu2x photo (2x, gentler)", 'scale': '4x', 'shrink': 25})
+        self.assertEqual(AITests.FakeProc.sizes[-1], (40, 25))
+        self.assertEqual(out.shape, (400, 640, 3))                                      # asked 4x of the original from a 25 % copy: 16x would be needed, the program makes 4x, the rest is stretched
+        self.assertIn("stretched", il.TOOL_NOTES["Upscale (local, free)"])
+        out = il.apply_tool("Upscale (local, free)", img, {'method': "waifu2x photo (2x, gentler)", 'scale': '2x', 'shrink': 100})
+        self.assertEqual(AITests.FakeProc.sizes[-1], (160, 100))                        # 100 = off: the picture goes in as it is
+        self.assertEqual(out.shape, (200, 320, 3))
+        self.assertEqual([c[c.index("-s") + 1] for c in AITests.FakeProc.calls[-3:]], ["4", "4", "2"])   # what the program was asked for: 50 % then x4 = 2x of the original; 25 % then x4 (the most it makes); no shrink: x2
 
     def test_choosing_the_folder_of_one_program_does_not_forget_the_others(self):
         lama = os.path.join(self.tmp.name, "lama-onnx")

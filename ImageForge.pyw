@@ -1144,7 +1144,7 @@ def _tail(path, n=400):
         return ""
 
 
-def ai_upscale(img, method, scale, denoise=1, folder=None):
+def _ai_run(img, method, scale, denoise=1, folder=None):
     """`img` ((h, w, 3) RGB) upscaled `scale` times (2 or 4) by an external AI program, or ToolUnavailable if it is not found. Runs the program
     on a temporary PNG and waits for it, polling AI_CANCEL (set it from another thread to stop: Cancelled). A GPU with Vulkan is needed;
     on a laptop's integrated GPU expect minutes per megapixel."""
@@ -1189,20 +1189,45 @@ def ai_upscale(img, method, scale, denoise=1, folder=None):
         return np.asarray(out, dtype=np.uint8).copy()
 
 
+def ai_upscale(img, method, scale, denoise=1, folder=None, shrink=100):
+    """`img` made `scale` times larger (so exactly (w * scale, h * scale)) by the AI program. With `shrink` below 100 the picture is first REDUCED to that
+    percent (area averaging) and the program then enlarges the small copy by 2 or 4: for a grainy or already enlarged picture, whose pixels hold less detail
+    than their number says, the reduction removes the grain and the blocky artefacts first and the network starts from a clean picture. The program makes
+    2x or 4x, so what is still missing (or in excess) to reach the target is done with Lanczos."""
+    scale, shrink = int(scale), int(shrink)
+    if shrink >= 100:
+        return _ai_run(img, method, scale, denoise, folder)
+    h, w = img.shape[:2]
+    small = cv2.resize(np.ascontiguousarray(img), (max(1, round(w * shrink / 100.0)), max(1, round(h * shrink / 100.0))), interpolation=cv2.INTER_AREA)
+    prog = 2 if scale * 100.0 / shrink <= 2.0 + 1e-9 else 4            # what the program has to do to the small copy
+    out = _ai_run(small, method, prog, denoise, folder)
+    want = (w * scale, h * scale)
+    if (out.shape[1], out.shape[0]) != want:
+        out = cv2.resize(out, want, interpolation=cv2.INTER_LANCZOS4)
+    return out
+
+
 @tool("Upscale (local, free)", "Size and orientation", [
     Param('method', "Program and model", 'choice', next(iter(AI_METHODS)), choices=tuple(AI_METHODS)),
     Param('scale', "Upscale by", 'choice', '2x', choices=('2x', '4x')),
-    Param('denoise', "Remove noise (waifu2x only, 0-3)", 'int', 1, 0, 3)],
+    Param('denoise', "Remove noise (waifu2x only, 0-3)", 'int', 1, 0, 3),
+    Param('shrink', "Shrink first to (%): for grainy or already enlarged pictures", 'int', 100, 25, 100, slider=True)],
     geometry=True, preview=False, external=True,
     doc="FREE and LOCAL: the programs run on this computer and nothing is sent anywhere. Makes the picture 2 or 4 times larger with a neural network that invents plausible detail, instead of just stretching the pixels. "
         "It runs Real-ESRGAN or waifu2x, programs that must already be on this computer (Tools > AI programs folder... tells ImageForge "
         "where), and needs a GPU with Vulkan. It can take many minutes (about 2.5 minutes for 1 megapixel x4 on an integrated Intel GPU): "
         "ImageForge keeps working meanwhile and Esc stops it. Real-ESRGAN gives the most detail but can make skin look waxy; waifu2x is "
-        "gentler. The new detail is invented, not recovered: do not use it on pictures that must stay faithful to the original (measurements).")
-def upscale_ai(img, method, scale, denoise):
+        "gentler. The new detail is invented, not recovered: do not use it on pictures that must stay faithful to the original (measurements). "
+        "'Shrink first' is for a grainy picture, or one that was already enlarged, whose pixels hold less detail than their number says: it is "
+        "reduced to that percent before the program enlarges it, which removes the grain and blocky artefacts (try 50 and compare the result "
+        "with 100 using the Before button). The result always has the size you asked for (2x or 4x of the picture).")
+def upscale_ai(img, method, scale, denoise, shrink):
     TOOL_NOTES.pop("Upscale (local, free)", None)
-    out = ai_upscale(img, method, int(scale[0]), denoise)
-    TOOL_NOTES["Upscale (local, free)"] = "%dx%d -> %dx%d px" % (img.shape[1], img.shape[0], out.shape[1], out.shape[0])
+    out = ai_upscale(img, method, int(scale[0]), denoise, shrink=shrink)
+    note = "%dx%d -> %dx%d px" % (img.shape[1], img.shape[0], out.shape[1], out.shape[0])
+    if shrink < 100:
+        note += ", shrunk to %d %% first" % shrink + ("; the program makes 4x at most, the rest is stretched" if int(scale[0]) * 100.0 / shrink > 4.0 + 1e-9 else "")
+    TOOL_NOTES["Upscale (local, free)"] = note
     return out
 
 
