@@ -395,6 +395,12 @@ Run: `pythonw ImageForge.pyw [image]`. Tests: `python -m unittest discover -s te
   stops, a result is dropped if the history moved on meanwhile) and asks before a result above 12 MP. Measured here (Intel Iris Xe, 1182x887 -> 4x): Real-ESRGAN x4plus 152 s,
   waifu2x photo 2x 56 s; Real-ESRGAN gives the most detail and slightly waxy skin, waifu2x is gentler. Real window with the real programs: `examples/upscale_ai_session.py`.
   These are upscalers and denoisers: NOT inpainting, they cannot remove objects (that would need a model such as LaMa or MI-GAN, not added).
+  **Progress** (`AI_PROGRESS`, `parse_progress`, `format_eta`, `_tail`, `_show_pbar`, `_hide_pbar`, `self.pbar`): both programs print `12.50%` on stderr after each finished tile, which
+  was thrown away at first. stderr goes to a temp file; the poll loop in `ai_upscale` reads its last 400 bytes every 0.1 s (the file is read while the program still writes it: works on
+  Windows) and stores the last percentage in `AI_PROGRESS['pct']`; `_poll_external` (Tk thread, every 0.5 s) turns it into a filling `ttk.Progressbar` placed at the right end of the status
+  line and the text 'Upscale (local, free): 11 %, about 2 min 05 s left' (ETA = elapsed x (100 - p) / p, shown from 3 %). Tools that report no progress (Remove object local / API) get a
+  moving (indeterminate) bar and the seconds. Measured with the real Real-ESRGAN: 11 % after 16 s, estimate 2 min 05 s on a 600x450 picture. The percentage is per TILE, so it is not
+  smooth for a small picture (a few tiles). Tests: `AITests.test_progress_is_read_from_the_program_and_formatted`; real window: `examples/upscale_ai_session.py`.
 
 - **Remove object (local, free)** (`lama_remove`, `_lama_fill`, `_lama_session`, `region_bool`, `find_ai_model`, `Tool.takes_region`; group Clean-up, `external=True`): the working area
   IS the input (`takes_region` tools get `region=` from `apply_tool` and are not merged afterwards; `_recipe_step_for` skips them, a selection belongs to one

@@ -92,7 +92,7 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
     selected layer's pixels.
   - Size: **Upscale (local, free)** makes the picture 2x or 4x larger with Real-ESRGAN or waifu2x (the `-ncnn-vulkan` command-line programs, which you download
     yourself and which need a GPU with Vulkan; *Tools > AI programs folder...* tells ImageForge where they are). It runs in the background (the window stays
-    usable, Esc stops it) and can take minutes: about 2.5 min per megapixel with Real-ESRGAN on an integrated Intel GPU. The detail it adds is invented, not
+    usable, Esc stops it; a progress bar and the time left are shown, read from the program's own percentages) and can take minutes: about 2.5 min per megapixel with Real-ESRGAN on an integrated Intel GPU. The detail it adds is invented, not
     recovered. It does **not** remove objects.
   - Clean-up: **Remove object (local, free)** is a 'magic eraser' (a neural network, LaMa, that runs on your computer and sends nothing anywhere): select the object with the Lasso, Magic wand or Rectangle and press Apply; the selection (widened
     by about 12 % so the tint and reflection of glass or a bottle go too) is rebuilt from its surroundings by the LaMa neural network, on the CPU. It needs

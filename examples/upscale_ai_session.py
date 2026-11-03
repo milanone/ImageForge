@@ -46,6 +46,12 @@ if m.find_ai_program('realesrgan', folder):
     t1 = time.time()
     while time.time() - t1 < 4: root.update(); time.sleep(0.05)
     print("still running after 4 s:", a._busy is not None)
+    t1 = time.time()
+    while time.time() - t1 < 12: root.update(); time.sleep(0.05)                       # let it get a few percent further
+    print("progress reported by the program:", m.AI_PROGRESS['pct'], "| progress bar shown:", a.pbar.winfo_ismapped(), "| value:", round(float(a.pbar['value']), 1))
+    print("status line while it works:", a.status.cget('text'))
+    from PIL import ImageGrab
+    x0, y0 = a.status.winfo_rootx(), a.status.winfo_rooty(); ImageGrab.grab((x0, y0, x0 + a.status.winfo_width(), y0 + a.status.winfo_height())).save(os.path.join(tempfile.gettempdir(), "upscale_status.png"))
     a.escape(); t1 = time.time()
     while a._busy is not None and time.time() - t1 < 30: root.update(); time.sleep(0.05)
     print("Esc stopped it:", a._busy is None, "| nothing committed:", len(a.hist.states) == n, "| status:", a.status.cget('text'))

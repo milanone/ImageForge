@@ -1653,6 +1653,8 @@ class AITests(unittest.TestCase):
             im = Image.open(src)
             if AITests.FakeProc.mode == 'slow':
                 self.slow = True
+                kw['stderr'].write("0.00%\n12.50%\n37.50%\n")                      # what the real programs print, tile by tile
+                kw['stderr'].flush()
                 return
             im.resize((im.size[0] * s, im.size[1] * s), Image.NEAREST).save(dst)
 
@@ -1750,6 +1752,24 @@ class AITests(unittest.TestCase):
         il.AI_CANCEL.set()
         with self.assertRaises(il.Cancelled):
             il.ai_upscale(img, "waifu2x photo (2x, gentler)", 2, 1, folder=self.tmp.name)
+
+    def test_progress_is_read_from_the_program_and_formatted(self):
+        self.assertEqual(il.parse_progress("0.00%\n12.50%\n63.33%\n"), 63.33)
+        self.assertEqual(il.parse_progress("[0 Intel(R) Iris(R) Xe Graphics]  queueC=0[1]\n5.00%\n"), 5.0)
+        self.assertEqual(il.parse_progress("100.00%"), 100.0)
+        self.assertEqual(il.parse_progress("loading the model\n"), None)
+        self.assertEqual(il.parse_progress(""), None)
+        self.assertEqual([il.format_eta(x) for x in (0, 45, 59.6, 60, 185, 3599, 3900)], ["0 s", "45 s", "1 min 00 s", "1 min 00 s", "3 min 05 s", "59 min 59 s", "1 h 05 min"])
+        AITests.FakeProc.mode = 'slow'
+        il.AI_PROGRESS['pct'] = None
+        il.AI_CANCEL.set()
+        with self.assertRaises(il.Cancelled):
+            il.ai_upscale(np.zeros((8, 8, 3), np.uint8), "waifu2x photo (2x, gentler)", 2, 1, folder=self.tmp.name)
+        self.assertEqual(il.AI_PROGRESS['pct'], 37.5)                                    # read from the file the program writes to while it runs
+        AITests.FakeProc.mode = 'ok'
+        il.AI_CANCEL.clear()
+        il.ai_upscale(np.zeros((8, 8, 3), np.uint8), "waifu2x photo (2x, gentler)", 2, 1, folder=self.tmp.name)
+        self.assertEqual(il.AI_PROGRESS['pct'], 100.0)                                   # and it ends at 100
 
     def test_tool_is_external_geometry_in_the_layout(self):
         t = il.TOOLS["Upscale (local, free)"]

@@ -1103,6 +1103,36 @@ def ai_command(method, exe, src, dst, scale, denoise):
     return [exe, "-i", src, "-o", dst, "-m", os.path.join(folder, model), "-n", str(int(denoise)), "-s", str(int(scale))]
 
 
+AI_PROGRESS = {'pct': None}          # 0..100 of the AI program that is running (the editor reads it to draw the progress bar); None = not known yet
+
+
+def parse_progress(text):
+    """The last percentage written in `text` (Real-ESRGAN and waifu2x print '12.50%' after every finished tile), or None."""
+    found = re.findall(r'(\d+(?:\.\d+)?)\s*%', text)
+    return min(100.0, float(found[-1])) if found else None
+
+
+def format_eta(seconds):
+    """'45 s', '3 min 05 s', '1 h 05 min': a time left, rounded."""
+    s = max(0, int(round(seconds)))
+    if s < 60:
+        return "%d s" % s
+    if s < 3600:
+        return "%d min %02d s" % (s // 60, s % 60)
+    return "%d h %02d min" % (s // 3600, (s % 3600) // 60)
+
+
+def _tail(path, n=400):
+    """The last `n` bytes of a file that another process is still writing, as text ('' when it cannot be read yet)."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - n))
+            return f.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
 def ai_upscale(img, method, scale, denoise=1, folder=None):
     """`img` ((h, w, 3) RGB) upscaled `scale` times (2 or 4) by an external AI program, or ToolUnavailable if it is not found. Runs the program
     on a temporary PNG and waits for it, polling AI_CANCEL (set it from another thread to stop: Cancelled). A GPU with Vulkan is needed;
@@ -1119,9 +1149,13 @@ def ai_upscale(img, method, scale, denoise=1, folder=None):
         Image.fromarray(np.ascontiguousarray(img)).save(src)
         cmd = ai_command(method, exe, src, dst, scale, denoise)
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        AI_PROGRESS['pct'] = None
         with open(err, "w") as ef:
             proc = _popen(cmd, cwd=os.path.dirname(exe), stdout=subprocess.DEVNULL, stderr=ef, creationflags=flags)
             while proc.poll() is None:
+                pct = parse_progress(_tail(err))                             # the programs report how far they are on stderr
+                if pct is not None:
+                    AI_PROGRESS['pct'] = pct
                 if AI_CANCEL.is_set():
                     proc.terminate()
                     try:
@@ -1136,6 +1170,7 @@ def ai_upscale(img, method, scale, denoise=1, folder=None):
             except OSError:
                 tail = []
             raise RuntimeError("%s failed (code %s)%s" % (os.path.basename(exe), proc.returncode, ": " + " | ".join(tail) if tail else ""))
+        AI_PROGRESS['pct'] = 100.0
         out = Image.open(dst).convert("RGB")
         want = (w * scale, h * scale)
         if out.size != want:                                         # Real-ESRGAN x4 asked for 2x: reduce, with a good filter
@@ -3944,6 +3979,8 @@ class ImageForge:
         self.status = tk.Label(self.root, text="", anchor='w', bg='#fff3c4', font=('Arial', 9), relief=tk.GROOVE,
                                padx=6, pady=3)
         self.status.pack(fill=tk.X, side=tk.BOTTOM)
+        self.pbar = ttk.Progressbar(self.status, mode='determinate', maximum=100, length=220)       # shown while an `external` tool runs
+        self._pbar_mode = None
         self.info = tk.Label(self.root, text="", anchor='w', bg='#e8e8e8', font=('Consolas', 9), padx=6)
         self.info.pack(fill=tk.X, side=tk.BOTTOM)
 
@@ -4874,6 +4911,7 @@ class ImageForge:
                     "Esc stops it. Continue?" % (mp * k * k, mp, k, k)):
                 return
         AI_CANCEL.clear()
+        AI_PROGRESS['pct'] = None
         box = {}
         base = self.hist.current
 
@@ -4892,14 +4930,44 @@ class ImageForge:
         th.start()
         self._poll_external(box, base, flatten, params)
 
+    def _show_pbar(self, determinate):
+        """The progress bar at the right end of the status line: a filling bar when the program reports its progress, else a moving one."""
+        mode = 'determinate' if determinate else 'indeterminate'
+        if self._pbar_mode != mode:
+            self.pbar.stop()
+            self.pbar.config(mode=mode)
+            if not determinate:
+                self.pbar.start(15)
+            self.pbar.place(relx=1.0, x=-8, rely=0.5, anchor='e')
+            self._pbar_mode = mode
+
+    def _hide_pbar(self):
+        self.pbar.stop()
+        self.pbar.place_forget()
+        self._pbar_mode = None
+
     def _poll_external(self, box, base, flatten, params):
         name, th, t0 = self._busy
         if th.is_alive():
-            hint = " The model is being loaded: about a minute the first time." if name == "Remove object (local, free)" and not _LAMA else ""
-            self._status("%s is running... %d s.%s (Esc stops it; the window stays usable)" % (name, time.time() - t0, hint))
+            elapsed = time.time() - t0
+            pct = AI_PROGRESS['pct'] if name == "Upscale (local, free)" else None
+            if name == "Upscale (local, free)":                              # the program tells how far it is: a bar and the time left
+                self._show_pbar(True)
+                self.pbar['value'] = pct or 0
+                if pct is None:
+                    self._status("%s: starting... %d s (Esc stops it)" % (name, elapsed))
+                elif pct < 3:
+                    self._status("%s: %d %% (Esc stops it)" % (name, pct))
+                else:
+                    self._status("%s: %d %%, about %s left (Esc stops it; the window stays usable)" % (name, pct, format_eta(elapsed * (100.0 - pct) / pct)))
+            else:                                                            # no progress is reported: a moving bar and the time passed
+                self._show_pbar(False)
+                hint = " The model is being loaded: about a minute the first time." if name == "Remove object (local, free)" and not _LAMA else ""
+                self._status("%s is running... %d s.%s (Esc stops it; the window stays usable)" % (name, elapsed, hint))
             self._busy_after = self.root.after(500, lambda: self._poll_external(box, base, flatten, params))
             return
         self._busy, self._busy_after = None, None
+        self._hide_pbar()
         self.b_apply.config(state='normal')
         self.canvas.config(cursor='crosshair')
         if 'cancelled' in box:
