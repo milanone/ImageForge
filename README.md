@@ -64,7 +64,7 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
   size and place, the last folders and the recent files are remembered in `%APPDATA%\ImageForge\settings.json` (written when you
   close the program).
 - **Where things are**: the mouse tools are in the **toolbox** at the left of the picture, as icon buttons in groups of two columns (hover for the
-  name): **Select** (the arrow, Magic wand, Lasso, Hand) at the top: the arrow is the base state, *Select / move* (no tool: drag selects a rectangle, drag inside it moves what is inside, Shift copies, Ctrl moves the frame only); choosing it or clicking the tool in use a second time leaves the current tool, then **Draw** (Pencil, Paintbrush, Eraser brush, Fill bucket, Gradient), **Retouch** (Clone stamp, Clean brush, Dodge / burn, Erase rectangle, Move area),
+  name): **Select** (the arrow, Magic wand, Lasso, Hand) at the top: the arrow is the base state, *Select / move* (no tool: drag selects a rectangle, drag inside it moves what is inside, Shift copies, Ctrl moves the frame only); choosing it or clicking the tool in use a second time leaves the current tool, then **Draw** (Pencil, Paintbrush, Eraser brush, Fill bucket, Gradient), **Retouch** (Clone stamp, Heal brush, Clean brush, Dodge / burn, Erase rectangle, Move area),
   **Annotate** (Add text, Shapes, Scale bar, Measure) and **Layers** (Move layer). The one-shot
   operations with a preview and an Apply button are in the *Tools* tab of the panel: four buttons choose the group (**Size** = size and
   orientation, **Adjust**, **Filters**, **Clean-up**) and the list under them shows its tools; the box above them **finds a tool** by typing
@@ -88,8 +88,12 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
   - Retouch: **Clone stamp** (define the **source** first: press *Set source* and click on the picture, or type X / Y, or
     Ctrl+click while painting; a cyan cross marks it and follows the cursor while you paint. Then paint where the copy should
     go: soft edge, opacity, *Aligned* keeps the offset between strokes) and **Clean brush** (paint over a spot, scratch or stray
-    mark, it shows red; when you let go it is rebuilt from its surroundings). Both are limited to the selection and work on the
-    selected layer's pixels.
+    mark, it shows red; when you let go it is rebuilt from its surroundings). **Heal brush**: paint over a blemish, spot or wire
+    (it shows green) and let go; *Classic* (instant, free) copies the texture from a similar place nearby and takes colour and
+    light from the surroundings, good for small spots on skin, paper or grass; *LaMa (AI, local)* rebuilds the spot with the LaMa
+    model (same set-up as Remove object (local, free): onnxruntime and `lama_fp32.onnx`), better for larger things or edges. All
+    are limited to the selection and work on the selected layer's pixels.
+  - Subject: the **Select subject** button (toolbox, Select group; also Edit menu) selects the main subject of the picture with one click, using a neural network (`isnet-general-use.onnx` from the rembg project, in the AI programs folder, plus `pip install onnxruntime`; about 3 seconds on a CPU). *Invert* then selects the background. **Remove background** (Clean-up) replaces the background with white, black, a picked colour, a blurred copy of the picture (portrait look) or, on an image layer, transparency. The model picks the most salient thing, which can include what the subject holds or sits on: correct with the threshold, grow / shrink or the Lasso.
   - Size: **Upscale (local, free)** makes the picture 2x or 4x larger with Real-ESRGAN or waifu2x (the `-ncnn-vulkan` command-line programs, which you download
     yourself and which need a GPU with Vulkan; *Tools > AI programs folder...* tells ImageForge where they are). It runs in the background (the window stays
     usable, Esc stops it; a progress bar and the time left are shown, read from the program's own percentages) and can take minutes: about 2.5 min per megapixel with Real-ESRGAN on an integrated Intel GPU. The detail it adds is invented, not

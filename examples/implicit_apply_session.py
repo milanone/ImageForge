@@ -36,7 +36,9 @@ n = len(a.hist.states); a.tree.selection_set("Levels"); settle(); a.tree.selecti
 print("2. tools that do nothing at their defaults add no step:", len(a.hist.states) == n)
 
 # 3. Undo while only a preview is on screen: the preview goes, the step before stays
-a.tree.selection_set("Blur (Gaussian)"); settle(); before = len(a.hist.states); pend = a._pending_preview()
+a.tree.selection_set("Blur (Gaussian)"); settle()
+print("3a. Blur is not an automatic tool: choosing it shows nothing yet:", a.preview is None, "| Preview-only tools stay quiet:", not a._pending_preview())
+a.pvars['radius'].set(4); settle(); before = len(a.hist.states); pend = a._pending_preview()
 a.undo(); print("3. Undo of a pending preview drops just the preview:", pend, a.preview is None, len(a.hist.states) == before, np.array_equal(a.hist.current, orig))
 
 # 4. Remove marks: the colour is picked, the preview shows the marks gone, the next tool keeps that
@@ -60,7 +62,7 @@ print("5. selecting and leaving a brush adds no step:", len(a.hist.states) == n)
 a.tree.selection_set("Pencil"); root.update(); a.sel = None; a._after_selection()
 txt = lambda: a.l_undo.cget('text').replace(chr(10), ' | ')
 print("6. labels under the buttons:", txt(), "| menu:", a.m_edit.entrycget(0, 'label'), "/", a.m_edit.entrycget(1, 'label'))
-a.tree.selection_set("Blur (Gaussian)"); settle(); a.pvars['radius'].set(3) if 'radius' in a.pvars else None; settle()
+a.tree.selection_set("Blur (Gaussian)"); settle(); a.pvars['radius'].set(3); settle()
 print("   with a Blur preview on screen:", txt(), "| Undo enabled:", str(a.b_undo.cget('state')) == 'normal')
 a.tree.selection_set("Despeckle"); root.update(); look_undo = txt()
 print("   after switching (applied by itself):", look_undo)

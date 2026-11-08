@@ -1991,6 +1991,155 @@ class ViewScaleTests(unittest.TestCase):
         self.assertIsNone(il.uniform_scale((0, 300), (200, 300)))
 
 
+class SubjectTests(unittest.TestCase):
+    """Select subject / Remove background: a salient-object network gives a mask; a fake session returns a disc."""
+
+    class FakeSession:
+        runs = 0
+
+        class _In:
+            name = "input_image"
+            shape = [1, 3, 64, 64]
+
+        def get_inputs(self):
+            return [self._In()]
+
+        def run(self, names, feeds):
+            SubjectTests.FakeSession.runs += 1
+            assert feeds["input_image"].shape == (1, 3, 64, 64)
+            yy, xx = np.mgrid[0:64, 0:64]
+            return [(((yy - 32) ** 2 + (xx - 32) ** 2 < 16 ** 2).astype(np.float32) * 6.0 - 3.0)[None, None]]       # raw scores, not 0..1
+
+    def setUp(self):
+        self.old = (il._subject_session, il.find_ai_model)
+        il._subject_session = lambda path: SubjectTests.FakeSession()
+        il.find_ai_model = lambda prefix, folder=None: __file__
+        SubjectTests.FakeSession.runs = 0
+        il._SUBJ_LAST['key'] = None
+        self.img = np.zeros((200, 300, 3), np.uint8)
+        self.img[...] = (40, 90, 200)
+
+    def tearDown(self):
+        il._subject_session, il.find_ai_model = self.old
+
+    def test_mask_is_normalised_resized_and_remembered(self):
+        m = il.subject_mask(self.img)
+        self.assertEqual((m.shape, m.dtype), ((200, 300), np.float32))
+        self.assertTrue(0.0 <= m.min() and m.max() <= 1.0)
+        self.assertGreater(float(m[100, 150]), 0.95)
+        self.assertLess(float(m[5, 5]), 0.05)
+        il.subject_mask(self.img)
+        self.assertEqual(SubjectTests.FakeSession.runs, 1)                         # the same picture: no second model run
+        il.subject_mask(self.img[:150])
+        self.assertEqual(SubjectTests.FakeSession.runs, 2)
+
+    def test_missing_model(self):
+        il.find_ai_model = lambda prefix, folder=None: None
+        with self.assertRaises(il.ToolUnavailable):
+            il.subject_mask(self.img)
+
+    def test_selection_mask_is_crisper(self):
+        s = il.subject_selection_mask(np.array([0.0, 0.3, 0.5, 0.7, 1.0], np.float32))
+        self.assertEqual([round(float(v), 2) for v in s], [0.0, 0.0, 0.5, 1.0, 1.0])
+
+    def test_remove_background_fills_and_keeps_the_subject(self):
+        out = il.apply_tool("Remove background", self.img, {'fill': 'white', 'color': '#ffffff', 'blur': 25, 'cutoff': 50, 'grow': 0, 'edge': 0})
+        self.assertTrue((out[100, 150] == (40, 90, 200)).all())                    # the subject stays
+        self.assertTrue((out[5, 5] == 255).all())                                  # the background is white
+        out = il.apply_tool("Remove background", self.img, {'fill': 'picked colour', 'color': '#ff0000', 'blur': 25, 'cutoff': 50, 'grow': 0, 'edge': 0})
+        self.assertTrue((out[5, 5] == (255, 0, 0)).all())
+        big = il.apply_tool("Remove background", self.img, {'fill': 'white', 'color': '#ffffff', 'blur': 25, 'cutoff': 50, 'grow': 30, 'edge': 0})
+        small = il.apply_tool("Remove background", self.img, {'fill': 'white', 'color': '#ffffff', 'blur': 25, 'cutoff': 50, 'grow': -30, 'edge': 0})
+        keep = lambda o: int((o != 255).any(axis=2).sum())
+        self.assertGreater(keep(big), keep(small))        # growing keeps more of the picture than shrinking
+        self.assertIn("subject", il.TOOL_NOTES["Remove background"])
+
+    def test_blurred_background_does_not_bleed_the_subject(self):
+        img = self.img.copy()
+        img[..., :] = (200, 200, 200)
+        yy, xx = np.mgrid[0:200, 0:300]
+        sub = ((yy - 100) * 300 // 200) ** 2 + (xx - 150) ** 2 < (16 * 300 // 64 * 1.0) ** 2
+        img[sub] = (255, 0, 0)                                                      # a red subject on grey
+        out = il.apply_tool("Remove background", img, {'fill': 'blurred picture', 'color': '#ffffff', 'blur': 12, 'cutoff': 50, 'grow': 0, 'edge': 0})
+        far = out[:30, :30].astype(int)
+        self.assertLess(int(np.abs(far - 200).max()), 4)                            # a grey blur: no red from the subject
+        self.assertTrue((out[100, 150] == (255, 0, 0)).all())
+
+
+class HealBrushTests(unittest.TestCase):
+    """Heal brush: the classic method copies texture from a similar place and takes colour and light from the surroundings; LaMa fills the same mask."""
+
+    def setUp(self):
+        rng = np.random.default_rng(0)
+        yy, xx = np.mgrid[0:300, 0:400]
+        base = np.clip(120 + 40 * np.sin(xx / 5.0) * np.sin(yy / 7.0) + rng.normal(0, 4, (300, 400)) + 30 * xx / 400.0, 0, 255)
+        self.truth = np.repeat(base[..., None], 3, axis=2).astype(np.uint8)
+        self.hole = np.zeros((300, 400), np.uint8)
+        cv2.circle(self.hole, (200, 150), 14, 1, -1)
+        self.hole = self.hole > 0
+        self.bad = self.truth.copy()
+        self.bad[self.hole] = (30, 20, 20)
+
+    def err(self, img):
+        return float(np.abs(img.astype(int) - self.truth.astype(int))[self.hole].mean())
+
+    def test_classic_restores_the_texture_better_than_inpainting(self):
+        out = il.heal_classic(self.bad, self.hole)
+        tel = cv2.inpaint(self.bad, self.hole.astype(np.uint8) * 255, 3, cv2.INPAINT_TELEA)
+        self.assertLess(self.err(out), 0.7 * self.err(tel))                       # measured: 6.4 against 12.0 levels
+        self.assertLess(self.err(out), 15)
+        far = np.ones(self.hole.shape, bool)
+        far[100:200, 150:250] = False
+        self.assertTrue(np.array_equal(out[far], self.bad[far]))                  # only the neighbourhood of the spot changes
+
+    def test_classic_at_the_border_with_two_spots_and_invisible_pixels(self):
+        h2 = self.hole.copy()
+        cv2.circle(h2.view(np.uint8), (5, 5), 9, 1, -1)
+        out = il.heal_classic(np.where(h2[..., None], 0, self.truth).astype(np.uint8), h2)
+        self.assertEqual(out.shape, self.truth.shape)
+        self.assertLess(float(np.abs(out.astype(int) - self.truth.astype(int))[h2].mean()), 20)
+        valid = np.ones(self.hole.shape, bool)
+        valid[:, :150] = False                                                    # the left part is transparent: it is never a source
+        self.assertLess(self.err(il.heal_classic(self.bad, self.hole, valid=valid)), 15)
+
+    def test_nothing_to_heal_returns_the_same_picture(self):
+        self.assertIs(il.heal_classic(self.truth, np.zeros(self.hole.shape, bool)), self.truth)
+
+    def test_lama_fill_mask_uses_the_model_and_can_be_stopped(self):
+        old = (il._lama_session, il.find_ai_model)
+        il._lama_session = lambda path: RemoveObjectTests.FakeSession()
+        il.find_ai_model = lambda prefix, folder=None: __file__
+        try:
+            out, n = il.lama_fill_mask(self.bad, self.hole, grow=0, grain=False)
+            self.assertEqual(n, 1)
+            self.assertTrue((out[150, 200] != self.bad[150, 200]).any())
+            il.AI_CANCEL.set()
+            with self.assertRaises(il.Cancelled):
+                il.lama_fill_mask(self.bad, self.hole, grow=0, grain=False)
+        finally:
+            il.AI_CANCEL.clear()
+            il._lama_session, il.find_ai_model = old
+
+    def test_the_tool_is_registered_with_a_choice_of_methods(self):
+        t = il.TOOLS["Heal brush"]
+        self.assertEqual(t.interactive, 'clean')
+        self.assertEqual(il.HEAL_METHODS[0][:7], "Classic")
+        self.assertIn("LaMa", il.HEAL_METHODS[1])
+        self.assertIn('method', [p.key for p in t.params])
+
+
+class AutoPreviewTests(unittest.TestCase):
+    def test_which_tools_preview_at_once(self):
+        """Automatic tools (and tools without parameters, which have nothing to touch) preview as soon as they are chosen; the others wait for a parameter."""
+        for name in ("Local contrast (CLAHE)", "Auto contrast", "Even out illumination", "Grayscale", "Invert"):
+            self.assertTrue(il.TOOLS[name].auto_preview, name)
+        for name in ("Blur (Gaussian)", "Sharpen (unsharp mask)", "Brightness / contrast", "Hue / saturation", "Despeckle"):
+            self.assertFalse(il.TOOLS[name].auto_preview, name)
+        for t in il.TOOLS.values():
+            if not t.params:
+                self.assertTrue(t.auto_preview, t.name)
+
+
 class KeyBindingTests(unittest.TestCase):
     def test_no_modifier_plus_a_bare_digit_binding(self):
         """In Tk, '<Control-1>' means Control + mouse button 1, NOT Control + the key 1 (that is '<Control-Key-1>'): such a binding fires on every Ctrl+click
@@ -2373,7 +2522,7 @@ class DrawingTests(unittest.TestCase):
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(il.TOOLBOX[0][0], "Select")                                           # the selection tools come first
         for n in names:
-            if n not in ("Select / move", "Magic wand", "Lasso", "Hand"):
+            if n not in ("Select / move", "Magic wand", "Lasso", "Select subject", "Hand"):
                 self.assertIn(n, il.TOOLS)                                                   # every toolbox button is a real tool
                 self.assertTrue(il.TOOLS[n].interactive or il.TOOLS[n].layer, n)               # and a mouse tool, not a one-shot operation
         mouse = {t.name for t in il.TOOLS.values() if t.interactive or t.layer}

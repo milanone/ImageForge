@@ -58,13 +58,13 @@ PROJECT_TYPE = ("ImageForge project (layers kept)", "*.ifl")
 TOOLS = {}                          # name -> Tool, in registration order (which is the order of the tool list)
 TOOL_LAYOUT = {
     'Draw': ['Pencil', 'Paintbrush', 'Eraser brush', 'Fill bucket', 'Gradient'],
-    'Retouch': ['Clone stamp', 'Clean brush', 'Dodge / burn', 'Erase rectangle', 'Move area'],
+    'Retouch': ['Clone stamp', 'Heal brush', 'Clean brush', 'Dodge / burn', 'Erase rectangle', 'Move area'],
     'Annotate': ['Add text', 'Shapes', 'Scale bar', 'Measure'],
     'Layers': ['Move layer'],
     'Size and orientation': ['Resize', 'Upscale (local, free)', 'Canvas size', 'Crop to aspect ratio', 'Auto-crop borders', 'Rotate 90 / 180', 'Rotate (any angle)', 'Flip', 'Auto straighten', 'Perspective correction', 'Lens distortion'],
     'Adjustments': ['Brightness / contrast', 'Levels', 'Curves', 'Auto contrast', 'Local contrast (CLAHE)', 'Even out illumination', 'Hue / saturation', 'Colour balance', 'White balance', 'Portrait retouch', 'Grayscale', 'Invert', 'Threshold (black & white)'],
     'Filters': ['Sharpen (unsharp mask)', 'Blur (Gaussian)', 'Reduce noise', 'Morphology', 'Find edges'],
-    'Clean-up': ['Erase / keep colours', 'Remove marks', 'Remove object (local, free)', 'Remove object (API, paid)', 'Despeckle', 'Flatten ink to one colour', 'Join dashed lines'],
+    'Clean-up': ['Erase / keep colours', 'Remove marks', 'Remove object (local, free)', 'Remove object (API, paid)', 'Remove background', 'Despeckle', 'Flatten ink to one colour', 'Join dashed lines'],
 }          # the order of the groups and of the tools in the lists; a group of a plug-in comes after them, in registration order
 TOOL_NOTES = {}                     # name -> a sentence a tool leaves about what it just did (shown after Apply)
 
@@ -119,8 +119,12 @@ class Tool:
     with `layer` ('text') makes (or, if one is selected, edits) a Layer of that kind instead of changing the pixels."""
 
     def __init__(self, name, group, func, params, geometry, preview, doc, interactive=None, place=False, layer=None,
-                 layer_geometry=None, layer_shift=None, external=False, takes_region=False):
+                 layer_geometry=None, layer_shift=None, external=False, takes_region=False, auto_preview=False):
         self.name, self.group, self.func, self.params = name, group, func, tuple(params)
+        # True: the preview is shown as soon as the tool is chosen, with its default values (automatic tools: Auto contrast, Local contrast ...).
+        # False: nothing happens until a parameter is touched (like the dialogs of GIMP / Photoshop). A tool without parameters has nothing to touch,
+        # so it always previews at once.
+        self.auto_preview = bool(auto_preview) or not self.params
         self.geometry, self.preview, self.doc, self.interactive, self.place = geometry, preview, doc, interactive, place
         self.layer = layer
         self.layer_geometry = layer_geometry          # None, or how it may transform one layer: 'exact' / 'resample'
@@ -130,22 +134,22 @@ class Tool:
 
 
 def tool(name, group, params=(), geometry=False, preview=True, doc="", interactive=None, place=False,
-         layer=None, layer_geometry=None, layer_shift=None, external=False, takes_region=False):
+         layer=None, layer_geometry=None, layer_shift=None, external=False, takes_region=False, auto_preview=False):
     """Register `func(img, **params) -> img` as a tool. `img` is an (H, W, 3) uint8 array that must not be
     modified in place (it belongs to the Undo history); return a new array, or `img` itself for 'no change'.
     The keys of `params` are the keyword arguments."""
     def deco(func):
         TOOLS[name] = Tool(name, group, func, params, geometry, preview, doc or (func.__doc__ or "").strip(),
-                           interactive, place, layer, layer_geometry, layer_shift, external, takes_region)
+                           interactive, place, layer, layer_geometry, layer_shift, external, takes_region, auto_preview)
         return func
     return deco
 
 
 # the toolbox: the mouse tools as icon buttons (a group per line of two), then the selection commands and the Hand
 TOOLBOX = [
-    ("Select", ["Select / move", "Magic wand", "Lasso", "Hand"]),
+    ("Select", ["Select / move", "Magic wand", "Lasso", "Select subject", "Hand"]),
     ("Draw", ["Pencil", "Paintbrush", "Eraser brush", "Fill bucket", "Gradient"]),
-    ("Retouch", ["Clone stamp", "Clean brush", "Dodge / burn", "Erase rectangle", "Move area"]),
+    ("Retouch", ["Clone stamp", "Heal brush", "Clean brush", "Dodge / burn", "Erase rectangle", "Move area"]),
     ("Annotate", ["Add text", "Shapes", "Scale bar", "Measure"]),
     ("Layers", ["Move layer"]),
 ]
@@ -196,9 +200,12 @@ def tool_icon(name, size=26):
     if name == "Pencil":
         line((7, 19, 20, 6), ink, int(4.5 * u))
         poly((4, 23, 6, 17, 9, 20), acc, acc)
-    elif name in ("Paintbrush", "Clean brush"):
+    elif name in ("Paintbrush", "Clean brush", "Heal brush"):
         line((22, 3, 12, 13), ink, int(3 * u))
         d.ellipse(P(4, 13, 14, 23), fill=acc)
+        if name == "Heal brush":                                       # a plaster over the spot: a thick plus
+            line((19, 15, 25, 15), acc, int(2.4 * u))
+            line((22, 12, 22, 18), acc, int(2.4 * u))
         if name == "Clean brush":
             for cx, cy in ((19, 16), (22, 11), (16, 21)):
                 line((cx - 1.5, cy, cx + 1.5, cy), acc, int(1.6 * u))
@@ -270,6 +277,11 @@ def tool_icon(name, size=26):
         d.ellipse(P(3, 3, 22, 15), outline=acc, width=w)
         line((8, 15, 6, 20, 10, 23), ink)
         d.ellipse(P(9, 21, 13, 25), fill=ink)
+    elif name == "Select subject":                                 # a person: head and shoulders inside a dashed frame
+        for a, b in (((3, 3), (23, 3)), ((23, 3), (23, 23)), ((23, 23), (3, 23)), ((3, 23), (3, 3))):
+            dash(a, b)
+        d.ellipse(P(9.5, 6, 16.5, 13), fill=acc)
+        d.pieslice(P(5.5, 14, 20.5, 29), 180, 360, fill=acc)
     elif name == "Hand":
         for x0, top in ((6, 6), (10, 3.5), (14, 4.5), (18, 7.5)):
             d.rounded_rectangle(P(x0, top, x0 + 3.6, 15), radius=1.8 * u, fill=soft, outline=ink, width=int(1.4 * u))
@@ -562,7 +574,7 @@ def portrait_retouch(img, faces, size, smooth, light, surround, warmth):
 
 @tool("Grayscale", "Adjustments", [
     Param('method', "Method", 'choice', 'luminance', choices=('luminance', 'average')),
-    Param('strength', "Strength (%)", 'int', 100, 0, 100, slider=True)])
+    Param('strength', "Strength (%)", 'int', 100, 0, 100, slider=True)], auto_preview=True)
 def grayscale(img, method, strength):
     """Remove the colour (the image stays 3-channel). Strength below 100 only desaturates."""
     if strength == 0:
@@ -694,6 +706,7 @@ def curves(img, channel, black, shadows, mid, high, white):
 @tool("Auto contrast", "Adjustments", [
     Param('clip', "Ignore the darkest and lightest (%)", 'float', 0.5, 0.0, 10.0, step=0.1, slider=True),
     Param('per_channel', "Each colour channel on its own (also removes a colour cast)", 'bool', False)],
+    auto_preview=True,
     doc="Stretches the values so that the darkest and the lightest ends of the picture reach black and white. By default one "
         "stretch is used for the three colours (keeps the colours); 'each channel' fixes a colour cast but can change hues. "
         "The ends are measured over the whole picture, not only the working area.")
@@ -716,6 +729,7 @@ def auto_contrast(img, clip, per_channel):
 @tool("Local contrast (CLAHE)", "Adjustments", [
     Param('clip_limit', "Strength", 'float', 2.0, 0.5, 10.0, step=0.1, slider=True),
     Param('tiles', "Tiles across (more = more local)", 'int', 8, 2, 32, slider=True)],
+    auto_preview=True,
     doc="Adaptive histogram equalisation of the lightness: brings out detail in dim and washed-out parts of a picture (microscopy, "
         "gels, scans) without blowing out the rest. Raise the strength carefully: noise grows with it.")
 def clahe(img, clip_limit, tiles):
@@ -728,6 +742,7 @@ def clahe(img, clip_limit, tiles):
     Param('radius', "Scale of the uneven light (px)", 'int', 80, 5, 600, slider=True, progressive=True),
     Param('strength', "Strength (%)", 'int', 100, 0, 100, slider=True),
     Param('mode', "Correct by", 'choice', 'divide', choices=('divide', 'subtract'))],
+    auto_preview=True,
     doc="Removes a slow brightness gradient (a vignette, an unevenly lit scan or microscope field): the large-scale light is "
         "estimated with a very wide blur and taken out, keeping the colours. Set the scale larger than the objects of "
         "interest. 'divide' suits a bright background; 'subtract' a dark one.")
@@ -1025,6 +1040,7 @@ AI_CANCEL = threading.Event()       # set to stop a running upscaling
 _popen = subprocess.Popen           # the tests put a fake in here
 AI_METHODS = {                      # label -> (program, model folder, the scale the model makes by itself)
     "Real-ESRGAN photo (4x, most detail)": ('realesrgan', 'realesrgan-x4plus', 4),
+    "Real-ESRGAN drawings (4x, anime / line art)": ('realesrgan', 'realesrgan-x4plus-anime', 4),
     "waifu2x photo (2x, gentler)": ('waifu2x', 'models-upconv_7_photo', 2),
     "waifu2x drawings (2x, cunet)": ('waifu2x', 'models-cunet', 2),
 }
@@ -1230,7 +1246,7 @@ def ai_upscale(img, method, scale, denoise=1, folder=None, shrink=100):
         "It runs Real-ESRGAN or waifu2x, programs that must already be on this computer (Tools > AI programs folder... tells ImageForge "
         "where), and needs a GPU with Vulkan. It can take many minutes (about 2.5 minutes for 1 megapixel x4 on an integrated Intel GPU): "
         "ImageForge keeps working meanwhile and Esc stops it. Real-ESRGAN gives the most detail but can make skin look waxy; waifu2x is "
-        "gentler. The new detail is invented, not recovered: do not use it on pictures that must stay faithful to the original (measurements). "
+        "gentler. For drawings, diagrams and line art try 'Real-ESRGAN drawings' (the anime model: clean lines, flat colours) or waifu2x cunet. The new detail is invented, not recovered: do not use it on pictures that must stay faithful to the original (measurements). "
         "'Shrink first' is for a grainy picture, or one that was already enlarged, whose pixels hold less detail than their number says: it is "
         "reduced to that percent before the program enlarges it, which removes the grain and blocky artefacts (try 50 and compare the result "
         "with 100 using the Before button). It also makes Real-ESRGAN faster (about 2.5x at 50 %). NEVER for drawings, diagrams or text: thin lines and "
@@ -1317,6 +1333,14 @@ def lama_remove(img, region, grow=12, grain=True, model=None):
     mask = region_bool(region, img.shape)
     if mask is None or not mask.any():
         raise ValueError("Select the object first (Lasso, Magic wand or a rectangle with Select / move), then press Apply.")
+    out, done = lama_fill_mask(img, mask, grow, grain, model)
+    TOOL_NOTES["Remove object (local, free)"] = "%d piece%s removed" % (done, "" if done == 1 else "s")
+    return out
+
+
+def lama_fill_mask(img, mask, grow=12, grain=True, model=None):
+    """(`img` with the bool `mask` rebuilt by LaMa, number of pieces filled): what `lama_remove` does with the working area, also used by the Heal brush
+    with the painted spot. Cancelled when AI_CANCEL is set between two pieces."""
     path = model or find_ai_model("lama")
     if path is None or not os.path.isfile(path):
         raise ToolUnavailable("The LaMa model (lama_fp32.onnx) was not found. Put it in the AI programs folder and use Tools > AI programs folder...")
@@ -1326,6 +1350,8 @@ def lama_remove(img, region, grow=12, grain=True, model=None):
     order = sorted(range(1, n), key=lambda i: -stats[i, cv2.CC_STAT_AREA])
     out, done = img, 0
     for i in order:
+        if AI_CANCEL.is_set():
+            raise Cancelled()
         x, y, bw, bh, area = (int(v) for v in stats[i])
         if area < 4:
             continue
@@ -1337,8 +1363,7 @@ def lama_remove(img, region, grow=12, grain=True, model=None):
         full[Y0:Y1, X0:X1] = piece
         out = _lama_fill(sess, out, full, grain)
         done += 1
-    TOOL_NOTES["Remove object (local, free)"] = "%d piece%s removed" % (done, "" if done == 1 else "s")
-    return out if done else img
+    return (out if done else img), done
 
 
 @tool("Remove object (local, free)", "Clean-up", [
@@ -1355,6 +1380,92 @@ def lama_remove(img, region, grow=12, grain=True, model=None):
         "programs folder) and the Python package onnxruntime.")
 def remove_object(img, grow, grain, region=None):
     return lama_remove(img, region, grow, grain)
+
+
+# ---- the subject of a picture, found by a neural network (IS-Net / U2-Net family, ONNX) --------------------------------------------------------
+SUBJECT_NAMES = ("isnet", "u2net", "silueta", "rembg")      # what the model file or its folder starts with (rembg's release files: isnet-general-use.onnx ...)
+_SUBJ = {}                                                  # model path -> onnxruntime session
+_SUBJ_LAST = {'key': None, 'mask': None}                    # the last mask: Select subject then Remove background (or a layer run twice) cost one model run
+
+
+def _subject_session(path):
+    if path not in _SUBJ:
+        try:
+            import onnxruntime as ort
+        except ImportError:
+            raise ToolUnavailable("onnxruntime is not installed: run  pip install onnxruntime  (in the Python that runs ImageForge).")
+        _SUBJ[path] = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+    return _SUBJ[path]
+
+
+def subject_mask(img, model=None):
+    """The main subject of `img` ((h, w, 3) RGB) as a float32 (h, w) mask 0..1, from a salient-object network (IS-Net `isnet-general-use.onnx` found in the
+    AI folder, the one that was tested; the other names of SUBJECT_NAMES are U2-Net variants that use the usual ImageNet normalisation). The picture is
+    shrunk to the model's side (1024), so the cost does not depend on the picture's size. ToolUnavailable when the model or onnxruntime is missing;
+    Cancelled when AI_CANCEL is set when it ends. The last mask is remembered (key = shape + a sample of the pixels)."""
+    path = model or find_ai_model(SUBJECT_NAMES)
+    if path is None or not os.path.isfile(path):
+        raise ToolUnavailable("The subject model (isnet-general-use.onnx) was not found. Put it in the AI programs folder and use Tools > AI programs folder...")
+    h, w = img.shape[:2]
+    key = (path, img.shape, int(img[::max(1, h // 16), ::max(1, w // 16), :3].astype(np.int64).sum()))
+    if _SUBJ_LAST['key'] == key:
+        return _SUBJ_LAST['mask']
+    sess = _subject_session(path)
+    inp = sess.get_inputs()[0]
+    side = inp.shape[2] if isinstance(inp.shape[2], int) else 1024
+    a = cv2.resize(np.ascontiguousarray(img[..., :3]), (side, side), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
+    std = (1.0, 1.0, 1.0) if "isnet" in os.path.basename(path).lower() else (0.229, 0.224, 0.225)
+    a = (a - np.array([0.485, 0.456, 0.406], np.float32)) / np.array(std, np.float32)
+    o = sess.run(None, {inp.name: a.transpose(2, 0, 1)[None]})[0][0, 0]
+    if AI_CANCEL.is_set():
+        raise Cancelled()
+    o = (o - o.min()) / max(1e-6, float(o.max() - o.min()))
+    m = np.clip(cv2.resize(o, (w, h), interpolation=cv2.INTER_CUBIC), 0.0, 1.0).astype(np.float32)
+    _SUBJ_LAST['key'], _SUBJ_LAST['mask'] = key, m
+    return m
+
+
+def subject_selection_mask(m):
+    """The model's soft mask made a little crisper for use as a selection: below 0.3 nothing, above 0.7 fully, a ramp between."""
+    return np.clip((m - 0.3) / 0.4, 0.0, 1.0).astype(np.float32)
+
+
+@tool("Remove background", "Clean-up", [
+    Param('fill', "Replace the background with", 'choice', 'white', choices=('white', 'black', 'picked colour', 'transparent', 'blurred picture')),
+    Param('color', "Picked colour (to paint with)", 'colors', '#ffffff', pick='color1'),
+    Param('blur', "Blurred picture: radius (px)", 'int', 25, 2, 150, slider=True, progressive=True),
+    Param('cutoff', "Subject threshold (%)", 'int', 50, 10, 90, slider=True),
+    Param('grow', "Grow (+) or shrink (-) the subject by (px)", 'int', 0, -40, 40),
+    Param('edge', "Soften the edge by (px)", 'int', 2, 0, 40, slider=True)],
+    preview=False, external=True,
+    doc="Finds the main subject of the picture with a neural network and replaces everything else (white, black, a picked colour, a blurred copy of the "
+        "picture = a portrait-style background, or, on an image layer, transparent). FREE and LOCAL, a few seconds. It needs the Python package onnxruntime "
+        "and the model isnet-general-use.onnx (from the rembg project) in the AI programs folder. The model picks the most salient thing, which can include "
+        "what the subject holds or sits on (a book, a chair); correct with the threshold, grow / shrink, or use Select subject and the Lasso for a precise "
+        "area and run the tool inside it. 'Transparent' works on an image layer (copy the whole picture to a layer first, Ctrl+J); on the Background it paints "
+        "white. A thin hair edge is as good as the model's mask: soften the edge a little.")
+def remove_background(img, fill, color, blur, cutoff, grow, edge):
+    m = subject_mask(img)
+    hard = (m >= cutoff / 100.0).astype(np.uint8)
+    if grow:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * abs(int(grow)) + 1,) * 2)
+        hard = cv2.dilate(hard, k) if grow > 0 else cv2.erode(hard, k)
+    a = hard.astype(np.float32)
+    if edge:
+        a = cv2.GaussianBlur(a, (0, 0), max(0.3, edge / 2.0))
+    if fill == 'blurred picture':
+        wb = (1.0 - hard.astype(np.float32))[..., None]                 # blur only from background pixels, so the subject's colours do not bleed out
+        f = img.astype(np.float32)
+        num = cv2.GaussianBlur(f * wb, (0, 0), blur)
+        den = cv2.GaussianBlur(wb[..., 0], (0, 0), blur)[..., None]
+        bg = np.where(den > 0.02, num / np.maximum(den, 1e-6), cv2.GaussianBlur(f, (0, 0), blur))
+    else:
+        col = _picked_rgb(color) if fill == 'picked colour' else FILLS.get(fill, FILLS['white'])        # 'transparent' paints white on the Background
+        bg = np.empty(img.shape, np.float32)
+        bg[...] = np.asarray(col, np.float32)
+    out = img.astype(np.float32) * a[..., None] + bg * (1.0 - a[..., None])
+    TOOL_NOTES["Remove background"] = "subject = %d %% of the picture" % round(100.0 * float(a.mean()))
+    return _to_u8(out)
 
 
 # ---- removing an object with a generative model through OpenRouter (Gemini image models; paid, per use) ------------------------------------------
@@ -1807,6 +1918,9 @@ def _distance_from(img, color):
     return np.sqrt(((img.astype(np.float32) - np.asarray(color, np.float32)) ** 2).sum(axis=2))
 
 
+HEAL_METHODS = ("Classic (instant, free)", "LaMa (AI, local)")
+
+
 def inpaint_mask(img, hole, radius, valid=None):
     """Rebuild the `hole` pixels (bool mask) from their surroundings with Telea inpainting (cv2.inpaint): the colours
     flow in from the edge of the hole, so a line over a gradient or a photo disappears into it. With `valid` (bool mask)
@@ -1822,6 +1936,63 @@ def inpaint_mask(img, hole, radius, valid=None):
             return img
     out = cv2.inpaint(np.ascontiguousarray(img), mask.astype(np.uint8) * 255, radius, cv2.INPAINT_TELEA)
     return img if np.array_equal(out, img) else out
+
+
+def heal_classic(img, hole, reach=4, valid=None):
+    """`img` with the `hole` pixels (bool mask) healed the way a heal brush does: for each separate spot, the surroundings are matched against every
+    place within `reach` x the spot's size (sum of squared differences of the ring round the spot) and the best one, never overlapping a hole or
+    an invisible pixel (`valid`), is copied in with Poisson blending (cv2.seamlessClone), which keeps the TEXTURE of the source but takes the colour
+    and the light of the destination. A spot with no usable source is filled by Telea inpainting instead. Returns `img` itself when nothing changed."""
+    h, w = img.shape[:2]
+    hole = np.asarray(hole, bool)
+    if not hole.any() or hole.all():
+        return img
+    bad = hole.copy()
+    if valid is not None:
+        bad |= ~valid
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(hole.astype(np.uint8), connectivity=8)
+    out = np.ascontiguousarray(img).copy()
+    for i in sorted(range(1, n), key=lambda i: -stats[i, cv2.CC_STAT_AREA]):
+        x, y, bw, bh, area = (int(v) for v in stats[i])
+        if area < 2:
+            continue
+        m = max(6, int(round(0.5 * max(bw, bh))))                       # the ring of surroundings that is matched
+        tx0, ty0, tx1, ty1 = max(0, x - m), max(0, y - m), min(w, x + bw + m), min(h, y + bh + m)
+        g = max(2, int(round(0.06 * max(bw, bh))))                    # the blend must start on CLEAN pixels, so the spot is widened a little
+        piece = cv2.dilate((lab[ty0:ty1, tx0:tx1] == i).astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * g + 1, 2 * g + 1))) > 0
+        T = out[ty0:ty1, tx0:tx1]
+        th, tw = T.shape[:2]
+        R = int(max(1, reach) * max(bw, bh, 16))
+        while True:
+            sx0, sy0, sx1, sy1 = max(0, tx0 - R), max(0, ty0 - R), min(w, tx1 + R), min(h, ty1 + R)
+            if (sx1 - sx0) * (sy1 - sy0) <= 6e6 or R <= 8:
+                break
+            R //= 2
+        S = out[sy0:sy1, sx0:sx1]
+        ctx = ~piece & ~bad[ty0:ty1, tx0:tx1]                              # ring pixels that may be compared
+        src = None
+        if ctx.sum() > 20 and S.shape[0] >= th and S.shape[1] >= tw:
+            M = np.repeat(ctx[..., None].astype(np.float32), 3, axis=2)
+            res = cv2.matchTemplate(S.astype(np.float32), T.astype(np.float32), cv2.TM_SQDIFF, mask=M)
+            over = cv2.matchTemplate(bad[sy0:sy1, sx0:sx1].astype(np.float32), piece.astype(np.float32), cv2.TM_CCORR)
+            res[over > 0.5] = np.inf
+            res[~np.isfinite(res)] = np.inf
+            v, u = np.unravel_index(int(np.argmin(res)), res.shape)
+            if np.isfinite(res[v, u]):
+                src = S[v:v + th, u:u + tw]
+        if src is not None:
+            # colour and light from the destination, texture from the source: the smooth part of the result is a blur of what a Telea inpainting
+            # makes of the surroundings, the fine detail is the source patch minus its own blur (cv2.seamlessClone was tried first and does not
+            # replace a dark blemish inside the mask: it keeps the destination where the source is flat)
+            sigma = max(2.0, 0.3 * max(bw, bh))
+            fill = cv2.inpaint(np.ascontiguousarray(T), piece.astype(np.uint8) * 255, 3, cv2.INPAINT_TELEA).astype(np.float32)
+            srcf = src.astype(np.float32)
+            res = cv2.GaussianBlur(fill, (0, 0), sigma) + (srcf - cv2.GaussianBlur(srcf, (0, 0), sigma))
+        else:
+            res = cv2.inpaint(np.ascontiguousarray(T), piece.astype(np.uint8) * 255, 3, cv2.INPAINT_TELEA).astype(np.float32)
+        soft = np.maximum(cv2.GaussianBlur(piece.astype(np.float32), (0, 0), max(1.0, g * 0.7)), piece.astype(np.float32))[..., None]
+        T[...] = np.clip(T.astype(np.float32) * (1 - soft) + res * soft, 0, 255).astype(np.uint8)
+    return out
 
 
 @tool("Erase / keep colours", "Clean-up", [
@@ -2221,6 +2392,24 @@ def stamp_clone(dst, src, cx, cy, ox, oy, size, hardness=100, opacity=100, regio
         "source, which moves along with it. Limited to the selection if there is one; on an image layer it copies inside "
         "that layer. One stroke is one Undo step.")
 def clone_stamp(img, size, hardness, opacity, aligned, src_x, src_y):
+    return img
+
+
+@tool("Heal brush", "Retouch", [
+    Param('size', "Diameter (px)", 'int', 20, 1, 300, slider=True, progressive=True),
+    Param('method', "Method", 'choice', HEAL_METHODS[0], choices=HEAL_METHODS),
+    Param('reach', "Classic: look for the source up to (x the spot's size)", 'int', 4, 1, 12, slider=True),
+    Param('grow', "LaMa: widen the spot by (% of its size)", 'int', 8, 0, 40, slider=True),
+    Param('grain', "LaMa: add the picture's grain to the fill", 'bool', True)],
+    preview=False, interactive='clean',
+    doc="Paint over a blemish, a spot, a wire or a stray mark (it shows green) and let go: it is healed. TWO METHODS. 'Classic' (instant, free, no "
+        "model) looks around the spot for the place that looks most like its surroundings and copies the TEXTURE from there, while colour and light "
+        "come from the spot's own surroundings (so skin pores, grass, paper grain are kept, which the Clean brush's smoothing cannot). 'LaMa (AI, "
+        "local)' lets the LaMa neural network rebuild the spot (a few seconds, the first time about a minute to load the model; needs onnxruntime "
+        "and the model, see Remove object (local, free)): the better choice for anything larger than a few dozen pixels, or on an edge or a structure (the classic method copies from the wrong place there). Paint a "
+        "little over the edge of the spot, and use several short strokes. Limited to the selection if there is one; on an image layer only that "
+        "layer's visible pixels are used. One stroke is one Undo step (LaMa: Esc stops it).")
+def heal_brush(img, size, method, reach, grow, grain):
     return img
 
 
@@ -3842,6 +4031,7 @@ class ImageForge:
         self._pan_left = False           # the left button is panning (Hand mode, or Space held)
         self._space = False
         self._params_ready = False
+        self._touched = False            # a parameter of the tool in use was edited (a tool that is not `auto_preview` previews only after that)
         self.mode = None                 # None, 'color' or 'angle': what a click on the image means (Esc cancels)
         self._pick_key = None            # the parameter a pick fills
         self._pick_pts = []
@@ -3981,6 +4171,7 @@ class ImageForge:
         e.add_separator()
         e.add_command(label="Select all", accelerator="Ctrl+A", command=self.select_all)
         e.add_command(label="Deselect", accelerator="Ctrl+D", command=self.deselect)
+        e.add_command(label="Select subject (AI)", command=self.select_subject)
         e.add_command(label="Crop to selection", accelerator="Ctrl+Shift+X", command=self.crop_to_selection)
         e.add_separator()
         e.add_command(label="Copy selection to layer", accelerator="Ctrl+J", command=lambda: self.selection_to_layer(False))
@@ -4050,7 +4241,7 @@ class ImageForge:
         row = tk.Frame(panel, bg=bg)
         row.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(2, 8))
         self.c_preview = tk.Checkbutton(row, text="Preview", variable=self.v_preview, bg=bg,
-                                        command=self._params_changed)
+                                        command=self._preview_toggled)
         self.c_preview.pack(side=tk.LEFT)
         self._tip(self.c_preview, "Preview: show the result of the tool live, before applying. Greyed out for tools that cannot preview (Upscale, Resize, brushes ...). "
                                   "To compare after applying, use the Before button or Undo / Redo.")
@@ -4453,7 +4644,7 @@ class ImageForge:
             grid.pack(padx=3)
             col = 0
             for name in names:
-                if name in TOOLS or name in TOOLBOX_MODES or name in ("Hand", "Select / move"):
+                if name in TOOLS or name in TOOLBOX_MODES or name in ("Hand", "Select / move", "Select subject"):
                     img = ImageTk.PhotoImage(tool_icon(name))
                     self._icons[name] = img
                     common = dict(image=img, width=30, height=30, bg='#f4f4f4', activebackground='#dfeaff', bd=1)
@@ -4465,12 +4656,14 @@ class ImageForge:
                         b = tk.Checkbutton(grid, variable=self.v_hand, indicatoron=False, selectcolor='#bcd6ff', command=self._hand_changed, **common)
                         hint = "Hand: the left button moves the picture  (H, or hold Space)"
                     else:
-                        starter = {"Select / move": None, "Magic wand": self.start_wand, "Lasso": self.start_lasso}[name]
+                        starter = {"Select / move": None, "Magic wand": self.start_wand, "Lasso": self.start_lasso, "Select subject": self.select_subject}[name]
                         b = tk.Button(grid, command=lambda f=starter: (self.leave_tool(), f() if f else None), **common)
                         self.b_modes[name] = b
                         hint = {"Select / move": "Select / move: no tool. Drag to select a rectangle, drag inside it to move what is inside  (Shift copies, Ctrl moves the frame only)",
                                 "Magic wand": "Magic wand: click a colour to select it  (Shift adds, Ctrl removes; leaves the current tool)",
-                                "Lasso": "Lasso: draw around what to select  (double-click closes; leaves the current tool)"}[name]
+                                "Lasso": "Lasso: draw around what to select  (double-click closes; leaves the current tool)",
+                                "Select subject": "Select subject: one click selects the main subject of the picture with a neural network (a few seconds; "
+                                                  "needs onnxruntime and isnet-general-use.onnx). Then Invert selects the background"}[name]
                     b.grid(row=col // 2, column=col % 2, padx=1, pady=1)
                     self._tip(b, hint)
                     col += 1
@@ -4483,7 +4676,7 @@ class ImageForge:
         name = self.tool.name if self.tool is not None else ""
         self.v_toolsel.set(name if any(name in names for _, names in TOOLBOX) else "")
         for n, b in getattr(self, 'b_modes', {}).items():
-            on = (self.tool is None and not self.mode) if n == "Select / move" else self.mode == TOOLBOX_MODES[n]       # the base state: no tool, no mode
+            on = (self.tool is None and not self.mode) if n == "Select / move" else (self.mode == TOOLBOX_MODES[n] if n in TOOLBOX_MODES else False)   # the base state: no tool, no mode
             b.config(relief=tk.SUNKEN if on else tk.RAISED, bg='#bcd6ff' if on else '#f4f4f4')
 
     def _build_chips(self, order):
@@ -4633,6 +4826,7 @@ class ImageForge:
         self.canvas.delete('brush')
         self.canvas.delete('clone')
         self.l_doc.config(text=self.tool.doc + self._quick_pick_hint(self.tool))
+        self._touched = False
         self._build_params()
         self.preview = self.lprev = None
         ei = self._edit_index()
@@ -4714,7 +4908,7 @@ class ImageForge:
                 elif p.pick == 'point':
                     tk.Button(self.params_frame, text="Set source: click on the picture",
                               command=lambda k=p.key: self.start_pick('point', k), bg='#cdeefc').pack(fill=tk.X, pady=(2, 0))
-            var.trace_add('write', lambda *a: self._params_changed())
+            var.trace_add('write', lambda *a: self._param_edited())
             self.pvars[p.key] = var
         if self.tool.name == "Remove object (API, paid)":
             self._build_or_panel()
@@ -4801,6 +4995,17 @@ class ImageForge:
         for p in self.tool.params:
             self.pvars[p.key].set(p.default)
 
+    def _param_edited(self):
+        """A box, slider, pick or Reset changed a parameter: from now on the tool previews (a tool that is not `auto_preview` showed nothing until now)."""
+        if self._params_ready:
+            self._touched = True
+        self._params_changed()
+
+    def _preview_toggled(self):
+        """The Preview box was ticked: the user asks to see the result, so it counts as touching the tool."""
+        self._touched = True
+        self._params_changed()
+
     def _params_changed(self):
         if not self._params_ready or self.tool is None:
             return
@@ -4834,7 +5039,7 @@ class ImageForge:
                     self.lprev = tuple(layers)
             self._redraw()
             return
-        if not (self.v_preview.get() and self.tool.preview):
+        if not (self.v_preview.get() and self.tool.preview and (self._touched or self.tool.auto_preview)):
             if self.preview is not None or self.lprev is not None:
                 self.preview = self.lprev = None
                 self._redraw()
@@ -4987,17 +5192,9 @@ class ImageForge:
         if t.takes_region and region is None:
             self._status("%s needs a selection: draw the object with the Lasso, the Magic wand or a rectangle (Select / move: the toolbox, top left), then press Apply." % t.name)
             return
-        if t.name == "Remove object (local, free)":
-            try:
-                import onnxruntime                                                  # noqa: F401
-            except ImportError:
-                messagebox.showwarning(APP_NAME, "Remove object (local, free) needs the Python package onnxruntime. Install it with:\n\n    pip install onnxruntime")
-                return
-            if find_ai_model("lama") is None:
-                if not messagebox.askyesno(APP_NAME, "The LaMa model (lama_fp32.onnx) is not set up yet. Choose the folder that holds it now?"):
-                    return
-                if not self.choose_ai_dir() or find_ai_model("lama") is None:
-                    return
+        need = {"Remove object (local, free)": ("lama", "LaMa model (lama_fp32.onnx)"), "Remove background": (SUBJECT_NAMES, "subject model (isnet-general-use.onnx)")}.get(t.name)
+        if need and not self._ensure_onnx_model(*need):
+            return
         if t.name == "Remove object (API, paid)":
             key = openrouter_key()
             if not key:
@@ -5069,6 +5266,57 @@ class ImageForge:
         th.start()
         self._poll_external(box, base, flatten, params)
 
+    def _ensure_onnx_model(self, prefix, desc):
+        """True when onnxruntime and the model file are there; else says what is missing (and offers to choose the folder that holds the model)."""
+        try:
+            import onnxruntime                                                  # noqa: F401
+        except ImportError:
+            messagebox.showwarning(APP_NAME, "This needs the Python package onnxruntime. Install it with:" + chr(10) * 2 + "    pip install onnxruntime")
+            return False
+        if find_ai_model(prefix) is None:
+            if not messagebox.askyesno(APP_NAME, "The %s is not set up yet. Choose the folder that holds it now?" % desc):
+                return False
+            if not self.choose_ai_dir() or find_ai_model(prefix) is None:
+                return False
+        return True
+
+    def select_subject(self):
+        """One click: the main subject of the picture becomes the working area (a shape selection), found by a neural network in a worker thread. Invert then
+        selects the background; every tool acts only inside the area."""
+        if not self._need_image():
+            return
+        self.leave_tool()
+        if self._busy:
+            self._status("%s is still running: Esc stops it." % self._busy[0])
+            return
+        if not self._ensure_onnx_model(SUBJECT_NAMES, "subject model (isnet-general-use.onnx)"):
+            return
+        img = self._flat()
+        AI_CANCEL.clear()
+        AI_PROGRESS['pct'] = None
+        box = {}
+        base = self.hist.current
+
+        def work():
+            try:
+                box['out'] = subject_mask(img)
+            except Cancelled:
+                box['cancelled'] = True
+            except Exception as ex:
+                box['error'] = ex
+
+        def commit(mask):
+            self._set_shape(mask_to_sel(subject_selection_mask(mask)), "Select subject")
+            return False                                         # _set_shape has written the status line
+
+        box['commit'] = commit
+        th = threading.Thread(target=work, daemon=True)
+        self._busy = ("Select subject", th, time.time())
+        self.canvas.config(cursor='watch')
+        self.b_apply.config(state='disabled')
+        th.start()
+        self._poll_external(box, base, False, {})
+
     def _show_pbar(self, determinate):
         """The progress bar at the right end of the status line: a filling bar when the program reports its progress, else a moving one."""
         mode = 'determinate' if determinate else 'indeterminate'
@@ -5101,7 +5349,7 @@ class ImageForge:
                     self._status("%s: %d %%, about %s left (Esc stops it; the window stays usable)" % (name, pct, format_eta(elapsed * (100.0 - pct) / pct)))
             else:                                                            # no progress is reported: a moving bar and the time passed
                 self._show_pbar(False)
-                hint = " The model is being loaded: about a minute the first time." if name == "Remove object (local, free)" and not _LAMA else ""
+                hint = " The model is being loaded: about a minute the first time." if name in ("Remove object (local, free)", "Heal brush") and not _LAMA else ""
                 self._status("%s is running... %d s.%s (Esc stops it; the window stays usable)" % (name, elapsed, hint))
             self._busy_after = self.root.after(500, lambda: self._poll_external(box, base, flatten, params))
             return
@@ -5117,6 +5365,13 @@ class ImageForge:
                 messagebox.showwarning(APP_NAME, str(box['error']))
         elif self.hist is None or self.hist.current is not base:
             self._status("%s finished, but the picture changed meanwhile: the result was dropped." % name)
+        elif 'commit' in box:                                  # a brush stroke (Heal brush with LaMa): it knows how to put its result back
+            try:
+                msg = box['commit'](box['out'])
+                if msg is not False:                           # False: the commit has written the status itself
+                    self._status(msg or "%s applied in %d s." % (name, time.time() - t0), ok=True)
+            except RuntimeError as ex:
+                self._status("%s finished, but %s: the result was dropped." % (name, ex))
         else:
             out = box['out']
             if flatten:
@@ -6692,7 +6947,8 @@ class ImageForge:
                     self._stroke[box[1]:box[3], box[0]:box[2]] = paint_over(part, self.fg, weight)
         else:                                                  # 'clean': the mask, and a red trace to see it
             paint_segment(self._stroke_mask, lp, tp, size, (255,), region)
-            paint_segment(self._stroke, lp, tp, size, (255, 60, 60) + ((255,) if L is not None else ()), region)
+            trace = (70, 200, 110) if 'method' in p else (255, 60, 60)           # the Heal brush shows green, the Clean brush red
+            paint_segment(self._stroke, lp, tp, size, trace + ((255,) if L is not None else ()), region)
         self._last = pt
         if L is None:
             self.preview = self._stroke
@@ -6710,6 +6966,9 @@ class ImageForge:
             self._paint_prev = self._last
         self._stroke = self._stroke_layer = self._stroke_orig = self._stroke_mask = self._last = self._cover = None
         self.preview = self.lprev = None
+        if mode == 'clean' and 'method' in (self._read_params() or {}):          # Heal brush
+            self._heal_end(orig, L, mask > 0)
+            return
         if mode == 'clean':                                    # now rebuild what was painted over
             radius = int((self._read_params() or {}).get('radius', 3))
             hole = mask > 0
@@ -6736,6 +6995,75 @@ class ImageForge:
             layers[self.active] = L.replace(rgba=stroke)
             self._commit_layers("%s (layer)" % self.tool.name, layers)
             self._status("%s stroke done on layer '%s'." % (self.tool.name, L.name), ok=True)
+
+    def _heal_end(self, orig, L, hole):
+        """End of a Heal brush stroke: `orig` (the Background or the layer's RGBA) with the painted `hole` healed. The classic method is instant; LaMa runs
+        in a worker thread (the model takes a minute to load the first time) and is committed by `_poll_external` when it is done."""
+        p = self._read_params() or {}
+        if not hole.any():
+            self._redraw()
+            self._status("Heal brush changed nothing: the stroke was outside the working area (press 'Whole image' to remove it).")
+            return
+        rgb = np.ascontiguousarray(orig[..., :3])
+        valid = None if L is None else orig[..., 3] > 0
+        region = layer_region(self.sel, L) if L is not None else self.sel          # the healed patch is a little wider than the stroke: the area still limits it
+        if p.get('method') == HEAL_METHODS[1]:
+            if self._busy:
+                self._status("%s is still running: Esc stops it." % self._busy[0])
+                self._redraw()
+                return
+            if not self._ensure_onnx_model("lama", "LaMa model (lama_fp32.onnx)"):
+                self._redraw()
+                return
+            grow, grain = int(p.get('grow', 8)), bool(p.get('grain', True))
+            AI_CANCEL.clear()
+            AI_PROGRESS['pct'] = None
+            box = {}
+            base, layers0 = self.hist.current, self.hist.layers
+
+            def work():
+                try:
+                    box['out'] = masked_merge(rgb, lama_fill_mask(rgb, hole, grow, grain)[0], region)
+                except Cancelled:
+                    box['cancelled'] = True
+                except Exception as ex:
+                    box['error'] = ex
+
+            def commit(out):
+                if L is None:
+                    self._commit("Heal brush (LaMa)", out)
+                    return
+                if self.hist.layers is not layers0:
+                    raise RuntimeError("the layers changed meanwhile")
+                new = orig.copy()
+                new[..., :3] = out
+                layers = list(self.hist.layers)
+                layers[self.active] = L.replace(rgba=new)
+                self._commit_layers("Heal brush (LaMa, layer)", layers)
+
+            box['commit'] = commit
+            th = threading.Thread(target=work, daemon=True)
+            self._busy = ("Heal brush", th, time.time())
+            self.canvas.config(cursor='watch')
+            self.b_apply.config(state='disabled')
+            th.start()
+            self._poll_external(box, base, False, p)
+            return
+        out = masked_merge(rgb, heal_classic(rgb, hole, int(p.get('reach', 4)), valid), region)
+        if out is rgb or np.array_equal(out, rgb):
+            self._redraw()
+            self._status("Heal brush changed nothing there.")
+            return
+        if L is None:
+            self._commit("Heal brush", out)
+            self._status("Heal brush stroke done%s." % (" (inside the selection)" if self.sel is not None else ""), ok=True)
+        else:
+            new = orig.copy()
+            new[..., :3] = out
+            layers = list(self.hist.layers)
+            layers[self.active] = L.replace(rgba=new)
+            self._commit_layers("Heal brush (layer)", layers)
+            self._status("Heal brush stroke done on layer '%s'." % L.name, ok=True)
 
     def _fill_click(self, e):
         kind, L = self._tool_target()
