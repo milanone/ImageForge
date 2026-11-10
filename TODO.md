@@ -22,6 +22,5 @@ Ideas and open items for ImageForge. Nothing here is promised; the order is a su
 - Esc could leave the current tool (back to Select / move).
 - Decide which other tools should be `auto_preview` (now: Local contrast, Auto contrast, Even out illumination, Grayscale, tools without parameters). Candidates: Auto straighten, Despeckle.
 - `screenshot.png` in the README predates many features: regenerate it from the real window.
-- Move or ignore the untracked photos and result files in the project folder (PXL_*, generali-ethical*, panoramica-castellaneta_*, portraits).
 - The "Enlarge canvas / Enlarge %" tools were left untouched when Upscale was renamed.
 - Toolbar icons for XYplorer (files `ImageForge*.ico` / `.png`): pick one design and delete the others.

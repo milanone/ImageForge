@@ -6,3 +6,8 @@ example data/
 examples/test_picture.png
 ImageForge_errors.log
 synechocystis.png
+# test photos and their results (private people, not for the public repository)
+tests/*.jpg
+tests/*.jpeg
+tests/*.png
+tests/*.webp

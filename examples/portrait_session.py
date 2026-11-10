@@ -12,7 +12,7 @@ except Exception: pass
 here = os.path.dirname(os.path.abspath(__file__)); top = os.path.join(here, "..")
 l = importlib.machinery.SourceFileLoader("m", os.path.join(top, "ImageForge.pyw"))
 s = importlib.util.spec_from_loader("m", l); m = importlib.util.module_from_spec(s); l.exec_module(m)
-cands = sys.argv[1:] + [os.path.join(top, n) for n in ("PXL_20260910_200237476.TS-001.ABT.jpg", "PXL_20261006_130943122~2.jpg", "generali-ethical.jpg")]
+cands = sys.argv[1:] + [os.path.join(top, "tests", n) for n in ("PXL_20260910_200237476.TS-001.ABT.jpg", "PXL_20261006_130943122~2.jpg", "generali-ethical.jpg")]
 photo = next((c for c in cands if os.path.exists(c)), None)
 if photo is None:
     print("no photo with a face found: pass one as an argument"); sys.exit(0)

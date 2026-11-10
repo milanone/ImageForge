@@ -533,6 +533,8 @@ new tree nodes automatically (and add it to `TOOL_LAYOUT` to choose its place).
 
 ## Verified / not verified
 
+Test photos and their results (portraits, group photo, desk photo, panorama, `synechocystis.png`) live in `tests/` and are git-ignored (`tests/*.jpg|png|webp`): they show private people and must never be published. Scripts that need a photo look there (`examples/portrait_session.py`, `examples/subject_session.py`) or take a path as an argument.
+
 Unit tests on synthetic arrays and files; a scripted session with real Tk mouse events (drag selection, move/resize by handles, arrow nudge, Apply, crop,
 undo, redo, wheel, pan, click-to-deselect, colour pick, angle pick, brush stroke, content move/copy, text placement, layers: add/edit/move/opacity/merge/flatten/undo/save, tools, brush and geometry on a layer) and a screenshot from the real window. Not verified: large photos, HiDPI
 scaling other than the screenshot script's, drag-and-drop (tkinterdnd2 path), the Save dialogs by hand.

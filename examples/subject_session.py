@@ -11,7 +11,7 @@ except Exception: pass
 here = os.path.dirname(os.path.abspath(__file__))
 l = importlib.machinery.SourceFileLoader("m", os.path.join(here, "..", "ImageForge.pyw"))
 s = importlib.util.spec_from_loader("m", l); m = importlib.util.module_from_spec(s); l.exec_module(m)
-photo = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "..", "generali-ethical.jpg")
+photo = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "..", "tests", "generali-ethical.jpg")
 if not os.path.isfile(photo):
     sys.exit("give a photo with a person: python examples/subject_session.py PHOTO")
 os.environ["IMAGEFORGE_SETTINGS"] = os.path.join(tempfile.gettempdir(), "subject_settings.json")
