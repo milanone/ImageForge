@@ -39,7 +39,7 @@ def main():
     make_picture(pic)
     root = app_mod.TkinterDnD.Tk() if app_mod.HAS_DND else app_mod.tk.Tk()
     app = app_mod.ImageForge(root)
-    root.geometry("1250x820+40+20")
+    root.geometry("1250x900+40+20")
     root.attributes('-topmost', True)
     root.update()
     app.open_path(pic)

@@ -64,7 +64,7 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
   size and place, the last folders and the recent files are remembered in `%APPDATA%\ImageForge\settings.json` (written when you
   close the program).
 - **Where things are**: the mouse tools are in the **toolbox** at the left of the picture, as icon buttons in groups of two columns (hover for the
-  name): **Select** (the arrow, Magic wand, Lasso, Hand) at the top: the arrow is the base state, *Select / move* (no tool: drag selects a rectangle, drag inside it moves what is inside, Shift copies, Ctrl moves the frame only); choosing it or clicking the tool in use a second time leaves the current tool, then **Draw** (Pencil, Paintbrush, Eraser brush, Fill bucket, Gradient), **Retouch** (Clone stamp, Heal brush, Clean brush, Dodge / burn, Erase rectangle, Move area),
+  name): **Select** (the arrow, Magic wand, Lasso, Select subject, Hand) at the top: the arrow is the base state, *Select / move* (no tool: drag selects a rectangle, drag inside it moves what is inside, Shift copies, Ctrl moves the frame only); choosing it or clicking the tool in use a second time leaves the current tool, then **Draw** (Pencil, Paintbrush, Eraser brush, Fill bucket, Gradient), **Retouch** (Clone stamp, Heal brush, Clean brush, Dodge / burn, Erase rectangle, Move area),
   **Annotate** (Add text, Shapes, Scale bar, Measure) and **Layers** (Move layer). The one-shot
   operations with a preview and an Apply button are in the *Tools* tab of the panel: four buttons choose the group (**Size** = size and
   orientation, **Adjust**, **Filters**, **Clean-up**) and the list under them shows its tools; the box above them **finds a tool** by typing
@@ -80,6 +80,11 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
   centre) and **100%**, plus a **Hand** button: while it is pressed, or while you hold **Space**, dragging with the left
   button moves the picture instead of selecting (right/middle drag always moves it). Wheel = zoom at the cursor.
   The status line shows the pixel under the cursor. The tool list is tall (about 20 rows); the line between it and the parameters below can be dragged.
+- **Preview and Apply**: there is no Apply to remember. A tool shows its result as a live preview, and what is on screen is applied by itself when you
+  move on (another tool, Save, Export, Crop to selection); one Undo takes it back. The tools meant to be used as they come (**Local contrast**,
+  **Auto contrast**, **Even out illumination**, **Grayscale**, and every tool without boxes) preview at once with their defaults; the others
+  show nothing until you touch a box or slider (or tick *Preview*), so scrolling through the tool list changes nothing. Undo while only a preview
+  is on screen just drops the preview. The two lines under the Undo / Redo buttons (and the *Edit* menu) say which step each one acts on.
 - **Tools**, with live preview:
   - Tone: brightness / contrast, grayscale (with strength), invert, threshold (plug-in example)
   - Filters: sharpen (unsharp mask), Gaussian blur
@@ -94,7 +99,7 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
     model (same set-up as Remove object (local, free): onnxruntime and `lama_fp32.onnx`), better for larger things or edges. All
     are limited to the selection and work on the selected layer's pixels.
   - Subject: the **Select subject** button (toolbox, Select group; also Edit menu) selects the main subject of the picture with one click, using a neural network (`isnet-general-use.onnx` from the rembg project, in the AI programs folder, plus `pip install onnxruntime`; about 3 seconds on a CPU). *Invert* then selects the background. **Remove background** (Clean-up) replaces the background with white, black, a picked colour, a blurred copy of the picture (portrait look) or, on an image layer, transparency. The model picks the most salient thing, which can include what the subject holds or sits on: correct with the threshold, grow / shrink or the Lasso.
-  - Size: **Upscale (local, free)** makes the picture 2x or 4x larger with Real-ESRGAN or waifu2x (the `-ncnn-vulkan` command-line programs, which you download
+  - Size: **Upscale (local, free)** makes the picture 2x or 4x larger with Real-ESRGAN (a photo model and a *drawings* one, for line art and diagrams) or waifu2x (the `-ncnn-vulkan` command-line programs, which you download
     yourself and which need a GPU with Vulkan; *Tools > AI programs folder...* tells ImageForge where they are). It runs in the background (the window stays
     usable, Esc stops it; a progress bar and the time left are shown, read from the program's own percentages) and can take minutes: about 2.5 min per megapixel with Real-ESRGAN on an integrated Intel GPU. The detail it adds is invented, not
     recovered. For grainy or already enlarged pictures, *Shrink first* reduces the picture before the program enlarges it (the result is still 2x or 4x of the original). It does **not** remove objects. After an Upscale or a Resize the picture keeps its size on the screen if you had zoomed in, and the **Before** button (or hold `\`) shows the picture as it was before the last step at the same scale, so the two can be compared; Undo / Redo flip between them at the same scale too.
