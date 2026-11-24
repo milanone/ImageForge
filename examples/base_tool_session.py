@@ -61,4 +61,8 @@ print("5. picking a tool again keeps the area:", a.sel is not None, "| tool:", a
 sel_btn.invoke(); a.tree.selection_set("Local contrast (CLAHE)"); root.update(); root.after(400, root.quit); root.mainloop(); i0 = a.hist.index           # the index: earlier Undos left steps to redo, and a new step replaces them
 sel_btn.invoke(); root.update()
 print("6. leaving a tool with Select / move applies its preview:", a.hist.index == i0 + 1, "|", a.hist.states[a.hist.index][0])
+# 7. the 'Drag moves the content' box tells the truth: ticked and greyed out in Select / move and Move area, live with other tools
+sel_btn.invoke(); root.update(); box = lambda: (str(a.c_content.cget('state')), a.root.tk.globalgetvar(str(a.c_content.cget('variable'))))
+none_state = box(); a.tree.selection_set("Blur (Gaussian)"); root.update(); tool_state = box(); a.tree.selection_set("Move area"); root.update(); area_state = box()
+print("7. box in Select / move:", none_state, "| with Blur:", tool_state, "| with Move area:", area_state, "| line:", a.l_content.cget('text')[:40])
 a.dirty = False; root.destroy()

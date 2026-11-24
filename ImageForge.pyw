@@ -328,7 +328,7 @@ SHORTCUTS = [
     ("Selections with the mouse", "Ctrl + click", "Magic wand and Lasso: remove from the selection", "like GIMP (Photoshop uses Alt)"),
     ("Selections with the mouse", "Shift + Ctrl + click", "Magic wand and Lasso: keep only the overlap", "like GIMP"),
     ("Selections with the mouse", "Double-click / Enter / first point", "Close the lasso (also: end a path or area measurement)", "standard"),
-    ("Selections with the mouse", "Ctrl / Shift + drag in a selection", "With 'Drag moves the content': Ctrl does the opposite of the box, Shift copies", "ours"),
+    ("Selections with the mouse", "Ctrl / Shift + drag in a selection", "Select / move and Move area: the drag moves the content (Select / move: Ctrl moves only the frame); other tools: the 'Drag moves the content' box decides and Ctrl does the opposite; Shift copies", "ours"),
     ("Drawing and retouch", "Ctrl + click", "Pick the foreground colour; Clone stamp: the source; Erase / keep colours: a colour to find", "like GIMP (Photoshop uses Alt)"),
     ("Drawing and retouch", "Ctrl + Shift + click", "Pick the background colour (or the colour to paint with)", "ours"),
     ("Drawing and retouch", "[ / ]", "A smaller / larger brush (Size box of the tool, about 10 % a step)", "standard"),
@@ -4331,13 +4331,16 @@ class ImageForge:
         row = tk.Frame(panel, bg=bg)
         row.pack(fill=tk.X, padx=8, pady=(4, 0))
         self.v_content = tk.BooleanVar(value=False)
-        tk.Checkbutton(row, text="Drag moves the content", variable=self.v_content, bg=bg, font=('Arial', 9)).pack(side=tk.LEFT)
+        self.v_content_fixed = tk.BooleanVar(value=True)               # shown (ticked, greyed out) in Select / move and Move area, where the drag always moves the content
+        self.c_content = tk.Checkbutton(row, text="Drag moves the content", variable=self.v_content, bg=bg, font=('Arial', 9))
+        self.c_content.pack(side=tk.LEFT)
         tk.Label(row, text="leaves", bg=bg, font=('Arial', 8)).pack(side=tk.LEFT, padx=(6, 2))
         self.v_fill = tk.StringVar(value='white')
         ttk.Combobox(row, textvariable=self.v_fill, values=('white', 'black', 'background', 'transparent'), state='readonly',
                      width=10).pack(side=tk.LEFT)
-        tk.Label(panel, text="Ctrl does the opposite of the box, Shift copies.", bg=bg, fg='#555555', font=('Arial', 8),
-                 anchor='w').pack(fill=tk.X, padx=10)
+        self.l_content = tk.Label(panel, text="", bg=bg, fg='#555555', font=('Arial', 8), anchor='w', justify='left', wraplength=330)
+        self.l_content.pack(fill=tk.X, padx=10)
+        self._sync_content_box()
 
         self.nbk = ttk.Notebook(panel)
         self.nbk.pack(fill=tk.BOTH, expand=True, padx=4, pady=(6, 0))
@@ -4700,12 +4703,27 @@ class ImageForge:
                     col += 1
         self._sync_toolbox()
 
+    def _sync_content_box(self):
+        """The 'Drag moves the content' box and the line under it tell the truth about the drag inside the working area. In Select / move (no tool) the drag
+        ALWAYS moves the content and Ctrl moves only the frame; with Move area it always moves the content: the box is then shown ticked and greyed out.
+        Only with another tool does the box decide, and Ctrl does the opposite of it. (The box used to look unticked in Select / move with the line 'Ctrl does
+        the opposite of the box', so Ctrl was expected to move the content, and it did the contrary.)"""
+        if getattr(self, 'c_content', None) is None:
+            return
+        t = self.tool
+        fixed = t is None or t.interactive == 'rect-move'
+        self.c_content.config(variable=self.v_content_fixed if fixed else self.v_content, state=tk.DISABLED if fixed else tk.NORMAL)
+        self.l_content.config(text=("Drag inside the area moves what is inside; Ctrl moves only the frame; Shift copies." if t is None else
+                                    "Move area: drag inside the area moves what is inside; Shift copies." if fixed else
+                                    "Ctrl does the opposite of the box, Shift copies."))
+
     def _sync_toolbox(self):
         """The toolbox follows the tool in use (a one-shot operation leaves it unselected) and the wand / lasso modes."""
         if getattr(self, 'v_toolsel', None) is None:
             return
         name = self.tool.name if self.tool is not None else ""
         self.v_toolsel.set(name if any(name in names for _, names in TOOLBOX) else "")
+        self._sync_content_box()
         for n, b in getattr(self, 'b_modes', {}).items():
             on = (self.tool is None and not self.mode) if n == "Select / move" else (self.mode == TOOLBOX_MODES[n] if n in TOOLBOX_MODES else False)   # the base state: no tool, no mode
             b.config(relief=tk.SUNKEN if on else tk.RAISED, bg='#bcd6ff' if on else '#f4f4f4')
