@@ -24,6 +24,7 @@ def drag(p, q, n=6, state=0):
     for i in range(1, n + 1): ev('<B1-Motion>', *scr(p[0] + (q[0] - p[0]) * i // n, p[1] + (q[1] - p[1]) * i // n), state=0x100 | state)
     ev('<ButtonRelease-1>', *scr(*q), state=state)
 pos = lambda: (a.hist.layers[-1].x, a.hist.layers[-1].y)
+def wait(): [(root.update(), time.sleep(0.02)) for _ in range(15)]
 
 a.tree.selection_set("Add text"); root.update(); a.pvars['text'].set("Hello figure"); a.pvars['size'].set(60); root.update()
 click((100, 100)); a.apply(); root.update()
@@ -67,4 +68,16 @@ a._commit("Draw a dot", base); root.update(); a.active = 0; a._refresh_layers();
 drag((560, 360), (640, 440)); n = a.hist.index; time.sleep(0.6); drag((600, 400), (500, 300), state=0x4)
 cur = a.hist.current; ys, xs = np.nonzero((np.abs(cur.astype(int) - np.array([220, 60, 40])).sum(axis=2)) < 30)
 print("6. rectangle + drag with a text layer selected: dot centre now", (int(xs.mean()), int(ys.mean())), "(expected about (500, 300)) | label:", a.hist.states[a.hist.index][0], "| layer kept:", len(a.hist.layers) == 1)
+# 7. a size changed in the boxes (32 -> 20) and then a click on the text, a drag, another layer or another tool: the change is kept, it does not go back to 32
+a.tree.selection_set("Add text"); root.update(); a.active = None; a._refresh_layers(); root.update(); time.sleep(0.6)
+click((450, 150)); wait(); a._text_edit_close(True) if a._tedit else None; root.update(); L = a.hist.layers[-1]
+print("7. text layer at size", L.params['size'], "| active:", a.active == len(a.hist.layers) - 1)
+a.pvars['size'].set(20); root.update(); n = a.hist.index
+print("   size box 20, nothing applied yet:", a.hist.layers[-1].params['size'], "| pending:", a._pending_preview(), "| Undo label:", a.l_undo.cget('text').replace(chr(10), ' | ')[:60])
+time.sleep(0.6); L = a.hist.layers[-1]; drag((L.x + 30, L.y + 12), (L.x + 80, L.y + 62))
+print("   after clicking and dragging the text: size in the layer", a.hist.layers[-1].params['size'], "| in the box:", a.pvars['size'].get(), "| moved:", (a.hist.layers[-1].x, a.hist.layers[-1].y) != (L.x, L.y), "| steps +%d" % (a.hist.index - n))
+a.pvars['size'].set(26); root.update(); a.undo(); root.update()
+print("   Undo of a pending edit drops it: box back to", a.pvars['size'].get(), "| layer", a.hist.layers[-1].params['size'], "| steps +%d" % (a.hist.index - n))
+a.pvars['size'].set(26); root.update(); a.tree.selection_set("Blur (Gaussian)"); root.update()
+print("   switching tool applies a pending edit:", a.hist.layers[-1].params['size'] == 26, "| steps +%d" % (a.hist.index - n))
 a.dirty = False; root.destroy()

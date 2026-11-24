@@ -4808,9 +4808,28 @@ class ImageForge:
         """True when the tool in use shows a live preview that has not been applied: a one-shot tool (not a brush, a layer tool or an external program) whose
         preview differs from the picture. Sliders need not have been moved: what is on screen is what is applied (a tool's default preview too)."""
         t, cur = self.tool, self.hist.current if self.hist is not None else None
-        if t is None or cur is None or t.interactive or t.layer or t.external or self.preview is None or self.preview is cur:
+        if t is not None and t.layer and cur is not None:
+            return self._pending_layer_edit()
+        if t is None or cur is None or t.interactive or t.external or self.preview is None or self.preview is cur:
             return False
         return not (self.preview.shape == cur.shape and np.array_equal(self.preview, cur))
+
+    def _pending_layer_edit(self):
+        """True when the boxes of a layer tool (Add text, Shapes, Scale bar) hold an edit of the SELECTED layer that is not applied yet (the size changed from 32 to 20,
+        say). Only an edit of an existing layer counts: a layer that has not been added yet is never added by itself, or choosing the tool would add a text. Reported
+        as: 'I make the text smaller, then click to move it and it goes back to 32': the move rebuilt the boxes from the layer, which still had the old size."""
+        ei = self._edit_index()
+        if ei is None or not self._params_ready:
+            return False
+        params = self._read_params()
+        if params is None:
+            return False
+        old = self.hist.layers[ei]
+        try:
+            new = self._layer_from_params(params, old)
+        except Exception:
+            return False
+        return new is not None and not (old.params == new.params and (old.x, old.y, old.opacity) == (new.x, new.y, new.opacity))
 
     def _commit_pending(self, why):
         """Apply the preview that is on screen, silently: what the user sees is what he gets, and Undo takes it back, so there is no question to answer.
@@ -4818,9 +4837,9 @@ class ImageForge:
         if not self._pending_preview():
             return False
         name = self.tool.name
-        n = len(self.hist.states)
+        n = self.hist.index
         self.apply()
-        if len(self.hist.states) > n:
+        if self.hist.index > n:
             self._status("%s applied (it was a preview) %s. Undo takes it back." % (name, why), ok=True)
             return True
         return False
@@ -5628,6 +5647,11 @@ class ImageForge:
     def undo(self):
         if self._pending_preview():                                   # Undo of something not yet applied: just drop the preview
             self.preview = None
+            if self.tool is not None and self.tool.layer:             # an edit of a layer: the boxes go back to the layer's values
+                self.lprev = None
+                ei = self._edit_index()
+                if ei is not None:
+                    self._load_layer_into_tool(self.hist.layers[ei])
             self._redraw()
             self._status("Preview discarded (it was not applied).")
             return
@@ -6145,6 +6169,7 @@ class ImageForge:
         new = None if sel[0] == 'BG' else int(sel[0][1:])
         if new == self.active:                      # also the echo of _refresh_layers' own selection_set (the virtual
             return                                  # event arrives after the _lsync guard is down): no endless loop
+        self._commit_pending("when you selected another layer")
         self.active = new
         self._refresh_layers()
         ei = self._edit_index()
@@ -7346,6 +7371,8 @@ class ImageForge:
         i = self._layer_under(e)
         if i is None:
             return False
+        if i == self.active:
+            self._commit_pending("before moving it")                  # a size or colour just changed in the boxes: keep it, do not go back to the layer's old values
         L = self.hist.layers[i]
         now = time.time()
         again = i == self._layer_click[0] and now - self._layer_click[1] < 0.45
@@ -7433,6 +7460,7 @@ class ImageForge:
         """Make layer `i` the selected one (as a click in the Layers tab does), loading its settings into the tool that edits it."""
         if i == self.active:
             return
+        self._commit_pending("when you selected another layer")
         self.active = i
         self._refresh_layers()
         ei = self._edit_index()
