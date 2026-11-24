@@ -320,7 +320,8 @@ SHORTCUTS = [
     ("Tools", "Click the tool in use again", "Deselects it: back to Select / move", "common"),
     ("Layers", "Click a layer on the picture", "Selects it (Select / move, Move layer, Add text); a dashed blue frame shows the selected layer", "like Photoshop's auto-select"),
     ("Layers", "Drag a layer on the picture", "Moves it (one Undo step); with Add text selected the boxes follow", "common"),
-    ("Layers", "Double-click a text, shape or scale bar", "Opens its tool with its settings, to edit it (then Update layer)", "common"),
+    ("Layers", "Double-click a text, shape or scale bar", "Opens its tool with its settings, to edit it (a text is retyped right on the picture: Ctrl+Enter sets it, Esc cancels)", "common"),
+    ("Layers", "Add text: click on the picture, then type", "The text is typed right there (Enter = new line, Ctrl+Enter or a click elsewhere sets it as a layer, Esc cancels)", "common"),
     ("View", "\\ (hold) or the Before button", "Shows the picture as it was before the last step (or without the preview), at the same scale", "like Lightroom"),
     ("View", "Ctrl+H", "Histogram window", "ours"),
     ("Selections with the mouse", "Drag", "Draw a rectangle; drag inside it to move it, drag a handle to resize", "standard"),
@@ -2914,7 +2915,7 @@ def load_font(name, size):
 
 @functools.lru_cache(maxsize=64)
 def _render_text_cached(text, size, font, color, angle, opacity):
-    text = text.replace("\n", "\n")                  # a typed backslash-n is a line break (the box is one line)
+    text = text.replace("\\n", "\n")               # a typed backslash-n is a line break (the box is one line)
     if not text.strip() or opacity == 0:
         return None
     cols = parse_colors(color)
@@ -2965,8 +2966,9 @@ def blend_rgba(dst, rgba, x, y, opacity=1.0):
     Param('angle', "Rotate (deg, counter-clockwise)", 'float', 0.0, -180.0, 180.0, step=0.5, slider=True),
     Param('opacity', "Opacity (%)", 'int', 100, 0, 100, slider=True)],
     place=True, layer='text',
-    doc="Click on the image to place the text, then press the button: the text becomes a layer. To MOVE it afterwards, drag it on the picture "
-        "(a dashed blue frame shows the selected layer); to EDIT it, double-click it (or click it, change the boxes and press Update layer). "
+    doc="Click on the image where the text goes and TYPE it right there (Ctrl+Enter, or a click elsewhere, sets it as a layer; Esc cancels; Enter = new "
+        "line). To MOVE it afterwards, drag it on the picture (a dashed blue frame shows the selected layer); to EDIT the words, double-click it. "
+        "The boxes here (text, size, font, colour, angle ...) change the selected text too: press Update layer. "
         "Click empty picture to place a new one after selecting Background in the Layers tab. As a plain function it paints the text into the pixels.")
 def add_text(img, text, size, font, color, x, y, angle, opacity):
     """Paint the text into the pixels (the app makes a layer instead and bakes it only on Flatten)."""
@@ -4067,6 +4069,7 @@ class ImageForge:
         self._lmove = None               # (press point, layer index, layer) while dragging a layer
         self._layer_click = (None, 0.0)  # (layer index, time) of the last click on a layer: two quick ones open its tool
         self._dbl_edit = None            # layer whose tool opens when the second quick press is released without moving
+        self._tedit = None               # (Text widget, original text) while a text is being typed right on the picture
         self._lsync = False              # True while the layer boxes are filled from a layer (no change events)
         self._comp = None                # cache of the last composite (base, layers, image)
         self._mv = None                  # (press point, selection, copy?, original image) while moving the content
@@ -4835,6 +4838,7 @@ class ImageForge:
         """Select / move state: no tool is in use. The Rectangle, Magic wand and Lasso buttons call it first, so that choosing a selection tool really leaves the
         tool before it (a clone stamp used to stay active and kept cloning when the user wanted to select or move). The area stays: pick a tool again to work
         inside it. The preview of the tool that is left is applied, like on any switch."""
+        self._text_edit_close(True)
         if self.tool is None:
             self.cancel_mode()                                   # already in the base state: just end a wand / lasso in progress
             return
@@ -4862,6 +4866,7 @@ class ImageForge:
         self._redraw()
 
     def select_tool(self, name):
+        self._text_edit_close(True)
         if self.tool is not None and self.tool.name != name:
             self._commit_pending("when you switched tool")
         self.cancel_mode()
@@ -6159,6 +6164,8 @@ class ImageForge:
             self.tree.selection_set(name)
         else:
             self.select_tool(name)
+        if L.kind == 'text':
+            self.root.after(30, self._text_edit_open)              # type over the text itself, not in the box beside
 
     def _layer_live(self, **kw):
         """Show a property change while a slider is being dragged; _layer_prop() records it."""
@@ -6332,6 +6339,9 @@ class ImageForge:
             self._status(kind['empty'])
             return
         layers = list(self.hist.layers)
+        if ei is not None and old.params == new.params and (old.x, old.y, old.opacity) == (new.x, new.y, new.opacity):
+            self._status("The %s layer is already up to date." % kind['tag'])          # e.g. Apply right after a click away already set it
+            return
         if ei is not None:
             layers[ei] = new
             self._commit_layers("Edit %s layer" % kind['tag'], layers)
@@ -6488,6 +6498,7 @@ class ImageForge:
             c.create_text(43, 19, text="BEFORE", fill='#ffd400', font=('Arial', 10, 'bold'), tags='cmp')
         self._draw_selection()
         self._draw_layer_box()
+        self._text_edit_place()
         self._draw_faces_marker()
         self._draw_clone_marker()
         self._set_info()
@@ -7251,6 +7262,10 @@ class ImageForge:
         if self.hist is None:
             self._press = None
             return
+        if self._tedit is not None:                    # a click elsewhere on the picture only sets the text that is being typed (it is not also a click on the picture)
+            self._text_edit_close(True)
+            self._press = None
+            return
         if self.mode == 'area':                        # 'Define working area': this drag draws it, with any tool selected
             self._press, self._area_start, self._area_cur = None, (e.x, e.y), None
             return
@@ -7344,6 +7359,75 @@ class ImageForge:
         self._status("%s '%s' selected: drag it to move it%s." % ((LAYER_KINDS[L.kind]['tag'].capitalize() + " layer") if editable else "Layer", L.name,
                                                                 ", double-click it to edit it" if editable else ""), ok=True)
         return True
+
+    def _text_edit_open(self):
+        """Type the text of the 'Add text' tool RIGHT ON THE PICTURE, at its X, Y: a small box opens over the text (all of it selected, so typing replaces it), the
+        text underneath follows as a preview, Enter makes a new line, Ctrl+Enter (or a click anywhere else, or Apply) sets it, Esc cancels. Reported as: 'when I add
+        text it says Text and I cannot edit it, I only edit it in the box beside': the box in the panel is still there, but nobody looked for it."""
+        t = self.tool
+        if t is None or t.layer != 'text' or 'text' not in self.pvars or self.hist is None:
+            return
+        self._text_edit_close(True)
+        p = self._read_params()
+        if p is None:
+            return
+        zoom = self.zoom
+        px = int(p.get('size', 32))
+        rgb = _picked_rgb(p.get('color', '#000000'))
+        light = (0.3 * rgb[0] + 0.59 * rgb[1] + 0.11 * rgb[2]) > 150
+        ed = tk.Text(self.canvas, wrap='none', undo=True, bd=0, padx=2, pady=0, highlightthickness=2, highlightbackground='#2a7de1', highlightcolor='#2a7de1',
+                     font=('Arial', -max(10, min(120, int(round(px * zoom))))), fg='#%02x%02x%02x' % tuple(rgb), insertbackground='#%02x%02x%02x' % tuple(rgb),
+                     bg='#333333' if light else '#fffff0')
+        orig = self.pvars['text'].get()
+        ed.insert('1.0', str(orig).replace('\\n', chr(10)))
+        ed.tag_add('sel', '1.0', 'end-1c')
+        self._tedit = (ed, orig)
+        self.canvas.create_window(0, 0, anchor='nw', window=ed, tags='tedit')
+
+        def sync(_e=None):
+            txt = ed.get('1.0', 'end-1c')
+            ed.config(width=max(6, max(len(v) for v in txt.split(chr(10))) + 1), height=txt.count(chr(10)) + 1)
+            self.pvars['text'].set(txt.replace(chr(10), '\\n'))
+
+        ed.bind('<KeyRelease>', sync)
+        ed.bind('<Control-Return>', lambda e: (self._text_edit_close(True), 'break')[1])
+        ed.bind('<Escape>', lambda e: (self._text_edit_close(False), 'break')[1])
+        ed.bind('<FocusOut>', lambda e: self._text_edit_close(True))
+        ed.bind('<Control-z>', lambda e: (ed.edit_undo() if ed.edit_modified() else None, 'break')[1])     # the picture's Undo must not fire while typing
+        ed.bind('<Control-y>', lambda e: (ed.edit_redo(), 'break')[1])
+        sync()
+        self._text_edit_place()
+        ed.focus_set()
+        self._status("Typing the text on the picture: Enter = new line, Ctrl+Enter (or click elsewhere) = set it, Esc = cancel.")
+
+    def _text_edit_place(self):
+        """Keep the typing box over the text when the view moves or zooms."""
+        if self._tedit is None:
+            return
+        try:
+            self.canvas.coords('tedit', int(self.pvars['x'].get() * self.zoom + self.ox) - 2, int(self.pvars['y'].get() * self.zoom + self.oy) - 2)
+        except (tk.TclError, ValueError, KeyError):
+            pass
+
+    def _text_edit_close(self, commit):
+        """End the typing on the picture: `commit` sets the text (as Add as layer / Update layer does), else the text goes back to what it was."""
+        if self._tedit is None:
+            return
+        ed, orig = self._tedit
+        self._tedit = None
+        try:
+            txt = ed.get('1.0', 'end-1c')
+        except tk.TclError:
+            return
+        self.canvas.delete('tedit')
+        ed.destroy()
+        self.canvas.focus_set()
+        if not commit:
+            self.pvars['text'].set(orig)
+            return
+        self.pvars['text'].set(txt.replace(chr(10), '\\n'))
+        if self.tool is not None and self.tool.layer == 'text':
+            self.apply()
 
     def _pick_layer(self, i):
         """Make layer `i` the selected one (as a click in the Layers tab does), loading its settings into the tool that edits it."""
@@ -7617,6 +7701,8 @@ class ImageForge:
             return
         if self._placing:
             self._placing = False
+            if self.tool is not None and self.tool.layer == 'text' and self.tool.place is True:
+                self.root.after(30, self._text_edit_open)          # after the release, so the box can take the keyboard focus
             return
         if self._mv is not None:
             self._mv_end()

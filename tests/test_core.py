@@ -2163,6 +2163,19 @@ class LayerHitTests(unittest.TestCase):
         self.assertIsNone(il.layer_hit((text,), 50 + w + 20, 40, tol=2, prefer=0))                      # not outside the box
 
 
+class TextLineBreakTests(unittest.TestCase):
+    def test_typed_backslash_n_is_a_line_break(self):
+        """The Text box is one line: a backslash followed by n typed in it (or put there by the typing-on-the-picture box when Enter is pressed) must give a
+        second line. The converting line had become a no-op (it replaced a newline by a newline) and the text showed the characters instead."""
+        bs = chr(92)
+        font = il.FONT_CHOICES[0]
+        one = il.render_text("Line one", 32, font, '#000000', 0.0, 100)
+        typed = il.render_text("Line one" + bs + "nLine two", 32, font, '#000000', 0.0, 100)
+        real = il.render_text("Line one" + chr(10) + "Line two", 32, font, '#000000', 0.0, 100)
+        self.assertEqual(typed.shape, real.shape)
+        self.assertGreater(typed.shape[0], 2 * one.shape[0] - 8)
+
+
 class AutoPreviewTests(unittest.TestCase):
     def test_which_tools_preview_at_once(self):
         """Automatic tools (and tools without parameters, which have nothing to touch) preview as soon as they are chosen; the others wait for a parameter."""
