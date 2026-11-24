@@ -4861,6 +4861,7 @@ class ImageForge:
         """Select / move state: no tool is in use. The Rectangle, Magic wand and Lasso buttons call it first, so that choosing a selection tool really leaves the
         tool before it (a clone stamp used to stay active and kept cloning when the user wanted to select or move). The area stays: pick a tool again to work
         inside it. The preview of the tool that is left is applied, like on any switch."""
+        self._hand_off()
         self._text_edit_close(True)
         if self.tool is None:
             self.cancel_mode()                                   # already in the base state: just end a wand / lasso in progress
@@ -4889,6 +4890,7 @@ class ImageForge:
         self._redraw()
 
     def select_tool(self, name):
+        self._hand_off()
         self._text_edit_close(True)
         if self.tool is not None and self.tool.name != name:
             self._commit_pending("when you switched tool")
@@ -6454,6 +6456,13 @@ class ImageForge:
 
     def _hand_changed(self):
         self.canvas.config(cursor='hand2' if self.v_hand.get() else 'crosshair')
+
+    def _hand_off(self):
+        """Choosing any tool (or Select / move, the wand, the lasso, Select subject) turns the Hand off by itself: it was a toggle that stayed on, so the next drag
+        panned the view instead of using the tool just chosen, and had to be switched off by hand."""
+        if self.v_hand.get():
+            self.v_hand.set(False)
+            self._hand_changed()
 
     def _hand_active(self):
         return self.v_hand.get() or self._space

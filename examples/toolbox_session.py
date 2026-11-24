@@ -41,6 +41,17 @@ a.cancel_mode(); root.update(); print("after Esc the wand button is up:", str(wa
 hand = [b for b in bs if b.winfo_class() == 'Checkbutton'][0]; hand.invoke(); root.update(); print("Hand button toggles the Hand:", a.v_hand.get()); hand.invoke()
 print("every built-in tool is reachable (list or toolbox):", all((t.name in {n for _, ns in m.TOOLBOX for n in ns}) or t.group in a._chip_groups for t in m.TOOLS.values()))
 print("icons are all different:", len({m.tool_icon(n).tobytes() for _, ns in m.TOOLBOX for n in ns}) == sum(len(ns) for _, ns in m.TOOLBOX))
+# the Hand turns off by itself when any tool is chosen
+hand = a.b_modes.get("Hand") if hasattr(a, 'b_modes') else None
+def hand_on(): a.v_hand.set(True); a._hand_changed(); root.update()
+res = []
+hand_on(); a.tree.selection_set("Blur (Gaussian)"); root.update(); res.append(("a list tool", not a.v_hand.get()))
+hand_on(); a.b_modes["Select / move"].invoke(); root.update(); res.append(("Select / move", not a.v_hand.get()))
+hand_on(); a.b_modes["Magic wand"].invoke(); root.update(); res.append(("Magic wand", not a.v_hand.get())); a.escape()
+hand_on(); a.b_modes["Lasso"].invoke(); root.update(); res.append(("Lasso", not a.v_hand.get())); a.escape(); a.escape()
+hand_on(); a.tree.selection_set("Pencil"); root.update(); res.append(("a toolbox tool", not a.v_hand.get() and str(a.canvas.cget('cursor')) != 'hand2'))
+a.canvas.focus_set(); a.canvas.event_generate('<KeyPress-h>'); root.update(); res.append(("H still turns it on", a.v_hand.get())); a.canvas.event_generate('<KeyPress-h>'); root.update()
+print("Hand off after choosing:", res)
 a.tree.selection_set("Fill bucket"); root.update()
 x, y = root.winfo_rootx(), root.winfo_rooty(); ImageGrab.grab((x, y, x + root.winfo_width(), y + root.winfo_height())).save(os.path.join(tempfile.gettempdir(), 'toolbox_ui.png'))
 a.dirty = False; root.destroy()
