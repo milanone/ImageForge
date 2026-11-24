@@ -1,6 +1,6 @@
 """Scripted check of the base state 'Select / move' (no tool) in the real window (real Tk mouse events): the program starts in it; the Select / move button
-leaves any tool; a second click on the tool in use deselects it; in the base state a drag selects, a drag inside the selection moves what is inside (Shift
-copies, Ctrl moves the frame only) and does NOT clone; the area stays when a tool is picked again; the preview of the tool that is left is applied.
+leaves any tool; a second click on the tool in use deselects it; in the base state a drag selects, a drag inside the selection moves the frame, Ctrl + drag moves what is inside (Ctrl+Shift
+copies), as in Photoshop and does NOT clone; the area stays when a tool is picked again; the preview of the tool that is left is applied.
 
     python examples/base_tool_session.py
 """
@@ -46,12 +46,15 @@ print("3. Select / move leaves Clone stamp:", a.tool is None, "| params panel em
 n = len(a.hist.states); drag((200, 40), (330, 120))
 print("   a drag in the base state selects (no clone step):", len(a.hist.states) == n, "| selection:", a.sel)
 a.sel = (60, 60, 160, 120); a._after_selection(); root.update()
-before = a.hist.current; drag((100, 90), (200, 190)); cur = a.hist.current
-print("4. drag inside the selection moves the content:", a.hist.states[-1][0], "| the green block is now at (160, 160):", bool((cur[165:215, 165:255] == (40, 160, 70)).all()), "| left behind:", np.array_equal(cur[65:75, 65:75], np.full((10, 10, 3), 255, np.uint8)) or "white or filled")
+before = a.hist.current; n0 = len(a.hist.states); drag((100, 90), (140, 130))
+print("4. a plain drag inside the selection moves only the frame:", len(a.hist.states) == n0, "| frame:", tuple(a.sel), "| picture unchanged:", np.array_equal(a.hist.current, orig))
+a.sel = (60, 60, 160, 120); a._after_selection(); root.update()
+drag((100, 90), (200, 190), state=0x4); cur = a.hist.current
+print("   Ctrl + drag inside the selection moves the content:", a.hist.states[-1][0], "| the green block is now at (160, 160):", bool((cur[165:215, 165:255] == (40, 160, 70)).all()), "| left behind:", np.array_equal(cur[65:75, 65:75], np.full((10, 10, 3), 255, np.uint8)) or "white or filled")
 a.undo(); a.sel = (60, 60, 160, 120); a._after_selection(); root.update(); n = len(a.hist.states)
-drag((100, 90), (100, 200), state=0x1); print("   Shift drag copies:", a.hist.states[-1][0], "| original still there:", bool((a.hist.current[65:115, 65:155] == (40, 160, 70)).all()))
-a.undo(); a.sel = (60, 60, 160, 120); a._after_selection(); root.update(); n = len(a.hist.states); drag((100, 90), (140, 130), state=0x4)
-print("   Ctrl drag moves only the frame:", len(a.hist.states) == n, "| frame:", a.sel, "| picture unchanged:", np.array_equal(a.hist.current, orig))
+drag((100, 90), (100, 200), state=0x5); print("   Ctrl+Shift drag copies:", a.hist.states[-1][0], "| original still there:", bool((a.hist.current[65:115, 65:155] == (40, 160, 70)).all()))
+a.undo(); a.sel = (60, 60, 160, 120); a._after_selection(); root.update(); n = len(a.hist.states); drag((100, 90), (140, 130), state=0x1)
+print("   Shift drag alone moves only the frame (no copy):", len(a.hist.states) == n, "| frame:", a.sel, "| picture unchanged:", np.array_equal(a.hist.current, orig))
 
 # 5. pick a tool again: the area stays, the tool works inside it
 a.sel = (60, 60, 160, 120); a._after_selection(); a.tree.selection_set("Eraser brush"); root.update()

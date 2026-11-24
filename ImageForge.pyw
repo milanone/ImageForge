@@ -154,8 +154,8 @@ TOOLBOX = [
     ("Layers", ["Move layer"]),
 ]
 TOOLBOX_MODES = {"Magic wand": 'wand', "Lasso": 'lasso'}      # buttons that start a selection mode, not a tool
-NO_TOOL_DOC = ("Select and move (no tool): drag to select a rectangle; the handles resize it; drag inside it to move what is inside (Shift copies, Ctrl "
-               "moves only the frame). The Magic wand and the Lasso select other shapes. Pick a tool to work inside the selection; click the tool "
+NO_TOOL_DOC = ("Select and move (no tool): drag to select a rectangle; the handles resize it; drag inside it moves the frame, Ctrl + drag moves what "
+               "is inside (Ctrl+Shift copies it). The Magic wand and the Lasso select other shapes. Pick a tool to work inside the selection; click the tool "
                "again to come back here.")
 GROUP_SHORT = {"Size and orientation": "Size", "Adjustments": "Adjust", "Clean-up": "Clean-up", "Filters": "Filters"}
 
@@ -316,7 +316,7 @@ SHORTCUTS = [
     ("View", "Space + drag", "Move the picture, with any tool (not while typing in a box)", "standard"),
     ("View", "Right or middle button + drag", "Move the picture", "standard"),
     ("View", "Hand button in the toolbox", "The left button moves the picture", "standard (tool)"),
-    ("Tools", "Select / move button (the arrow)", "No tool: drag selects a rectangle, drag inside it moves what is inside (Shift copies, Ctrl moves the frame only)", "standard (tool)"),
+    ("Tools", "Select / move button (the arrow)", "No tool: drag selects a rectangle, drag inside it moves the frame, Ctrl + drag inside it moves what is inside (Ctrl+Shift copies it)", "standard (tool)"),
     ("Tools", "Click the tool in use again", "Deselects it: back to Select / move", "common"),
     ("Layers", "Click a layer on the picture", "Selects it (Select / move, Move layer, Add text); a dashed blue frame shows the selected layer", "like Photoshop's auto-select"),
     ("Layers", "Drag a layer on the picture", "Moves it (one Undo step); with Add text selected the boxes follow", "common"),
@@ -328,7 +328,7 @@ SHORTCUTS = [
     ("Selections with the mouse", "Ctrl + click", "Magic wand and Lasso: remove from the selection", "like GIMP (Photoshop uses Alt)"),
     ("Selections with the mouse", "Shift + Ctrl + click", "Magic wand and Lasso: keep only the overlap", "like GIMP"),
     ("Selections with the mouse", "Double-click / Enter / first point", "Close the lasso (also: end a path or area measurement)", "standard"),
-    ("Selections with the mouse", "Ctrl / Shift + drag in a selection", "Select / move and Move area: the drag moves the content (Select / move: Ctrl moves only the frame); other tools: the 'Drag moves the content' box decides and Ctrl does the opposite; Shift copies", "ours"),
+    ("Selections with the mouse", "Ctrl / Shift + drag in a selection", "Select / move: the drag moves the frame, Ctrl + drag moves the content, Ctrl+Shift + drag copies it (as in Photoshop); Move area: the drag moves the content, Shift copies; other tools: the 'Drag moves the content' box decides and Ctrl does the opposite", "like Photoshop"),
     ("Drawing and retouch", "Ctrl + click", "Pick the foreground colour; Clone stamp: the source; Erase / keep colours: a colour to find", "like GIMP (Photoshop uses Alt)"),
     ("Drawing and retouch", "Ctrl + Shift + click", "Pick the background colour (or the colour to paint with)", "ours"),
     ("Drawing and retouch", "[ / ]", "A smaller / larger brush (Size box of the tool, about 10 % a step)", "standard"),
@@ -4331,7 +4331,8 @@ class ImageForge:
         row = tk.Frame(panel, bg=bg)
         row.pack(fill=tk.X, padx=8, pady=(4, 0))
         self.v_content = tk.BooleanVar(value=False)
-        self.v_content_fixed = tk.BooleanVar(value=True)               # shown (ticked, greyed out) in Select / move and Move area, where the drag always moves the content
+        self.v_content_fixed = tk.BooleanVar(value=True)               # shown (ticked, greyed out) with Move area, where the drag always moves the content
+        self.v_content_off = tk.BooleanVar(value=False)                # shown (unticked, greyed out) in Select / move, where only Ctrl + drag moves the content
         self.c_content = tk.Checkbutton(row, text="Drag moves the content", variable=self.v_content, bg=bg, font=('Arial', 9))
         self.c_content.pack(side=tk.LEFT)
         tk.Label(row, text="leaves", bg=bg, font=('Arial', 8)).pack(side=tk.LEFT, padx=(6, 2))
@@ -4693,7 +4694,7 @@ class ImageForge:
                         starter = {"Select / move": None, "Magic wand": self.start_wand, "Lasso": self.start_lasso, "Select subject": self.select_subject}[name]
                         b = tk.Button(grid, command=lambda f=starter: (self.leave_tool(), f() if f else None), **common)
                         self.b_modes[name] = b
-                        hint = {"Select / move": "Select / move: no tool. Drag to select a rectangle, drag inside it to move what is inside  (Shift copies, Ctrl moves the frame only)",
+                        hint = {"Select / move": "Select / move: no tool. Drag to select a rectangle, drag inside it to move the frame, Ctrl + drag inside it to move what is inside  (Ctrl+Shift copies it)",
                                 "Magic wand": "Magic wand: click a colour to select it  (Shift adds, Ctrl removes; leaves the current tool)",
                                 "Lasso": "Lasso: draw around what to select  (double-click closes; leaves the current tool)",
                                 "Select subject": "Select subject: one click selects the main subject of the picture with a neural network (a few seconds; "
@@ -4704,17 +4705,20 @@ class ImageForge:
         self._sync_toolbox()
 
     def _sync_content_box(self):
-        """The 'Drag moves the content' box and the line under it tell the truth about the drag inside the working area. In Select / move (no tool) the drag
-        ALWAYS moves the content and Ctrl moves only the frame; with Move area it always moves the content: the box is then shown ticked and greyed out.
-        Only with another tool does the box decide, and Ctrl does the opposite of it. (The box used to look unticked in Select / move with the line 'Ctrl does
-        the opposite of the box', so Ctrl was expected to move the content, and it did the contrary.)"""
+        """The 'Drag moves the content' box and the line under it tell the truth about the drag inside the working area, in every state. Select / move (no
+        tool), as in Photoshop: the drag moves the frame, Ctrl + drag moves the content, Ctrl+Shift + drag copies it; the box is shown unticked and greyed out, and
+        the line says so. Move area: the drag always moves the content (Shift copies): ticked and greyed out. Any other tool: the box decides and Ctrl does the
+        opposite of it. (The box used to look unticked in Select / move with the line 'Ctrl does the opposite of the box', which promised Ctrl + drag moves the
+        content while the program did the contrary; the rule is now the one the line promises.)"""
         if getattr(self, 'c_content', None) is None:
             return
         t = self.tool
-        fixed = t is None or t.interactive == 'rect-move'
-        self.c_content.config(variable=self.v_content_fixed if fixed else self.v_content, state=tk.DISABLED if fixed else tk.NORMAL)
-        self.l_content.config(text=("Drag inside the area moves what is inside; Ctrl moves only the frame; Shift copies." if t is None else
-                                    "Move area: drag inside the area moves what is inside; Shift copies." if fixed else
+        area = t is not None and t.interactive == 'rect-move'
+        fixed = t is None or area
+        var = self.v_content_off if t is None else self.v_content_fixed if area else self.v_content
+        self.c_content.config(variable=var, state=tk.DISABLED if fixed else tk.NORMAL)
+        self.l_content.config(text=("Drag inside the area moves the frame; Ctrl + drag moves what is inside; Ctrl+Shift + drag copies it." if t is None else
+                                    "Move area: drag inside the area moves what is inside; Shift copies." if area else
                                     "Ctrl does the opposite of the box, Shift copies."))
 
     def _sync_toolbox(self):
@@ -7383,7 +7387,7 @@ class ImageForge:
 
     def _moves_content(self, e):
         if self.tool is None:
-            return not (e.state & 0x4)                                # the base 'Select / move': inside the rectangle the drag moves the content (Ctrl: the frame only)
+            return bool(e.state & 0x4)                                # the base 'Select / move', as in Photoshop: inside the rectangle the drag moves the frame, Ctrl + drag the content (Ctrl+Shift copies it)
         if self.tool.interactive == 'rect-move':
             return True                                               # the 'Move area' tool: the drag always moves the content
         return self.v_content.get() != bool(e.state & 0x4)            # the box, flipped by Ctrl

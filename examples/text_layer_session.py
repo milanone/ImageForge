@@ -19,10 +19,10 @@ a = m.ImageForge(root); root.geometry("1250x900+40+20"); root.attributes('-topmo
 def ev(k, x, y, **kw): c.event_generate(k, x=x, y=y, **kw); root.update()
 def scr(ix, iy): return int(ix * a.zoom + a.ox), int(iy * a.zoom + a.oy)
 def click(p): ev('<ButtonPress-1>', *scr(*p)); ev('<ButtonRelease-1>', *scr(*p))
-def drag(p, q, n=6):
-    ev('<ButtonPress-1>', *scr(*p))
-    for i in range(1, n + 1): ev('<B1-Motion>', *scr(p[0] + (q[0] - p[0]) * i // n, p[1] + (q[1] - p[1]) * i // n), state=0x100)
-    ev('<ButtonRelease-1>', *scr(*q))
+def drag(p, q, n=6, state=0):
+    ev('<ButtonPress-1>', *scr(*p), state=state)
+    for i in range(1, n + 1): ev('<B1-Motion>', *scr(p[0] + (q[0] - p[0]) * i // n, p[1] + (q[1] - p[1]) * i // n), state=0x100 | state)
+    ev('<ButtonRelease-1>', *scr(*q), state=state)
 pos = lambda: (a.hist.layers[-1].x, a.hist.layers[-1].y)
 
 a.tree.selection_set("Add text"); root.update(); a.pvars['text'].set("Hello figure"); a.pvars['size'].set(60); root.update()
@@ -64,7 +64,7 @@ import cv2
 a.leave_tool(); a.deselect(); a.active = 0; a._refresh_layers(); root.update()
 base = a.hist.current.copy(); cv2.circle(base, (600, 400), 25, (220, 60, 40), -1)
 a._commit("Draw a dot", base); root.update(); a.active = 0; a._refresh_layers(); time.sleep(0.6)
-drag((560, 360), (640, 440)); n = a.hist.index; time.sleep(0.6); drag((600, 400), (500, 300))
+drag((560, 360), (640, 440)); n = a.hist.index; time.sleep(0.6); drag((600, 400), (500, 300), state=0x4)
 cur = a.hist.current; ys, xs = np.nonzero((np.abs(cur.astype(int) - np.array([220, 60, 40])).sum(axis=2)) < 30)
 print("6. rectangle + drag with a text layer selected: dot centre now", (int(xs.mean()), int(ys.mean())), "(expected about (500, 300)) | label:", a.hist.states[a.hist.index][0], "| layer kept:", len(a.hist.layers) == 1)
 a.dirty = False; root.destroy()
