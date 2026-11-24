@@ -4237,7 +4237,7 @@ class ImageForge:
         self._tip(self.b_before, "Before: the picture as it was before the last step (or without the preview), at the same scale. Hold \\ to peek. "
                                  "Undo / Redo (Ctrl+Z / Ctrl+Y) also flip between the two at the same scale.")
         self.v_hand = tk.BooleanVar(value=False)                      # the Hand button is in the toolbox (and the H key)
-        tk.Label(bar, text="Move the picture: hold Space and drag, or drag with the right button (the Hand in the toolbox: H)",
+        tk.Label(bar, text="Pan the VIEW (not layers): hold Space and drag, or drag with the right button (the Hand in the toolbox: H)",
                  bg='#e8e8e8', fg='#666666', font=('Arial', 8)).pack(side=tk.LEFT, padx=10)
         # the colours of the drawing tools: foreground, background, swap (X), black and white (D)
         tk.Button(bar, text="swap (X)", command=self.swap_colours, font=('Arial', 8)).pack(side=tk.RIGHT, padx=(2, 6), pady=2)
@@ -4681,9 +4681,11 @@ class ImageForge:
                         b = tk.Radiobutton(grid, variable=self.v_toolsel, value=name, indicatoron=False, selectcolor='#bcd6ff',
                                            command=lambda n=name: self._toolbox_click(n), **common)
                         hint = "%s  (%s)  - click again to deselect" % (name, TOOLS[name].group)
+                        if name == "Move layer":
+                            hint = "Move layer: drag the selected layer on the picture  (layers can also be dragged with Select / move, and text with a double-click edited)"
                     elif name == "Hand":
                         b = tk.Checkbutton(grid, variable=self.v_hand, indicatoron=False, selectcolor='#bcd6ff', command=self._hand_changed, **common)
-                        hint = "Hand: the left button moves the picture  (H, or hold Space)"
+                        hint = "Hand: pans the VIEW with the left button, it does not move layers or content  (H, or hold Space). To move a layer, drag it with Select / move or Move layer"
                     else:
                         starter = {"Select / move": None, "Magic wand": self.start_wand, "Lasso": self.start_lasso, "Select subject": self.select_subject}[name]
                         b = tk.Button(grid, command=lambda f=starter: (self.leave_tool(), f() if f else None), **common)
@@ -7381,9 +7383,8 @@ class ImageForge:
         copy = bool(e.state & 0x1) or bool(self.tool is not None and self.tool.interactive == 'rect-move'
                                            and self.pvars.get('copy') is not None and self.pvars['copy'].get())
         kind, L = self._tool_target()
-        if kind == 'text':
-            self._status(self._TEXT_LAYER_MSG)
-            return
+        if kind == 'text':                                             # a text / shape layer has no pixels to move: the rectangle takes the Background's (the layer itself is dragged directly)
+            kind, L = 'base', None
         pt = self._img_xy(e.x, e.y)
         if kind == 'layer':
             rect = layer_region(self.sel, L)

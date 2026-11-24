@@ -59,4 +59,12 @@ print("4. drag with Add text active moved by", (pos()[0] - p0[0], pos()[1] - p0[
 a.leave_tool(); a.deselect(); root.update(); time.sleep(0.6)
 drag((600, 300), (700, 400))
 print("5. drag on empty picture selects a rectangle:", a.sel is not None and tuple(a.sel)[2] - tuple(a.sel)[0] > 50, "| the layer did not move:", True)
+# 6. a rectangle round an object moves its pixels even while a text layer is the selected layer (the Background's pixels move, the text stays)
+import cv2
+a.leave_tool(); a.deselect(); a.active = 0; a._refresh_layers(); root.update()
+base = a.hist.current.copy(); cv2.circle(base, (600, 400), 25, (220, 60, 40), -1)
+a._commit("Draw a dot", base); root.update(); a.active = 0; a._refresh_layers(); time.sleep(0.6)
+drag((560, 360), (640, 440)); n = a.hist.index; time.sleep(0.6); drag((600, 400), (500, 300))
+cur = a.hist.current; ys, xs = np.nonzero((np.abs(cur.astype(int) - np.array([220, 60, 40])).sum(axis=2)) < 30)
+print("6. rectangle + drag with a text layer selected: dot centre now", (int(xs.mean()), int(ys.mean())), "(expected about (500, 300)) | label:", a.hist.states[a.hist.index][0], "| layer kept:", len(a.hist.layers) == 1)
 a.dirty = False; root.destroy()

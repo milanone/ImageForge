@@ -78,7 +78,7 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
 - **Automatic fit**: the picture is fitted to the window when it is opened and every time the window (or the panel divider) is resized, until you zoom (wheel, Ctrl +/-, 100%) or pan by hand; the **Fit** button (shown pressed while the automatic fit is on) turns it on again.
 - **View**: the bar above the picture has **Center** (middle of the window, same zoom), **Fit** (fill the window and
   centre) and **100%**, plus a **Hand** button: while it is pressed, or while you hold **Space**, dragging with the left
-  button moves the picture instead of selecting (right/middle drag always moves it). Wheel = zoom at the cursor.
+  button pans the VIEW instead of selecting (right/middle drag always pans it); it never moves layers or content: drag a layer with *Select / move* or *Move layer*. Wheel = zoom at the cursor.
   The status line shows the pixel under the cursor. The tool list is tall (about 20 rows); the line between it and the parameters below can be dragged.
 - **Preview and Apply**: there is no Apply to remember. A tool shows its result as a live preview, and what is on screen is applied by itself when you
   move on (another tool, Save, Export, Crop to selection); one Undo takes it back. The tools meant to be used as they come (**Local contrast**,
