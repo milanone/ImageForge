@@ -68,4 +68,16 @@ print("6. leaving a tool with Select / move applies its preview:", a.hist.index 
 sel_btn.invoke(); root.update(); box = lambda: (str(a.c_content.cget('state')), a.root.tk.globalgetvar(str(a.c_content.cget('variable'))))
 none_state = box(); a.tree.selection_set("Blur (Gaussian)"); root.update(); tool_state = box(); a.tree.selection_set("Move area"); root.update(); area_state = box()
 print("7. box in Select / move:", none_state, "| with Blur:", tool_state, "| with Move area:", area_state, "| line:", a.l_content.cget('text')[:40])
+# 8. Ctrl + arrows move the CONTENT of the rectangle (a run of presses = one Undo step); plain arrows move only the frame
+sel_btn.invoke(); a.undo() if a.hist.can_undo() and False else None
+base0 = a.hist.current; a.sel = (60, 60, 160, 120); a._after_selection(); root.update(); c.focus_force(); root.update(); i0 = a.hist.index
+c.event_generate('<Right>'); root.update()
+print("8. plain arrow moves only the frame:", tuple(a.sel), "| picture unchanged:", a.hist.current is base0 and a.hist.index == i0)
+a.sel = (60, 60, 160, 120); a._after_selection(); root.update()
+for _ in range(5): c.event_generate('<Control-Right>'); root.update()
+cur = a.hist.current
+print("   Ctrl+Right x5: frame", tuple(a.sel), "| green block moved 5 px:", bool((cur[65:115, 70:160] == base0[65:115, 65:155]).all()), "| one Undo step for the run:", a.hist.index - i0, "| label:", a.hist.states[a.hist.index][0])
+c.event_generate('<Control-Shift-Down>'); root.update()
+print("   then Ctrl+Shift+Down (10 px): frame", tuple(a.sel), "| still one step:", a.hist.index - i0, "| block at y 75..125:", bool((a.hist.current[75:125, 70:160] == base0[65:115, 65:155]).all()))
+a.undo(); root.update(); print("   one Undo takes the whole run back:", np.array_equal(a.hist.current, base0))
 a.dirty = False; root.destroy()

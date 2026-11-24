@@ -308,6 +308,7 @@ SHORTCUTS = [
     ("Undo and selection", "Ctrl+K", "Find a tool by typing part of its name", "like the command palette of many editors"),
     ("Undo and selection", "Esc", "Cancel what is in progress (pick, lasso, measure, gradient); otherwise deselect", "standard"),
     ("Undo and selection", "Arrow keys / Shift+arrows", "Move the rectangle selection by 1 / 10 px (click the picture first)", "like Photoshop"),
+    ("Undo and selection", "Ctrl+arrows / Ctrl+Shift+arrows", "Move what is inside the rectangle selection by 1 / 10 px (a run of presses is one Undo step), like Ctrl + drag", "like Photoshop"),
     ("View", "Ctrl+0 / Ctrl+1", "Fit to window / actual size (100 %)", "like Photoshop"),
     ("View", "Ctrl++ / Ctrl+-", "Zoom in / out", "standard"),
     ("View", "Mouse wheel", "Zoom around the pointer", "like Krita and Figma (Photoshop and GIMP scroll)"),
@@ -4070,6 +4071,7 @@ class ImageForge:
         self._layer_click = (None, 0.0)  # (layer index, time) of the last click on a layer: two quick ones open its tool
         self._dbl_edit = None            # layer whose tool opens when the second quick press is released without moving
         self._tedit = None               # (Text widget, original text) while a text is being typed right on the picture
+        self._nudge_last = None          # the last Ctrl + arrows move of the content (history index, time, selection before, total dx, dy): a run is one Undo step
         self._lsync = False              # True while the layer boxes are filled from a layer (no change events)
         self._comp = None                # cache of the last composite (base, layers, image)
         self._mv = None                  # (press point, selection, copy?, original image) while moving the content
@@ -4409,6 +4411,8 @@ class ImageForge:
         for key, (dx, dy) in {'Left': (-1, 0), 'Right': (1, 0), 'Up': (0, -1), 'Down': (0, 1)}.items():
             c.bind('<%s>' % key, lambda e, dx=dx, dy=dy: self.nudge(dx, dy))
             c.bind('<Shift-%s>' % key, lambda e, dx=dx, dy=dy: self.nudge(dx * 10, dy * 10))
+            c.bind('<Control-%s>' % key, lambda e, dx=dx, dy=dy: self.nudge(dx, dy, True))                  # the content, like Ctrl + drag
+            c.bind('<Control-Shift-%s>' % key, lambda e, dx=dx, dy=dy: self.nudge(dx * 10, dy * 10, True))
         c.bind('<Motion>', self._on_motion)
         c.bind('<x>', lambda e: self.swap_colours())
         c.bind('<d>', lambda e: self.reset_colours())
@@ -7603,7 +7607,12 @@ class ImageForge:
         x0, y0, x1, y1 = self.sel
         self._set_info("selection %d x %d  at (%d, %d)" % (x1 - x0, y1 - y0, x0, y0))
 
-    def nudge(self, dx, dy):
+    def nudge(self, dx, dy, content=False):
+        """Arrow keys: move the selected layer (Move layer tool) or the rectangle selection by dx, dy pixels; with `content` (Ctrl + arrows, like Ctrl + drag)
+        move what is inside the rectangle."""
+        if content and self.hist is not None and not (self.tool is not None and self.tool.interactive == 'layer'):
+            self._nudge_content(dx, dy)
+            return
         if self.hist is not None and self.tool is not None and self.tool.interactive == 'layer':
             L = self._active_layer()
             if L is not None:
@@ -7615,6 +7624,50 @@ class ImageForge:
             h, w = self.hist.current.shape[:2]
             self.sel = drag_rect(self.sel, 'move', dx, dy, (w, h))
             self._after_selection()
+
+    def _nudge_content(self, dx, dy):
+        """Ctrl + arrows: the pixels inside the rectangle selection (of the Background, or of the selected image layer) move by dx, dy, leaving the 'leaves' fill behind,
+        as a Ctrl + drag does. A run of key presses (each within 1.2 s of the last, nothing else done in between) is ONE Undo step: the previous step is replaced by the
+        sum, so holding a key does not fill the history with a full picture per press."""
+        if not self._rect_sel() or self.mode or self._is_brush():
+            return
+        last = self._nudge_last
+        again = last is not None and last['index'] == self.hist.index and time.time() - last['t'] < 1.2
+        if again:
+            self.hist.undo()                                          # back to the picture before the first press of the run
+            self.preview = self.lprev = None
+            self.sel, dx, dy = last['sel0'], last['dx'] + dx, last['dy'] + dy
+        sel0 = self.sel
+        kind, L = self._tool_target()
+        if kind == 'text':                                             # a text / shape layer has no pixels: the Background's move
+            kind, L = 'base', None
+        if kind == 'layer':
+            rect = layer_region(sel0, L)
+            if rect[2] <= rect[0] or rect[3] <= rect[1]:
+                self._status("The rectangle does not touch layer '%s'." % L.name)
+                return
+            orig = L.rgba
+        else:
+            rect, orig = sel0, self.hist.current
+        out, new = move_region(orig, rect, dx, dy, self._fill_color(orig, L is not None), False)
+        self._nudge_last = None
+        if out is orig:                                                # the run came back to where it started (or the edge stops it)
+            self._refresh_layers()
+            self._update_state()
+            self._after_selection()
+            self._redraw()
+            return
+        if L is None:
+            self._commit("Move content", out)
+            self.sel = new
+        else:
+            layers = list(self.hist.layers)
+            layers[self.active] = L.replace(rgba=out)
+            self._commit_layers("Move content (layer)", layers)
+            self.sel = (new[0] + L.x, new[1] + L.y, new[2] + L.x, new[3] + L.y)
+        self._nudge_last = dict(index=self.hist.index, t=time.time(), sel0=sel0, dx=dx, dy=dy)
+        self._after_selection()
+        self._status("Moved the content by (%d, %d) px (Ctrl + arrows; Ctrl+Shift = 10 px)." % (dx, dy), ok=True)
 
     def _update_cursor(self, e):
         if self._hand_active():
