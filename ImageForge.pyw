@@ -318,6 +318,9 @@ SHORTCUTS = [
     ("View", "Hand button in the toolbox", "The left button moves the picture", "standard (tool)"),
     ("Tools", "Select / move button (the arrow)", "No tool: drag selects a rectangle, drag inside it moves what is inside (Shift copies, Ctrl moves the frame only)", "standard (tool)"),
     ("Tools", "Click the tool in use again", "Deselects it: back to Select / move", "common"),
+    ("Layers", "Click a layer on the picture", "Selects it (Select / move, Move layer, Add text); a dashed blue frame shows the selected layer", "like Photoshop's auto-select"),
+    ("Layers", "Drag a layer on the picture", "Moves it (one Undo step); with Add text selected the boxes follow", "common"),
+    ("Layers", "Double-click a text, shape or scale bar", "Opens its tool with its settings, to edit it (then Update layer)", "common"),
     ("View", "\\ (hold) or the Before button", "Shows the picture as it was before the last step (or without the preview), at the same scale", "like Lightroom"),
     ("View", "Ctrl+H", "Histogram window", "ours"),
     ("Selections with the mouse", "Drag", "Draw a rectangle; drag inside it to move it, drag a handle to resize", "standard"),
@@ -2962,8 +2965,9 @@ def blend_rgba(dst, rgba, x, y, opacity=1.0):
     Param('angle', "Rotate (deg, counter-clockwise)", 'float', 0.0, -180.0, 180.0, step=0.5, slider=True),
     Param('opacity', "Opacity (%)", 'int', 100, 0, 100, slider=True)],
     place=True, layer='text',
-    doc="Click or drag on the image to place the text, then press the button: the text becomes a layer, which you can "
-        "select in the Layers tab and edit (or move) later. As a plain function it paints the text into the pixels.")
+    doc="Click on the image to place the text, then press the button: the text becomes a layer. To MOVE it afterwards, drag it on the picture "
+        "(a dashed blue frame shows the selected layer); to EDIT it, double-click it (or click it, change the boxes and press Update layer). "
+        "Click empty picture to place a new one after selecting Background in the Layers tab. As a plain function it paints the text into the pixels.")
 def add_text(img, text, size, font, color, x, y, angle, opacity):
     """Paint the text into the pixels (the app makes a layer instead and bakes it only on Flatten)."""
     rgba = render_text(text, size, font, color, angle, opacity)
@@ -3017,6 +3021,29 @@ def composite(base, layers):
             out = base.copy()
         blend_rgba(out, rgba, L.x, L.y, L.opacity / 100.0)
     return base if out is None else out
+
+
+def layer_hit(layers, x, y, tol=2, prefer=None):
+    """Index of the layer under the image point (x, y), or None: the topmost visible layer with a visible pixel (alpha > 8) within `tol` pixels of the
+    point (a little slack, so a thin letter or a line can be hit). `prefer` is the selected layer: anywhere in its bounding box (plus `tol`) counts as a
+    hit on it, so a selected text can be grabbed by its blank parts too."""
+    def box(L):
+        r = L.raster() if L.visible and L.opacity > 0 else None
+        return None if r is None else (L.x, L.y, L.x + r.shape[1], L.y + r.shape[0], r)
+    if prefer is not None and 0 <= prefer < len(layers):
+        b = box(layers[prefer])
+        if b is not None and b[0] - tol <= x < b[2] + tol and b[1] - tol <= y < b[3] + tol:
+            return prefer
+    ix, iy = int(math.floor(x)), int(math.floor(y))
+    for i in range(len(layers) - 1, -1, -1):
+        b = box(layers[i])
+        if b is None:
+            continue
+        x0, y0, x1, y1, r = b
+        wx0, wx1, wy0, wy1 = max(x0, ix - tol), min(x1, ix + tol + 1), max(y0, iy - tol), min(y1, iy + tol + 1)
+        if wx1 > wx0 and wy1 > wy0 and (r[wy0 - y0:wy1 - y0, wx0 - x0:wx1 - x0, 3] > 8).any():
+            return i
+    return None
 
 
 # ---- shapes (line, arrow, rectangle, ellipse) and the scale bar: layers drawn from parameters --------------------
@@ -4038,6 +4065,8 @@ class ImageForge:
         self.active = None               # selected layer (index into hist.layers), None = the Background
         self.lprev = None                # layers shown instead of the history's while a layer is edited/dragged
         self._lmove = None               # (press point, layer index, layer) while dragging a layer
+        self._layer_click = (None, 0.0)  # (layer index, time) of the last click on a layer: two quick ones open its tool
+        self._dbl_edit = None            # layer whose tool opens when the second quick press is released without moving
         self._lsync = False              # True while the layer boxes are filled from a layer (no change events)
         self._comp = None                # cache of the last composite (base, layers, image)
         self._mv = None                  # (press point, selection, copy?, original image) while moving the content
@@ -6286,7 +6315,7 @@ class ImageForge:
         else:
             layers.append(new)
             self._commit_layers("Add %s layer" % kind['tag'], layers, len(layers) - 1, step=layer_step(self.tool.name, params, self.scale))
-            self._status("Added as a %s layer: change the boxes and press Update layer to edit it." % kind['tag'], ok=True)
+            self._status("Added as a %s layer: drag it on the picture to move it, double-click it to edit it (or change the boxes and press Update layer)." % kind['tag'], ok=True)
 
     # ---- moving a layer with the mouse --------------------------------------------------------------------
     def _lmove_start(self, e):
@@ -6312,8 +6341,16 @@ class ImageForge:
     def _lmove_end(self):
         _, i, L = self._lmove
         layers, self.lprev, self._lmove = self.lprev, None, None
+        edit, self._dbl_edit = self._dbl_edit, None
+        if edit == i and (layers is None or (layers[i].x, layers[i].y) == (L.x, L.y)):      # a double click, not a drag: edit the layer
+            self._redraw()
+            self._on_layer_double()
+            return
         if layers is not None and (layers[i].x, layers[i].y) != (L.x, L.y):
             self._commit_layers("Move layer", layers)
+            ei = self._edit_index()
+            if ei is not None:                                   # Add text (or Shapes ...) is editing this layer: its X / Y boxes follow
+                self._load_layer_into_tool(self.hist.layers[ei])
         else:
             self._redraw()
 
@@ -6426,6 +6463,7 @@ class ImageForge:
             c.create_rectangle(8, 8, 78, 30, fill='#222222', outline='#ffd400', tags='cmp')
             c.create_text(43, 19, text="BEFORE", fill='#ffd400', font=('Arial', 10, 'bold'), tags='cmp')
         self._draw_selection()
+        self._draw_layer_box()
         self._draw_faces_marker()
         self._draw_clone_marker()
         self._set_info()
@@ -7207,6 +7245,9 @@ class ImageForge:
         if not self.mode and self._quick_pick(e):      # Ctrl+click: the tool's Pick / Set source button, without pressing it
             self._press = None
             return
+        if not self.mode and self._layer_press(e):         # a click on a layer selects it, a drag moves it, two quick clicks edit it
+            self._press = None
+            return
         if self.mode:
             self._press = None
             self._pick_click(e)
@@ -7243,6 +7284,70 @@ class ImageForge:
                 self._grab = (grab, self._img_xy(e.x, e.y), self.sel)
             else:
                 self._press, self._drag_sel = (e.x, e.y), None
+
+    def _layer_under(self, e):
+        """Index of the layer the pointer is over, when this tool lets a click grab layers (Select / move, Move layer, a tool that places a layer such as
+        Add text); None otherwise. In Select / move a press on the handles or inside a rectangle selection keeps its old meaning (resize / move content)."""
+        t = self.tool
+        if self.hist is None or not self.hist.layers or self.mode:
+            return None
+        if not (t is None or t.interactive == 'layer' or (t.place is True and t.layer)):
+            return None
+        if t is None and self._rect_sel() and hit_handle(self.sel, self.zoom, self.ox, self.oy, e.x, e.y):
+            return None
+        layers = self.hist.layers
+        x, y = self._img_xy(e.x, e.y)
+        prefer = self.active if self.active is not None and self.active < len(layers) and layers[self.active].kind in LAYER_KINDS else None
+        return layer_hit(layers, x, y, max(2, int(round(6.0 / self.zoom))), prefer)
+
+    def _layer_press(self, e):
+        """A press on a layer: select it (a dashed blue frame shows it), start dragging it, and when it is the second quick click on a text / shape / scale
+        bar open its tool to edit it. True when it handled the press. Why: a text added as a layer could not be selected on the picture (a click only
+        moved the boxes of Add text, and in Select / move a drag drew a rectangle), so nobody found how to move or edit it."""
+        i = self._layer_under(e)
+        if i is None:
+            return False
+        L = self.hist.layers[i]
+        now = time.time()
+        again = i == self._layer_click[0] and now - self._layer_click[1] < 0.45
+        self._layer_click = (None, 0.0) if again else (i, now)
+        editable = L.kind in LAYER_KINDS
+        self._pick_layer(i)
+        self._dbl_edit = i if again and editable else None          # the second quick press: the tool opens on release, unless it became a drag
+        self._lmove_start(e)
+        if self._dbl_edit is not None:
+            return True
+        self._status("%s '%s' selected: drag it to move it%s." % ((LAYER_KINDS[L.kind]['tag'].capitalize() + " layer") if editable else "Layer", L.name,
+                                                                ", double-click it to edit it" if editable else ""), ok=True)
+        return True
+
+    def _pick_layer(self, i):
+        """Make layer `i` the selected one (as a click in the Layers tab does), loading its settings into the tool that edits it."""
+        if i == self.active:
+            return
+        self.active = i
+        self._refresh_layers()
+        ei = self._edit_index()
+        if ei is not None:
+            self._load_layer_into_tool(self._cur_layers()[ei])
+        self.lprev = None
+        self._update_state()
+        self._redraw()
+
+    def _draw_layer_box(self):
+        """A dashed blue frame round the selected layer (text, shape, scale bar or image), so it is clear what a drag will move."""
+        c = self.canvas
+        c.delete('lbox')
+        layers = self.lprev if self.lprev is not None else (self.hist.layers if self.hist else ())
+        if self.active is None or self.active >= len(layers) or not layers[self.active].visible:
+            return
+        L = layers[self.active]
+        r = L.raster()
+        if r is None:
+            return
+        z = self.zoom
+        c.create_rectangle(L.x * z + self.ox, L.y * z + self.oy, (L.x + r.shape[1]) * z + self.ox, (L.y + r.shape[0]) * z + self.oy,
+                           outline='#2a7de1', dash=(5, 3), tags='lbox')
 
     def _place_at(self, e):
         """A 'place' tool (text, scale bar): the pixel under the pointer becomes its x, y; for a 'segment' tool (Shapes) it becomes
@@ -7383,6 +7488,9 @@ class ImageForge:
         if self.mode or self._is_brush():
             return
         if self.tool is not None and self.tool.interactive == 'layer':
+            self.canvas.config(cursor='fleur')
+            return
+        if self._layer_under(e) is not None:                         # over a layer that a click would grab
             self.canvas.config(cursor='fleur')
             return
         if self.tool is not None and (self.tool.place or self.tool.interactive in ('measure', 'fill', 'gradient')):

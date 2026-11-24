@@ -19,10 +19,10 @@ descends from the image-cleaning tab of [SpectrumDigitizer](https://github.com/m
   drag the slider) and position (X, Y). Make one from the selection (*Edit > Copy / Cut selection to layer*, Ctrl+J /
   Ctrl+Shift+J: a cut leaves a hole filled like *leaves*), from a file with its transparency (*Open as layer...*) or with
   *Add text*. Raise, lower, duplicate, delete, *Merge down* (onto the layer below or the Background), *Flatten all*.
-  The **Move layer** tool drags the selected layer on the image (arrow keys nudge it). Every change is an undo step.
+  **On the picture**: click a layer to select it (a dashed blue frame shows it; in *Select / move*, *Move layer* and *Add text*), drag it to move it, and double-click a text, shape or scale bar to edit it. The **Move layer** tool drags the selected layer on the image (arrow keys nudge it). Every change is an undo step.
 - **Add text** (group Annotate): type the text (`\n` = new line), pick font, size, colour (type, **Pick** from the image or
   the colour dialog), rotation and opacity; click or drag on the image to place it, then *Add as layer*. The text stays
-  editable: select its layer, change the boxes, press *Update layer* (select *Background* to add a second text).
+  editable: double-click it on the picture (or select its layer), change the text and the boxes, press *Update layer*; drag it to move it (select *Background* in the Layers tab to add a second text).
 - **Working area** (the box at the top of the right panel, drawn with the **Select** buttons at the top of the toolbox): press **Rectangle**
   *before* choosing any tool, drag a rectangle on the picture, and every tool, brush and rectangle tool acts only inside it (a coloured label
   shows its size and place; X / Y / W / H can be typed; **Whole image** removes it, Esc cancels a definition in progress). It works with any

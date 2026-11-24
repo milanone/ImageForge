@@ -2128,6 +2128,41 @@ class HealBrushTests(unittest.TestCase):
         self.assertIn('method', [p.key for p in t.params])
 
 
+class LayerHitTests(unittest.TestCase):
+    """layer_hit: which layer a click on the picture grabs."""
+
+    def make(self):
+        text = il.Layer('text', 'T', 50, 40, True, 100, None, dict(text="Hi", size=40, font=il.FONT_CHOICES[0], color='#000000', angle=0.0, opacity=100))
+        px = np.zeros((30, 30, 4), np.uint8)
+        px[10:20, 10:20] = (255, 0, 0, 255)                                       # a red square with a transparent frame
+        img = il.Layer('image', 'I', 200, 100, True, 100, px)
+        return text, img
+
+    def test_pixels_slack_order_and_visibility(self):
+        text, img = self.make()
+        r = text.raster()
+        layers = (text, img)
+        self.assertIsNone(il.layer_hit(layers, 5, 5, tol=2))                          # empty picture
+        self.assertEqual(il.layer_hit(layers, 215, 115, tol=0), 1)                    # on the red square
+        self.assertIsNone(il.layer_hit(layers, 202, 102, tol=0))                      # in the transparent frame of the image layer
+        self.assertEqual(il.layer_hit(layers, 202, 102, tol=9), 1)                    # ... but the slack reaches the square
+        ys, xs = np.nonzero(r[..., 3] > 8)
+        self.assertEqual(il.layer_hit(layers, 50 + int(xs[0]), 40 + int(ys[0]), tol=0), 0)   # on a letter of the text
+        over = il.Layer('image', 'O', 200, 100, True, 100, img.rgba)
+        self.assertEqual(il.layer_hit((text, img, over), 215, 115), 2)                 # the topmost wins
+        self.assertEqual(il.layer_hit((text, img.replace(visible=False)), 215, 115), None)
+        self.assertEqual(il.layer_hit((text, img.replace(opacity=0)), 215, 115), None)
+
+    def test_the_selected_text_can_be_grabbed_by_its_blank_parts(self):
+        text, img = self.make()
+        h, w = text.raster().shape[:2]
+        blank = np.argwhere(text.raster()[..., 3] <= 8)
+        by, bx = blank[0]
+        self.assertIsNone(il.layer_hit((text,), 50 + int(bx), 40 + int(by), tol=0))
+        self.assertEqual(il.layer_hit((text,), 50 + int(bx), 40 + int(by), tol=0, prefer=0), 0)       # selected: its whole box counts
+        self.assertIsNone(il.layer_hit((text,), 50 + w + 20, 40, tol=2, prefer=0))                      # not outside the box
+
+
 class AutoPreviewTests(unittest.TestCase):
     def test_which_tools_preview_at_once(self):
         """Automatic tools (and tools without parameters, which have nothing to touch) preview as soon as they are chosen; the others wait for a parameter."""
